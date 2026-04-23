@@ -1,20 +1,35 @@
 # tofu/layers/02-onprem-infra/main.tf
 locals {
-  account_node_maps = [
-    for account_key, account in var.onprem_accounts : {
-      for node_key, node in account.nodes : "${account_key}-${node_key}" => {
-        account_key = account_key
-        node_key    = node_key
-        region      = coalesce(try(node.region, null), account.region)
-        account     = account
-        node        = node
-      }
-    }
-  ]
+  accounts_manifest = yamldecode(file("${path.module}/../../shared/accounts.yaml"))
+}
 
-  flattened_nodes = length(local.account_node_maps) > 0 ? merge(local.account_node_maps...) : {}
+module "onprem_account_state" {
+  for_each       = toset(local.accounts_manifest.onprem)
+  source         = "../../modules/node-state"
+  provider_name  = "onprem"
+  account        = each.key
+  age_recipients = split(",", var.age_recipients)
 }
 
 locals {
-  accounts_manifest = yamldecode(file("${path.module}/../../shared/accounts.yaml"))
+  onprem_account_keys = local.accounts_manifest.onprem
+  onprem_nodes_from_module = {
+    for k, mod in module.onprem_account_state : k => try(mod.nodes.nodes, {})
+  }
+
+  onprem_accounts_effective = {
+    for k in local.onprem_account_keys : k => {
+      nodes = local.onprem_nodes_from_module[k]
+    }
+  }
+
+  flattened_nodes = merge([
+    for acct_key, acct in local.onprem_accounts_effective : {
+      for node_key, node in acct.nodes : "${acct_key}-${node_key}" => {
+        account_key = acct_key
+        node_key    = node_key
+        node        = node
+      }
+    }
+  ]...)
 }
