@@ -14,6 +14,10 @@ concurrency:
 
 jobs:
   secrets:
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
     uses: ./.github/workflows/tofu-layer.yml
     with:
       layer: 00-talos-secrets
@@ -23,6 +27,10 @@ jobs:
 
   contabo-infra:
     needs: secrets
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
     uses: ./.github/workflows/tofu-layer.yml
     with:
       layer: 01-contabo-infra
@@ -32,6 +40,10 @@ jobs:
 
   oracle-infra:
     needs: secrets
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
     uses: ./.github/workflows/tofu-layer.yml
     with:
       layer: 02-oracle-infra
@@ -41,6 +53,10 @@ jobs:
 
   onprem-infra:
     needs: secrets
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
     uses: ./.github/workflows/tofu-layer.yml
     with:
       layer: 02-onprem-infra
@@ -50,6 +66,10 @@ jobs:
 
   talos:
     needs: [contabo-infra, oracle-infra, onprem-infra]
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
     uses: ./.github/workflows/tofu-layer.yml
     with:
       layer: 03-talos
@@ -59,6 +79,10 @@ jobs:
 
   flux:
     needs: talos
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
     uses: ./.github/workflows/tofu-layer.yml
     with:
       layer: 04-flux
@@ -70,5 +94,7 @@ jobs:
   # GitHub SSH keys. Lets operators onboard non-cloud machines as workers.
   machine-configs:
     needs: talos
+    permissions:
+      contents: read
     uses: ./.github/workflows/publish-talos-configs.yml
     secrets: inherit
