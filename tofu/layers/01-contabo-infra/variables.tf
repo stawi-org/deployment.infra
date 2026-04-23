@@ -121,3 +121,8 @@ variable "extra_cert_sans" {
     DNS record and the cert SAN stay in sync automatically.
   EOT
 }
+
+variable "age_recipients" {
+  type        = string
+  description = "Comma-separated age recipient pubkeys. Used to re-encrypt on write."
+}
