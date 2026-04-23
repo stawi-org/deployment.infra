@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import sys
 from pathlib import Path
@@ -88,12 +89,10 @@ def load_inventory_source(path: Path) -> dict[str, Any]:
             oci = data["oci"] or {}
             if not isinstance(oci, dict):
                 raise ValueError(f"{file}: oci must be an object")
-            accounts = oci.get("accounts")
-            retained = oci.get("retained_accounts")
-            if accounts is None:
-                raise ValueError(f"{file}: oci.accounts is required")
-            if retained is None:
-                raise ValueError(f"{file}: oci.retained_accounts is required")
+            accounts = oci.get("accounts") or {}
+            retained = oci.get("retained_accounts") or {}
+            if not accounts and not retained:
+                raise ValueError(f"{file}: oci.accounts or oci.retained_accounts is required")
             merge_section("oci", "accounts", accounts, file)
             merge_section("oci", "retained_accounts", retained, file)
         if "onprem" in data:
@@ -168,6 +167,49 @@ def normalize_oci_account(name: str, raw: dict[str, Any]) -> tuple[dict[str, Any
         "oidc_client_identifier": client,
     }
     return tf_account, auth_account
+
+
+def render_inventory_file(file: Path, retained_profiles: set[str]) -> dict[str, Any]:
+    data = load_config(file)
+    rendered: dict[str, Any] = {
+        "contabo": {},
+        "oci_active": {},
+        "oci_retained": {},
+        "oci_auth": [],
+        "onprem": {},
+    }
+
+    if "contabo" in data:
+        contabo = data["contabo"] or {}
+        if not isinstance(contabo, dict):
+            raise ValueError(f"{file}: contabo must be an object")
+        rendered["contabo"] = contabo_from_config(file)
+
+    if "oci" in data:
+        oci = data["oci"] or {}
+        if not isinstance(oci, dict):
+            raise ValueError(f"{file}: oci must be an object")
+        active, retained, auth = oci_from_map(
+            {
+                "accounts": oci.get("accounts", {}),
+                "retained_accounts": oci.get("retained_accounts", {}),
+            },
+            retained_profiles,
+        )
+        rendered["oci_active"] = active
+        rendered["oci_retained"] = retained
+        rendered["oci_auth"] = auth
+
+    if "onprem" in data:
+        onprem = data["onprem"] or {}
+        if not isinstance(onprem, dict):
+            raise ValueError(f"{file}: onprem must be an object")
+        rendered["onprem"] = onprem_from_map(onprem)
+
+    if not any(rendered[key] for key in ("contabo", "oci_active", "oci_retained", "oci_auth", "onprem")):
+        raise ValueError(f"{file}: no supported inventory sections found")
+
+    return rendered
 
 
 def normalize_contabo_node(account_name: str, node_name: str, raw: dict[str, Any]) -> dict[str, Any]:
@@ -253,10 +295,10 @@ def contabo_from_config(path: Path) -> dict[str, Any]:
 
 
 def oci_from_map(data: dict[str, Any], retained_profiles: set[str]) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, str]]]:
-    if "accounts" not in data or "retained_accounts" not in data:
-        raise ValueError("OCI config must contain accounts and retained_accounts maps")
-    accounts = data["accounts"]
-    retained_accounts = data["retained_accounts"]
+    accounts = data.get("accounts") or {}
+    retained_accounts = data.get("retained_accounts") or {}
+    if not accounts and not retained_accounts:
+        raise ValueError("OCI config must contain accounts or retained_accounts maps")
 
     if not isinstance(accounts, dict) or not isinstance(retained_accounts, dict):
         raise ValueError("OCI config must contain account maps")
@@ -363,26 +405,53 @@ def render_cluster(args: argparse.Namespace) -> int:
     try:
         if not args.input:
             raise ValueError("input path is required")
-        data = load_inventory_source(args.input)
+        files = inventory_files(args.input)
     except ValueError as exc:
         print(f"Cluster config error: {exc}", file=sys.stderr)
-        return 2
-
-    if "contabo" not in data or "oci" not in data or "onprem" not in data:
-        print("Cluster config error: contabo, oci, and onprem sections are required", file=sys.stderr)
         return 2
 
     try:
-        contabo_accounts = contabo_from_config(args.input)
-        oci_active, oci_retained, oci_auth = oci_from_map(data["oci"], {
+        retained_profiles = {
             item.strip()
             for item in (args.retained_profiles or "").split(",")
             if item.strip()
-        })
-        onprem_locations = onprem_from_map(data["onprem"])
+        }
+        rendered_parts = []
+        if files:
+            with ThreadPoolExecutor(max_workers=min(32, len(files))) as executor:
+                rendered_parts = list(executor.map(lambda f: render_inventory_file(f, retained_profiles), files))
     except ValueError as exc:
         print(f"Cluster config error: {exc}", file=sys.stderr)
         return 2
+
+    contabo_accounts: dict[str, Any] = {}
+    oci_active: dict[str, Any] = {}
+    oci_retained: dict[str, Any] = {}
+    oci_auth: list[dict[str, str]] = []
+    onprem_locations: dict[str, Any] = {}
+
+    for part in rendered_parts:
+        for account_name, account in part["contabo"].items():
+            if account_name in contabo_accounts:
+                print(f"Cluster config error: duplicate Contabo account {account_name}", file=sys.stderr)
+                return 2
+            contabo_accounts[account_name] = account
+        for account_name, account in part["oci_active"].items():
+            if account_name in oci_active or account_name in oci_retained:
+                print(f"Cluster config error: duplicate OCI account {account_name}", file=sys.stderr)
+                return 2
+            oci_active[account_name] = account
+        for account_name, account in part["oci_retained"].items():
+            if account_name in oci_active or account_name in oci_retained:
+                print(f"Cluster config error: duplicate OCI retained account {account_name}", file=sys.stderr)
+                return 2
+            oci_retained[account_name] = account
+        oci_auth.extend(part["oci_auth"])
+        for location_name, location in part["onprem"].items():
+            if location_name in onprem_locations:
+                print(f"Cluster config error: duplicate on-prem location {location_name}", file=sys.stderr)
+                return 2
+            onprem_locations[location_name] = location
 
     dump(args.out_contabo_accounts, contabo_accounts)
     dump(args.out_oci_accounts, oci_active)
@@ -397,6 +466,24 @@ def render_cluster(args: argparse.Namespace) -> int:
         f"onprem_locations={len(onprem_locations)}"
     )
     return 0
+
+
+def inventory_files(path: Path) -> list[Path]:
+    if path.is_file():
+        return [path]
+    if not path.is_dir():
+        raise ValueError(f"{path} does not exist or is not a directory")
+    files = sorted(
+        [
+            candidate
+            for candidate in path.rglob("*")
+            if candidate.is_file() and candidate.suffix.lower() in {".yaml", ".yml"}
+        ],
+        key=lambda candidate: str(candidate.relative_to(path)),
+    )
+    if not files:
+        raise ValueError(f"{path} does not contain any YAML inventory files")
+    return files
 
 
 def main() -> int:
