@@ -7,6 +7,11 @@ on:
       - 'tofu/**'
       - '.github/workflows/tofu-*.yml'
 
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
 concurrency:
   group: tofu-plan-${{ github.ref }}
   cancel-in-progress: true

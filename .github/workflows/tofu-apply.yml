@@ -3,6 +3,11 @@ name: tofu-apply
 on:
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
 concurrency:
   group: tofu-apply-production
   cancel-in-progress: false
