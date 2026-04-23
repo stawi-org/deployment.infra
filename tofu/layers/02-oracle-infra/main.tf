@@ -22,11 +22,12 @@ locals {
 # node-state: R2-backed inventory read. Populated initially by
 # scripts/seed-inventory.sh; kept in sync by this layer's writers.
 module "oracle_account_state" {
-  for_each       = toset(local.accounts_manifest.oracle)
-  source         = "../../modules/node-state"
-  provider_name  = "oracle"
-  account        = each.key
-  age_recipients = split(",", var.age_recipients)
+  for_each            = toset(local.accounts_manifest.oracle)
+  source              = "../../modules/node-state"
+  provider_name       = "oracle"
+  account             = each.key
+  age_recipients      = split(",", var.age_recipients)
+  local_inventory_dir = var.local_inventory_dir
 }
 
 locals {

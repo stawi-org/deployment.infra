@@ -42,3 +42,9 @@ variable "ci_run_id" {
   default     = "local"
   description = "Set by CI to $GITHUB_RUN_ID; used only for audit metadata in machine-configs.yaml."
 }
+
+variable "local_inventory_dir" {
+  type        = string
+  default     = "/tmp/inventory"
+  description = "Local directory where the workflow syncs R2 production/inventory/ before plan. Module reads use this; writes go directly to R2."
+}

@@ -37,3 +37,9 @@ variable "age_recipients" {
   type        = string
   description = "Comma-separated age recipient pubkeys. Used to re-encrypt on write."
 }
+
+variable "local_inventory_dir" {
+  type        = string
+  default     = "/tmp/inventory"
+  description = "Local directory where the workflow syncs R2 production/inventory/ before plan. Module reads use this; writes go directly to R2."
+}

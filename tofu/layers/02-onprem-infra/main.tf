@@ -4,11 +4,12 @@ locals {
 }
 
 module "onprem_account_state" {
-  for_each       = toset(local.accounts_manifest.onprem)
-  source         = "../../modules/node-state"
-  provider_name  = "onprem"
-  account        = each.key
-  age_recipients = split(",", var.age_recipients)
+  for_each            = toset(local.accounts_manifest.onprem)
+  source              = "../../modules/node-state"
+  provider_name       = "onprem"
+  account             = each.key
+  age_recipients      = split(",", var.age_recipients)
+  local_inventory_dir = var.local_inventory_dir
 }
 
 locals {

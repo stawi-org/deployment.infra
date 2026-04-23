@@ -5,11 +5,12 @@
 # in its own sibling file (talos-state.yaml).
 
 module "contabo_account_state_writer" {
-  for_each       = toset(local.contabo_account_keys_from_state)
-  source         = "../../modules/node-state"
-  provider_name  = "contabo"
-  account        = each.key
-  age_recipients = split(",", var.age_recipients)
+  for_each            = toset(local.contabo_account_keys_from_state)
+  source              = "../../modules/node-state"
+  local_inventory_dir = var.local_inventory_dir
+  provider_name       = "contabo"
+  account             = each.key
+  age_recipients      = split(",", var.age_recipients)
 
   write_state = true
   state_content = {

@@ -16,11 +16,12 @@ locals {
 }
 
 module "contabo_talos_state_writer" {
-  for_each       = toset(local.accounts_manifest.contabo)
-  source         = "../../modules/node-state"
-  provider_name  = "contabo"
-  account        = each.key
-  age_recipients = split(",", var.age_recipients)
+  for_each            = toset(local.accounts_manifest.contabo)
+  source              = "../../modules/node-state"
+  local_inventory_dir = var.local_inventory_dir
+  provider_name       = "contabo"
+  account             = each.key
+  age_recipients      = split(",", var.age_recipients)
 
   write_talos_state = true
   talos_state_content = {
@@ -45,11 +46,12 @@ module "contabo_talos_state_writer" {
 }
 
 module "oracle_talos_state_writer" {
-  for_each       = toset(local.accounts_manifest.oracle)
-  source         = "../../modules/node-state"
-  provider_name  = "oracle"
-  account        = each.key
-  age_recipients = split(",", var.age_recipients)
+  for_each            = toset(local.accounts_manifest.oracle)
+  source              = "../../modules/node-state"
+  local_inventory_dir = var.local_inventory_dir
+  provider_name       = "oracle"
+  account             = each.key
+  age_recipients      = split(",", var.age_recipients)
 
   write_talos_state = true
   talos_state_content = {
@@ -71,11 +73,12 @@ module "oracle_talos_state_writer" {
 }
 
 module "onprem_talos_state_writer" {
-  for_each       = toset(local.accounts_manifest.onprem)
-  source         = "../../modules/node-state"
-  provider_name  = "onprem"
-  account        = each.key
-  age_recipients = split(",", var.age_recipients)
+  for_each            = toset(local.accounts_manifest.onprem)
+  source              = "../../modules/node-state"
+  local_inventory_dir = var.local_inventory_dir
+  provider_name       = "onprem"
+  account             = each.key
+  age_recipients      = split(",", var.age_recipients)
 
   write_talos_state = true
   talos_state_content = {

@@ -80,3 +80,8 @@ variable "machine_configs_content" {
   default     = null
   description = "YAML-shaped map written to machine-configs.yaml when write_machine_configs = true. Ignored on read-only invocations."
 }
+
+variable "local_inventory_dir" {
+  type        = string
+  description = "Local directory where the workflow syncs R2 production/inventory/ before plan. Reads use this; writes go directly to R2."
+}

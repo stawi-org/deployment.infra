@@ -1,11 +1,19 @@
 # tofu/modules/node-state/main.tf
 #
-# Reads five inventory files for (provider, account) from R2 and exposes
-# decoded YAML. Missing files return {} so callers on first apply see an
-# empty state and create-from-scratch.
+# Reads per-(provider, account) inventory files from a LOCAL staging
+# directory (populated by the workflow pre-plan via aws s3 sync from R2).
+# Writes go directly to R2 via aws_s3_object resources.
 #
-# Encrypted files (auth.yaml, machine-configs.yaml) are decrypted via the
-# carlpett/sops provider using SOPS_AGE_KEY from the environment.
+# Why local files for reads?  Provider configuration blocks are evaluated at
+# plan time, so the Contabo provider's oauth2_* args must be known before
+# plan resolves.  Earlier design used aws_s3_object -> local_sensitive_file
+# (resource) -> sops_file which deferred decryption to apply time and
+# handed the Contabo provider unknown values -> 401 "invalid_client".
+# Reading from local files via fileexists()/file()/sops_file(source_file=<local>)
+# keeps everything plan-time.
+#
+# The workflow syncs s3://cluster-tofu-state/production/inventory/ -> the
+# directory in var.local_inventory_dir before tofu init runs.
 
 locals {
   base_key = "${var.key_prefix}/${var.provider_name}/${var.account}"
@@ -20,116 +28,65 @@ locals {
   # Oracle auth carries non-sensitive pointers only (actual tokens come
   # from GitHub OIDC at runtime). On-prem has no auth.
   is_encrypted_auth = var.provider_name == "contabo"
-}
 
-# --- 404-safe existence probe -----------------------------------------------
-# List the account prefix once; gate every read on the result so a missing
-# key never causes aws_s3_object to throw a 404 during refresh.
+  # Local staged paths.
+  base_local            = "${var.local_inventory_dir}/${var.provider_name}/${var.account}"
+  auth_local            = "${local.base_local}/auth.yaml"
+  nodes_local           = "${local.base_local}/nodes.yaml"
+  state_local           = "${local.base_local}/state.yaml"
+  talos_state_local     = "${local.base_local}/talos-state.yaml"
+  machine_configs_local = "${local.base_local}/machine-configs.yaml"
 
-data "aws_s3_objects" "inventory" {
-  bucket = var.bucket
-  prefix = "${local.base_key}/"
-}
-
-locals {
-  inventory_keys      = toset(data.aws_s3_objects.inventory.keys)
-  has_auth            = contains(local.inventory_keys, local.auth_key)
-  has_nodes           = contains(local.inventory_keys, local.nodes_key)
-  has_state           = contains(local.inventory_keys, local.state_key)
-  has_talos_state     = contains(local.inventory_keys, local.talos_state_key)
-  has_machine_configs = contains(local.inventory_keys, local.machine_configs_key)
-}
-
-# --- plaintext reads -------------------------------------------------------
-
-data "aws_s3_object" "nodes" {
-  count  = local.has_nodes ? 1 : 0
-  bucket = var.bucket
-  key    = local.nodes_key
-}
-
-data "aws_s3_object" "state" {
-  count  = local.has_state ? 1 : 0
-  bucket = var.bucket
-  key    = local.state_key
-}
-
-data "aws_s3_object" "talos_state" {
-  count  = local.has_talos_state ? 1 : 0
-  bucket = var.bucket
-  key    = local.talos_state_key
+  has_auth            = fileexists(local.auth_local)
+  has_nodes           = fileexists(local.nodes_local)
+  has_state           = fileexists(local.state_local)
+  has_talos_state     = fileexists(local.talos_state_local)
+  has_machine_configs = fileexists(local.machine_configs_local)
 }
 
 # --- encrypted reads (auth + machine-configs) ------------------------------
-# aws_s3_object fetches the raw encrypted bytes; we write them to a local
-# file so sops_file can point at them. local_sensitive_file isolates the
-# plaintext from normal `tofu show`.
-
-data "aws_s3_object" "auth_raw" {
-  count  = local.is_encrypted_auth && local.has_auth ? 1 : 0
-  bucket = var.bucket
-  key    = local.auth_key
-}
-
-data "aws_s3_object" "machine_configs_raw" {
-  count  = local.has_machine_configs ? 1 : 0
-  bucket = var.bucket
-  key    = local.machine_configs_key
-}
-
-# Non-contabo auth is plaintext.
-data "aws_s3_object" "auth_raw_plain" {
-  count  = !local.is_encrypted_auth && local.has_auth ? 1 : 0
-  bucket = var.bucket
-  key    = local.auth_key
-}
-
-# Stage encrypted bodies to disk so sops_file can decrypt them.
-resource "local_sensitive_file" "auth_staged" {
-  count    = local.is_encrypted_auth && local.has_auth ? 1 : 0
-  filename = "${path.module}/.staged/auth-${var.provider_name}-${var.account}.age.yaml"
-  content  = data.aws_s3_object.auth_raw[0].body
-}
-
-resource "local_sensitive_file" "machine_configs_staged" {
-  count    = local.has_machine_configs ? 1 : 0
-  filename = "${path.module}/.staged/machine-configs-${var.provider_name}-${var.account}.age.yaml"
-  content  = data.aws_s3_object.machine_configs_raw[0].body
-}
+# sops_file decrypts at refresh time (data source), values are known at
+# plan time. No resource chain, no deferral to apply.
 
 data "sops_file" "auth" {
   count       = local.is_encrypted_auth && local.has_auth ? 1 : 0
-  source_file = local_sensitive_file.auth_staged[0].filename
+  source_file = local.auth_local
 }
 
 data "sops_file" "machine_configs" {
   count       = local.has_machine_configs ? 1 : 0
-  source_file = local_sensitive_file.machine_configs_staged[0].filename
+  source_file = local.machine_configs_local
 }
 
 # --- decoded outputs -------------------------------------------------------
 #
-# We use try() rather than a ternary so the expression has a dynamic
-# (unknown) type. OpenTofu's type inference would otherwise unify the
-# branches of a ternary and the two yamldecode(...) calls on different
-# literal strings produce different exact object types (e.g.
-# object({nodes = object({})}) vs the full decoded schema), causing
-# "inconsistent conditional result types". try() returns `any` and
-# sidesteps the check. The has_* predicates gate the data sources, so
-# try() mostly never exercises its fallback in practice; it also catches
-# malformed YAML, which for our controlled writers is vanishingly rare.
+# try() provides dynamic typing; it sidesteps OpenTofu's "inconsistent
+# conditional result types" error (two literal-YAML decodes have different
+# static object types). has_* predicates gate each data source, so try()
+# rarely exercises its fallback in practice.
 
 locals {
   auth_decoded = (
     local.is_encrypted_auth
     ? try(yamldecode(data.sops_file.auth[0].raw), null)
-    : try(yamldecode(data.aws_s3_object.auth_raw_plain[0].body), null)
+    : try(yamldecode(file(local.auth_local)), null)
   )
 
-  nodes_decoded           = try(yamldecode(data.aws_s3_object.nodes[0].body), { nodes = {} })
-  state_decoded           = try(yamldecode(data.aws_s3_object.state[0].body), { nodes = {} })
-  talos_state_decoded     = try(yamldecode(data.aws_s3_object.talos_state[0].body), { nodes = {} })
+  nodes_decoded           = try(yamldecode(file(local.nodes_local)), { nodes = {} })
+  state_decoded           = try(yamldecode(file(local.state_local)), { nodes = {} })
+  talos_state_decoded     = try(yamldecode(file(local.talos_state_local)), { nodes = {} })
   machine_configs_decoded = try(yamldecode(data.sops_file.machine_configs[0].raw), { nodes = {} })
+}
+
+# Keep a summary of which files were found for downstream diagnostics.
+locals {
+  inventory_keys = sort(concat(
+    local.has_auth ? [local.auth_local] : [],
+    local.has_nodes ? [local.nodes_local] : [],
+    local.has_state ? [local.state_local] : [],
+    local.has_talos_state ? [local.talos_state_local] : [],
+    local.has_machine_configs ? [local.machine_configs_local] : [],
+  ))
 }
 
 # --- writers ---------------------------------------------------------------

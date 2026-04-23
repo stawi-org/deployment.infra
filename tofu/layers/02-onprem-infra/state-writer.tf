@@ -1,9 +1,10 @@
 module "onprem_account_state_writer" {
-  for_each       = toset(local.onprem_account_keys)
-  source         = "../../modules/node-state"
-  provider_name  = "onprem"
-  account        = each.key
-  age_recipients = split(",", var.age_recipients)
+  for_each            = toset(local.onprem_account_keys)
+  source              = "../../modules/node-state"
+  local_inventory_dir = var.local_inventory_dir
+  provider_name       = "onprem"
+  account             = each.key
+  age_recipients      = split(",", var.age_recipients)
 
   write_state = true
   state_content = {

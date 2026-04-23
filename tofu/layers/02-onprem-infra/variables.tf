@@ -21,3 +21,9 @@ variable "r2_account_id" {
   sensitive   = true
   description = "Cloudflare R2 account ID; used for the S3-compatible AWS provider endpoint."
 }
+
+variable "local_inventory_dir" {
+  type        = string
+  default     = "/tmp/inventory"
+  description = "Local directory where the workflow syncs R2 production/inventory/ before plan. Module reads use this; writes go directly to R2."
+}

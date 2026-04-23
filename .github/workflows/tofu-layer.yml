@@ -85,6 +85,21 @@ jobs:
           fi
           python3 scripts/seed-orchestrator.py
 
+      - name: Sync R2 inventory to /tmp/inventory/ (node-state module reads from here)
+        if: inputs.layer == '01-contabo-infra' || inputs.layer == '02-oracle-infra' || inputs.layer == '02-onprem-infra' || inputs.layer == '03-talos'
+        env:
+          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
+          R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/inventory
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/" /tmp/inventory/ \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --region us-east-1 \
+            --delete
+
       # Only layer 03 needs talosctl for the null_resource.reboot_cp provisioner.
       - name: Install talosctl
         if: inputs.layer == '03-talos'

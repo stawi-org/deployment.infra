@@ -49,27 +49,30 @@ data "terraform_remote_state" "oracle" {
 
 
 module "contabo_state" {
-  for_each       = toset(local.accounts_manifest.contabo)
-  source         = "../../modules/node-state"
-  provider_name  = "contabo"
-  account        = each.key
-  age_recipients = split(",", var.age_recipients)
+  for_each            = toset(local.accounts_manifest.contabo)
+  source              = "../../modules/node-state"
+  provider_name       = "contabo"
+  account             = each.key
+  age_recipients      = split(",", var.age_recipients)
+  local_inventory_dir = var.local_inventory_dir
 }
 
 module "oracle_state" {
-  for_each       = toset(local.accounts_manifest.oracle)
-  source         = "../../modules/node-state"
-  provider_name  = "oracle"
-  account        = each.key
-  age_recipients = split(",", var.age_recipients)
+  for_each            = toset(local.accounts_manifest.oracle)
+  source              = "../../modules/node-state"
+  provider_name       = "oracle"
+  account             = each.key
+  age_recipients      = split(",", var.age_recipients)
+  local_inventory_dir = var.local_inventory_dir
 }
 
 module "onprem_state" {
-  for_each       = toset(local.accounts_manifest.onprem)
-  source         = "../../modules/node-state"
-  provider_name  = "onprem"
-  account        = each.key
-  age_recipients = split(",", var.age_recipients)
+  for_each            = toset(local.accounts_manifest.onprem)
+  source              = "../../modules/node-state"
+  provider_name       = "onprem"
+  account             = each.key
+  age_recipients      = split(",", var.age_recipients)
+  local_inventory_dir = var.local_inventory_dir
 }
 
 locals {
