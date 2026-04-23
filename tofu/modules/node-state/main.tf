@@ -140,3 +140,109 @@ locals {
     : { nodes = {} }
   )
 }
+
+# --- writers ---------------------------------------------------------------
+# Encrypted writers use provider::sops::encrypt (OpenTofu 1.8+ provider-defined
+# function). Plaintext writers skip encryption.
+
+locals {
+  recipients_joined = join(",", var.age_recipients)
+}
+
+resource "aws_s3_object" "auth" {
+  count  = var.write_auth && local.is_encrypted_auth ? 1 : 0
+  bucket = var.bucket
+  key    = local.auth_key
+  content = provider::sops::encrypt(
+    yamlencode(var.auth_content),
+    "yaml",
+    { age = local.recipients_joined },
+  )
+  content_type = "application/x-yaml"
+
+  lifecycle {
+    precondition {
+      condition     = var.auth_content != null
+      error_message = "write_auth = true but auth_content is null"
+    }
+  }
+}
+
+resource "aws_s3_object" "auth_plaintext" {
+  count        = var.write_auth && !local.is_encrypted_auth ? 1 : 0
+  bucket       = var.bucket
+  key          = local.auth_key
+  content      = yamlencode(var.auth_content)
+  content_type = "application/x-yaml"
+
+  lifecycle {
+    precondition {
+      condition     = var.auth_content != null
+      error_message = "write_auth = true but auth_content is null"
+    }
+  }
+}
+
+resource "aws_s3_object" "nodes" {
+  count        = var.write_nodes ? 1 : 0
+  bucket       = var.bucket
+  key          = local.nodes_key
+  content      = yamlencode(var.nodes_content)
+  content_type = "application/x-yaml"
+
+  lifecycle {
+    precondition {
+      condition     = var.nodes_content != null
+      error_message = "write_nodes = true but nodes_content is null"
+    }
+  }
+}
+
+resource "aws_s3_object" "state" {
+  count        = var.write_state ? 1 : 0
+  bucket       = var.bucket
+  key          = local.state_key
+  content      = yamlencode(var.state_content)
+  content_type = "application/x-yaml"
+
+  lifecycle {
+    precondition {
+      condition     = var.state_content != null
+      error_message = "write_state = true but state_content is null"
+    }
+  }
+}
+
+resource "aws_s3_object" "talos_state" {
+  count        = var.write_talos_state ? 1 : 0
+  bucket       = var.bucket
+  key          = local.talos_state_key
+  content      = yamlencode(var.talos_state_content)
+  content_type = "application/x-yaml"
+
+  lifecycle {
+    precondition {
+      condition     = var.talos_state_content != null
+      error_message = "write_talos_state = true but talos_state_content is null"
+    }
+  }
+}
+
+resource "aws_s3_object" "machine_configs" {
+  count  = var.write_machine_configs ? 1 : 0
+  bucket = var.bucket
+  key    = local.machine_configs_key
+  content = provider::sops::encrypt(
+    yamlencode(var.machine_configs_content),
+    "yaml",
+    { age = local.recipients_joined },
+  )
+  content_type = "application/x-yaml"
+
+  lifecycle {
+    precondition {
+      condition     = var.machine_configs_content != null
+      error_message = "write_machine_configs = true but machine_configs_content is null"
+    }
+  }
+}
