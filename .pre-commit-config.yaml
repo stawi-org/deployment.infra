@@ -1,0 +1,36 @@
+# Pre-commit hooks for deployment.infra
+# Install: pip install pre-commit && pre-commit install
+# Run manually: pre-commit run -a
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-merge-conflict
+      - id: detect-private-key
+
+  # tofu fmt via local hook — pre-commit-terraform wraps the `terraform` binary;
+  # we use tofu, so the formatting invocation is local.
+  - repo: local
+    hooks:
+      - id: tofu-fmt
+        name: tofu fmt
+        entry: tofu fmt -recursive -diff
+        language: system
+        pass_filenames: false
+        files: '\.tf$|\.tfvars$'
+
+  - repo: https://github.com/terraform-linters/tflint
+    rev: v0.53.0
+    hooks:
+      - id: tflint
+        args: ["--chdir=tofu/layers/03-talos"]
+
+  - repo: https://github.com/aquasecurity/tfsec
+    rev: v1.28.11
+    hooks:
+      - id: tfsec
+        args: ["tofu/"]
