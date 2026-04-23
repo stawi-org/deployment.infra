@@ -1,0 +1,119 @@
+name: wipe-flux-namespace
+# One-shot cleanup. Pulls the kubeconfig produced by layer 03 out of R2, then
+# kubectl-deletes the flux-system namespace so the Flux Operator install in
+# layer 04 starts from a clean slate.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "delete" to confirm — wipes ALL resources in flux-system.'
+        required: true
+        type: string
+
+jobs:
+  wipe:
+    if: inputs.confirm == 'delete'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install kubectl
+        run: |
+          set -euo pipefail
+          KVER="v1.36.0-rc.1"
+          curl -fsSL -o /tmp/kubectl "https://dl.k8s.io/release/${KVER}/bin/linux/amd64/kubectl"
+          chmod +x /tmp/kubectl
+          sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+          kubectl version --client
+
+      - name: Fetch layer 03 state from R2
+        env:
+          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
+          R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
+        run: |
+          aws s3 cp "s3://cluster-tofu-state/production/03-talos.tfstate" /tmp/03.tfstate \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --region us-east-1
+          test -s /tmp/03.tfstate
+
+      - name: Render kubeconfig from state output
+        run: |
+          set -euo pipefail
+          jq -r '.outputs.kubeconfig.value' /tmp/03.tfstate > /tmp/kc.json
+          HOST=$(jq -r '.host' /tmp/kc.json)
+          CA=$(jq -r '.ca_certificate' /tmp/kc.json)
+          CRT=$(jq -r '.client_certificate' /tmp/kc.json)
+          KEY=$(jq -r '.client_key' /tmp/kc.json)
+          umask 077
+          cat > /tmp/kubeconfig <<KC
+          apiVersion: v1
+          kind: Config
+          clusters:
+          - name: tofu
+            cluster:
+              server: ${HOST}
+              certificate-authority-data: ${CA}
+          users:
+          - name: tofu
+            user:
+              client-certificate-data: ${CRT}
+              client-key-data: ${KEY}
+          contexts:
+          - name: tofu
+            context:
+              cluster: tofu
+              user: tofu
+          current-context: tofu
+          KC
+          echo "KUBECONFIG=/tmp/kubeconfig" >> "$GITHUB_ENV"
+
+      - name: Verify cluster reachable
+        run: kubectl get ns -o name | head -20
+
+      - name: Delete flux-system — normal path
+        run: |
+          if ! kubectl get ns flux-system >/dev/null 2>&1 ; then
+            echo "flux-system already absent — nothing to do."
+            exit 0
+          fi
+
+          # Strip finalizers from any Flux CR we can find.
+          for kind in gitrepositories kustomizations helmrepositories helmreleases ocirepositories buckets alerts providers receivers imageupdateautomations imagepolicies imagerepositories resourcesets fluxinstances ; do
+            if ! kubectl api-resources --verbs=list -o name 2>/dev/null | grep -qx "$kind" ; then continue ; fi
+            for res in $(kubectl -n flux-system get "$kind" -o name 2>/dev/null) ; do
+              kubectl -n flux-system patch "$res" --type=merge -p '{"metadata":{"finalizers":[]}}' || true
+            done
+          done
+
+          # Delete everything we can by kind, not relying on namespace cascade.
+          kubectl -n flux-system delete all --all --wait=false || true
+          kubectl -n flux-system delete secret,configmap --all --wait=false || true
+          kubectl -n flux-system delete networkpolicy,resourcequota --all --wait=false || true
+
+          # 30s grace for controllers to leave on their own.
+          kubectl delete namespace flux-system --wait=true --timeout=30s || true
+
+      - name: Force-delete namespace (strip finalizer)
+        run: |
+          if ! kubectl get ns flux-system >/dev/null 2>&1 ; then
+            echo "flux-system is gone after normal delete."
+            exit 0
+          fi
+          echo "Namespace stuck in Terminating — stripping spec.finalizers via /finalize"
+          kubectl get ns flux-system -o json \
+            | jq '.spec.finalizers = []' \
+            > /tmp/ns.json
+          kubectl replace --raw "/api/v1/namespaces/flux-system/finalize" -f /tmp/ns.json
+
+          # Wait up to 60s for the API server to drop it.
+          for _ in $(seq 1 30) ; do
+            if ! kubectl get ns flux-system >/dev/null 2>&1 ; then
+              echo "flux-system deleted."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Namespace still present after forced finalizer strip — investigate manually."
+          kubectl get ns flux-system -o yaml
+          exit 1

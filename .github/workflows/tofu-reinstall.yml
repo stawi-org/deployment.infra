@@ -1,0 +1,178 @@
+# .github/workflows/tofu-reinstall.yml
+#
+# Safe wrapper around tofu-apply for destructive changes (typically a
+# Talos version bump in tofu/shared/versions.auto.tfvars). It notifies
+# every repo collaborator via an issue, waits 30 minutes (cancellable
+# via `gh run cancel`), then dispatches tofu-apply.
+#
+# The actual reinstall behavior lives in the tofu modules: changing
+# image_id in layer 01 (via var.talos_version) causes the Contabo
+# provider to execute its update-with-reinstall flow (disk wiped, IP
+# and instance ID preserved). On OCI, same logic produces destroy+create
+# of the workers.
+#
+# Trigger:
+#   gh workflow run tofu-reinstall.yml --ref main \
+#       -f confirm=REINSTALL \
+#       -f reason="Baseline to Talos v1.12.6"
+
+name: tofu-reinstall
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type REINSTALL verbatim to confirm.'
+        required: true
+        type: string
+      reason:
+        description: 'Short reason — shown in the notification issue.'
+        required: true
+        type: string
+
+concurrency:
+  group: tofu-apply-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+  actions: write
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    outputs:
+      ok: ${{ steps.check.outputs.ok }}
+    steps:
+      - id: check
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          if [[ "$CONFIRM" != "REINSTALL" ]]; then
+            echo "::error::`confirm` input must be the literal string REINSTALL. Got: $CONFIRM"
+            exit 1
+          fi
+          echo "ok=true" >> "$GITHUB_OUTPUT"
+
+  notify:
+    needs: guard
+    runs-on: ubuntu-latest
+    outputs:
+      issue_number: ${{ steps.open.outputs.issue_number }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Open notification issue
+        id: open
+        env:
+          ACTOR:  ${{ github.triggering_actor }}
+          REASON: ${{ inputs.reason }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          NOW_ISO=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          GO_ISO=$(date -u -d '+30 minutes' +'%Y-%m-%dT%H:%M:%SZ')
+
+          MENTIONS=$(
+            gh api -H 'Accept: application/vnd.github+json' \
+               --paginate "/repos/${GITHUB_REPOSITORY}/collaborators" \
+               --jq '.[].login' \
+            | sed 's/^/@/' | paste -sd' ' -
+          )
+
+          BODY=$(cat <<MARKDOWN
+          **Cluster reinstall scheduled.**
+
+          | Field | Value |
+          |---|---|
+          | Triggered by | @${ACTOR} |
+          | Reason | ${REASON} |
+          | Triggered at | ${NOW_ISO} |
+          | Apply starts at | **${GO_ISO}** (30-minute cancellable buffer) |
+          | Workflow run | [${GITHUB_RUN_ID}](${RUN_URL}) |
+
+          ### What this does
+
+          Dispatches \`tofu-apply\`. Any Talos version change in
+          tofu/shared/versions.auto.tfvars will cascade to the Contabo
+          provider's update-with-reinstall (CP disks wiped, IPs preserved)
+          and to OCI workers (destroy + create). Cluster state outside
+          of the infra (Flux, tofu state, Git repo) is preserved.
+
+          ### Cancel window
+
+          Anyone with write access can abort during the buffer:
+
+          \`\`\`
+          gh run cancel ${GITHUB_RUN_ID} -R ${GITHUB_REPOSITORY}
+          \`\`\`
+
+          or click Cancel on the [run page](${RUN_URL}).
+
+          cc: ${MENTIONS}
+          MARKDOWN
+          )
+
+          ISSUE_URL=$(
+            gh issue create -R "$GITHUB_REPOSITORY" \
+              --title "[cluster reinstall] scheduled at ${GO_ISO} by @${ACTOR}" \
+              --body "$BODY" \
+              --label "cluster-reinstall"
+          )
+          ISSUE_NUMBER=$(basename "$ISSUE_URL")
+          echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+
+  buffer:
+    needs: notify
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Wait 30 minutes (cancel during this step to abort)
+        env:
+          ISSUE: ${{ needs.notify.outputs.issue_number }}
+        run: |
+          echo "::notice::Buffer started. gh run cancel ${GITHUB_RUN_ID} during the next 30 minutes to abort. Issue #${ISSUE}."
+          sleep 1800
+          echo "Buffer elapsed."
+
+  apply:
+    needs: [notify, buffer]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Dispatch tofu-apply
+        env:
+          ISSUE: ${{ needs.notify.outputs.issue_number }}
+        run: |
+          set -euo pipefail
+          gh workflow run tofu-apply.yml \
+            -R "$GITHUB_REPOSITORY" \
+            --ref "${GITHUB_REF_NAME}"
+          sleep 5
+          RUN_ID=$(
+            gh run list -R "$GITHUB_REPOSITORY" \
+              --workflow tofu-apply.yml \
+              --limit 5 --json databaseId,event,status \
+              --jq ".[] | select(.event==\"workflow_dispatch\" and (.status==\"queued\" or .status==\"in_progress\")) | .databaseId" \
+              | head -1
+          )
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID:-unknown}"
+          gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body "Buffer elapsed. tofu-apply dispatched: ${RUN_URL}"
+
+  aborted-comment:
+    needs: [notify]
+    if: cancelled() && needs.notify.outputs.issue_number != ''
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Note the cancellation
+        env:
+          ISSUE: ${{ needs.notify.outputs.issue_number }}
+          ACTOR: ${{ github.triggering_actor }}
+        run: |
+          gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" \
+            --body "**Reinstall cancelled** during the buffer period. No apply was dispatched. (triggered originally by @${ACTOR})"
+          gh issue close "$ISSUE" -R "$GITHUB_REPOSITORY" --reason "not planned"

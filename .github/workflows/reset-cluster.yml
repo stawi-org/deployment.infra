@@ -1,0 +1,158 @@
+# .github/workflows/reset-cluster.yml
+#
+# One-shot full reset. Used when the cluster is in an unrecoverable
+# state (etcd unreachable, bootstrap stuck, etc.) or when you want a
+# truly clean baseline install. Safe to re-run — everything is
+# idempotent.
+#
+# What it does:
+#   1. Deletes every DNS record matching cp* on both Cloudflare zones.
+#   2. Wipes the R2 state objects for layers 02-oracle, 03-talos,
+#      04-flux. Layer 00 (secrets) and layer 01 (Contabo instances)
+#      are preserved — secrets so the cluster keeps the same PKI
+#      identity, and layer 01 so the 3 CP instances aren't destroyed
+#      (layer 01's imports.tf would re-import them anyway but keeping
+#      state avoids that round-trip).
+#
+# After a successful reset, dispatch tofu-apply manually — it will
+# reapply layer 01 (triggering Contabo reinstall if the Talos image
+# changed), then build layers 02/03/04 from empty state.
+#
+# Trigger:
+#   gh workflow run reset-cluster.yml --ref main -f confirm=RESET
+
+name: reset-cluster
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type RESET verbatim to confirm.'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: tofu-apply-production
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          [[ "$CONFIRM" == "RESET" ]] || { echo "::error::confirm must be RESET"; exit 1; }
+
+  clean-cloudflare:
+    needs: guard
+    runs-on: ubuntu-latest
+    env:
+      CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - name: Delete every cp* record on both managed zones
+        run: |
+          set -euo pipefail
+          for ZONE_ID in e5a43681579acad9c15657ac21dbd66a 706bf604a333d866bb38c03bf643e79a ; do
+            for TYPE in A AAAA ; do
+              IDS=$(curl -fsSL -H "Authorization: Bearer $CF_TOKEN" \
+                "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records?type=$TYPE&per_page=200" \
+                | jq -r '.result[] | select(.name | test("^cp(-[0-9]+)?\\.")) | .id')
+              for ID in $IDS ; do
+                curl -fsSL -X DELETE -H "Authorization: Bearer $CF_TOKEN" \
+                  "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records/$ID" >/dev/null
+                echo "deleted $TYPE $ID in zone $ZONE_ID"
+              done
+            done
+          done
+
+  wipe-state:
+    needs: guard
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
+    steps:
+      - name: Delete R2 state objects for layers 01, 02, 03, 04
+        # Layer 00 preserved (cluster PKI identity). Layer 01 too
+        # because contabo_image replace races with existing image.
+        # imports.tf re-imports the 3 CP instances on next apply.
+        run: |
+          set -euo pipefail
+          ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          for LAYER in 01-contabo-infra 02-oracle-infra 03-talos 04-flux ; do
+            for OBJ in "production/${LAYER}.tfstate" "production/${LAYER}.tfstate.tflock" "production/${LAYER}.tfstate.backup" ; do
+              aws s3 rm "s3://cluster-tofu-state/$OBJ" --endpoint-url "$ENDPOINT" --region us-east-1 2>&1 \
+                | grep -v "NoSuchKey\|^$" || true
+            done
+          done
+          aws s3 ls "s3://cluster-tofu-state/production/" --endpoint-url "$ENDPOINT" --region us-east-1
+
+  clean-contabo-images:
+    needs: guard
+    runs-on: ubuntu-latest
+    env:
+      CONTABO_CLIENT_ID:     ${{ secrets.CONTABO_CLIENT_ID }}
+      CONTABO_CLIENT_SECRET: ${{ secrets.CONTABO_CLIENT_SECRET }}
+      CONTABO_API_USER:      ${{ secrets.CONTABO_API_USER }}
+      CONTABO_API_PASSWORD:  ${{ secrets.CONTABO_API_PASSWORD }}
+    steps:
+      - name: Delete every Talos* custom image in the Contabo account
+        # Stale Talos images (e.g. v1.13.0-rc.0 after a downgrade) clash
+        # with fresh create calls with HTTP 409. Wipe all custom Talos
+        # images for a clean slate; layer 01's contabo_image.talos will
+        # register the current talos_version's image on next apply.
+        run: |
+          set -euo pipefail
+          # Use --data-urlencode so special chars in the password don't corrupt
+          # the request. Capture the body so we see the reason on failure.
+          RESP=$(curl -sS -X POST 'https://auth.contabo.com/auth/realms/contabo/protocol/openid-connect/token' \
+            -H 'Content-Type: application/x-www-form-urlencoded' \
+            --data-urlencode "client_id=${CONTABO_CLIENT_ID}" \
+            --data-urlencode "client_secret=${CONTABO_CLIENT_SECRET}" \
+            --data-urlencode "username=${CONTABO_API_USER}" \
+            --data-urlencode "password=${CONTABO_API_PASSWORD}" \
+            --data-urlencode "grant_type=password" )
+          TOKEN=$(jq -r '.access_token // empty' <<<"$RESP")
+          if [[ -z "$TOKEN" ]]; then
+            echo "Contabo auth failed. Response body:"
+            echo "$RESP"
+            exit 1
+          fi
+
+          LIST_RESP=$(curl -sS \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "x-request-id: $(cat /proc/sys/kernel/random/uuid)" \
+            'https://api.contabo.com/v1/compute/images?size=100')
+          if ! jq -e '.data' >/dev/null 2>&1 <<<"$LIST_RESP" ; then
+            echo "Contabo images list failed:"
+            echo "$LIST_RESP"
+            exit 1
+          fi
+          IDS=$(jq -r '.data[] | select(.name | test("^Talos")) | .imageId' <<<"$LIST_RESP")
+          if [[ -z "$IDS" ]]; then
+            echo "No Talos* images to delete."
+            exit 0
+          fi
+          for ID in $IDS ; do
+            echo "deleting Contabo image $ID"
+            DEL_RESP=$(curl -sS -w "\nHTTP_%{http_code}" -X DELETE \
+              -H "Authorization: Bearer $TOKEN" \
+              -H "x-request-id: $(cat /proc/sys/kernel/random/uuid)" \
+              "https://api.contabo.com/v1/compute/images/$ID")
+            echo "$DEL_RESP" | tail -5
+          done
+
+  done:
+    needs: [clean-cloudflare, wipe-state, clean-contabo-images]
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "::notice::Reset complete. Next step — dispatch tofu-apply:"
+          echo "::notice::  gh workflow run tofu-apply.yml --ref main"
+          echo "::notice::Or use tofu-reinstall.yml if you want the 30-min notification buffer first."

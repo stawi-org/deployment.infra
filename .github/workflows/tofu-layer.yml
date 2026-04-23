@@ -1,0 +1,399 @@
+# .github/workflows/tofu-layer.yml
+name: tofu-layer
+on:
+  workflow_call:
+    inputs:
+      layer:          { required: true, type: string }
+      mode:           { required: true, type: string, description: "plan | apply" }
+      environment:    { required: false, type: string, default: "" }
+    secrets:
+      R2_ACCOUNT_ID:            { required: true }
+      R2_ACCESS_KEY_ID:         { required: true }
+      R2_SECRET_ACCESS_KEY:     { required: true }
+      CONTABO_CLIENT_ID:        { required: false }
+      CONTABO_CLIENT_SECRET:    { required: false }
+      CONTABO_API_USER:         { required: false }
+      CONTABO_API_PASSWORD:     { required: false }
+      CLOUDFLARE_API_TOKEN:     { required: false }
+      FLUX_GITHUB_APP_ID:               { required: false }
+      FLUX_GITHUB_APP_INSTALLATION_ID:  { required: false }
+      FLUX_GITHUB_APP_PRIVATE_KEY:      { required: false }
+      SOPS_AGE_KEY:                     { required: false }
+      ETCD_BACKUP_R2_ACCESS_KEY_ID:     { required: false }
+      ETCD_BACKUP_R2_SECRET_ACCESS_KEY: { required: false }
+      # OCI accounts — ladder of up to 4 slots (0–3). Each slot contributes one
+      # profile in ~/.oci/config and one entry in TF_VAR_oci_accounts. Empty
+      # slots are skipped; add more slots by extending the ladder below and in
+      # the env block of the "OCI workload-identity federation" step.
+      # Required per populated slot:
+      #   OCI_PROFILE_N           — profile name (must match tofu oci_accounts key)
+      #   OIDC_CLIENT_IDENTIFIER_N — "<clientId>:<clientSecret>"
+      #   OCI_DOMAIN_BASE_URL_N   — Identity Domain base URL (https://idcs-xxx...)
+      #   OCI_TENANCY_N           — tenancy OCID
+      #   OCI_REGION_N            — OCI region identifier
+      # Optional per slot (fall back to defaults in the run step):
+      #   OCI_VCN_CIDR_N          — VCN CIDR (default 10.200.0.0/16)
+      #   OCI_WORKERS_JSON_N      — workers map JSON (default single A1.Flex)
+      OCI_PROFILE_0:                    { required: false }
+      OCI_TENANCY_0:                    { required: false }
+      OCI_REGION_0:                     { required: false }
+      OCI_DOMAIN_BASE_URL_0:            { required: false }
+      OIDC_CLIENT_IDENTIFIER_0:         { required: false }
+      OCI_VCN_CIDR_0:                   { required: false }
+      OCI_WORKERS_JSON_0:               { required: false }
+      OCI_PROFILE_1:                    { required: false }
+      OCI_TENANCY_1:                    { required: false }
+      OCI_REGION_1:                     { required: false }
+      OCI_DOMAIN_BASE_URL_1:            { required: false }
+      OIDC_CLIENT_IDENTIFIER_1:         { required: false }
+      OCI_VCN_CIDR_1:                   { required: false }
+      OCI_WORKERS_JSON_1:               { required: false }
+      OCI_PROFILE_2:                    { required: false }
+      OCI_TENANCY_2:                    { required: false }
+      OCI_REGION_2:                     { required: false }
+      OCI_DOMAIN_BASE_URL_2:            { required: false }
+      OIDC_CLIENT_IDENTIFIER_2:         { required: false }
+      OCI_VCN_CIDR_2:                   { required: false }
+      OCI_WORKERS_JSON_2:               { required: false }
+      OCI_PROFILE_3:                    { required: false }
+      OCI_TENANCY_3:                    { required: false }
+      OCI_REGION_3:                     { required: false }
+      OCI_DOMAIN_BASE_URL_3:            { required: false }
+      OIDC_CLIENT_IDENTIFIER_3:         { required: false }
+      OCI_VCN_CIDR_3:                   { required: false }
+      OCI_WORKERS_JSON_3:               { required: false }
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      id-token: write   # for OIDC to OCI
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: opentofu/setup-opentofu@v2
+        with:
+          tofu_version: "1.10.0"
+
+      # Only layer 03 needs talosctl for the null_resource.reboot_cp provisioner.
+      - name: Install talosctl
+        if: inputs.layer == '03-talos'
+        run: |
+          set -euo pipefail
+          TALOS_VERSION="v1.12.6"
+          ASSET_URL="https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64"
+          curl -fsSL -o /tmp/talosctl "${ASSET_URL}"
+          chmod +x /tmp/talosctl
+          sudo install -m 0755 /tmp/talosctl /usr/local/bin/talosctl
+          rm /tmp/talosctl
+          talosctl version --client
+
+      # Only for layer 02: exchange the GitHub Actions OIDC JWT for an OCI UPST
+      # per tenancy. Iterates the ladder of OCI_*_N secret slots (0..3); each
+      # populated slot produces one profile in ~/.oci/config + one entry in
+      # TF_VAR_oci_accounts. Tofu's per-account provider alias references the
+      # matching profile name via `config_file_profile` (see layer 02 HCL).
+      #
+      # Implemented inline (instead of via a third-party action) using curl +
+      # openssl — matches Oracle's documented token-exchange flow and is
+      # resilient to upstream action quirks (URL validation, port handling).
+      #
+      # Add another OCI account: populate the next slot's secrets (see the
+      # secrets: block above); no code change needed here.
+      - name: OCI workload-identity federation
+        if: inputs.layer == '02-oracle-infra'
+        env:
+          # Slot 0
+          OCI_PROFILE_0:            ${{ secrets.OCI_PROFILE_0 }}
+          OIDC_CLIENT_IDENTIFIER_0: ${{ secrets.OIDC_CLIENT_IDENTIFIER_0 }}
+          OCI_DOMAIN_BASE_URL_0:    ${{ secrets.OCI_DOMAIN_BASE_URL_0 }}
+          OCI_TENANCY_0:            ${{ secrets.OCI_TENANCY_0 }}
+          OCI_REGION_0:             ${{ secrets.OCI_REGION_0 }}
+          OCI_VCN_CIDR_0:           ${{ secrets.OCI_VCN_CIDR_0 }}
+          OCI_WORKERS_JSON_0:       ${{ secrets.OCI_WORKERS_JSON_0 }}
+          # Slot 1
+          OCI_PROFILE_1:            ${{ secrets.OCI_PROFILE_1 }}
+          OIDC_CLIENT_IDENTIFIER_1: ${{ secrets.OIDC_CLIENT_IDENTIFIER_1 }}
+          OCI_DOMAIN_BASE_URL_1:    ${{ secrets.OCI_DOMAIN_BASE_URL_1 }}
+          OCI_TENANCY_1:            ${{ secrets.OCI_TENANCY_1 }}
+          OCI_REGION_1:             ${{ secrets.OCI_REGION_1 }}
+          OCI_VCN_CIDR_1:           ${{ secrets.OCI_VCN_CIDR_1 }}
+          OCI_WORKERS_JSON_1:       ${{ secrets.OCI_WORKERS_JSON_1 }}
+          # Slot 2
+          OCI_PROFILE_2:            ${{ secrets.OCI_PROFILE_2 }}
+          OIDC_CLIENT_IDENTIFIER_2: ${{ secrets.OIDC_CLIENT_IDENTIFIER_2 }}
+          OCI_DOMAIN_BASE_URL_2:    ${{ secrets.OCI_DOMAIN_BASE_URL_2 }}
+          OCI_TENANCY_2:            ${{ secrets.OCI_TENANCY_2 }}
+          OCI_REGION_2:             ${{ secrets.OCI_REGION_2 }}
+          OCI_VCN_CIDR_2:           ${{ secrets.OCI_VCN_CIDR_2 }}
+          OCI_WORKERS_JSON_2:       ${{ secrets.OCI_WORKERS_JSON_2 }}
+          # Slot 3
+          OCI_PROFILE_3:            ${{ secrets.OCI_PROFILE_3 }}
+          OIDC_CLIENT_IDENTIFIER_3: ${{ secrets.OIDC_CLIENT_IDENTIFIER_3 }}
+          OCI_DOMAIN_BASE_URL_3:    ${{ secrets.OCI_DOMAIN_BASE_URL_3 }}
+          OCI_TENANCY_3:            ${{ secrets.OCI_TENANCY_3 }}
+          OCI_REGION_3:             ${{ secrets.OCI_REGION_3 }}
+          OCI_VCN_CIDR_3:           ${{ secrets.OCI_VCN_CIDR_3 }}
+          OCI_WORKERS_JSON_3:       ${{ secrets.OCI_WORKERS_JSON_3 }}
+        run: |
+          set -euo pipefail
+
+          DEFAULT_VCN_CIDR="10.200.0.0/16"
+          DEFAULT_WORKERS_JSON='{"wk-1":{"shape":"VM.Standard.A1.Flex","ocpus":4,"memory_gb":24}}'
+
+          mkdir -p "$HOME/.oci"
+          echo '{}' > /tmp/oci_accounts.json
+
+          for i in 0 1 2 3; do
+            # Bash indirect expansion (${!var}) reads the slot's env vars
+            # without eval, keeping special chars in secrets safe.
+            client_var="OIDC_CLIENT_IDENTIFIER_$i"
+            client="${!client_var:-}"
+            [[ -z "$client" ]] && continue
+
+            profile_var="OCI_PROFILE_$i"        ; profile="${!profile_var:-}"
+            domain_var="OCI_DOMAIN_BASE_URL_$i" ; domain="${!domain_var:-}"
+            tenancy_var="OCI_TENANCY_$i"        ; tenancy="${!tenancy_var:-}"
+            region_var="OCI_REGION_$i"          ; region="${!region_var:-}"
+            vcn_var="OCI_VCN_CIDR_$i"           ; vcn_cidr="${!vcn_var:-$DEFAULT_VCN_CIDR}"
+            workers_var="OCI_WORKERS_JSON_$i"   ; workers_json="${!workers_var:-$DEFAULT_WORKERS_JSON}"
+
+            if [[ -z "$profile" || -z "$domain" || -z "$tenancy" || -z "$region" ]]; then
+              echo "::error::slot $i has OIDC_CLIENT_IDENTIFIER set but OCI_PROFILE/OCI_DOMAIN_BASE_URL/OCI_TENANCY/OCI_REGION missing"
+              exit 1
+            fi
+
+            echo "::group::slot $i → profile [$profile]"
+
+            # Fail fast on malformed OIDC_CLIENT_IDENTIFIER — must be
+            # "<clientId>:<clientSecret>". A missing colon makes curl -u prompt
+            # for a password and silently authenticates with empty credentials.
+            if [[ "$client" != *:* ]]; then
+              echo "::error::slot $i ($profile): OIDC_CLIENT_IDENTIFIER_$i must be '<clientId>:<clientSecret>' (no colon found)"
+              exit 1
+            fi
+
+            # 1. Fetch GitHub OIDC JWT (audience must match what OCI's trust expects;
+            #    OCI registers the bare clientId as the audience, so strip the secret).
+            client_id_only="${client%%:*}"
+            echo "diag: ACTIONS_ID_TOKEN_REQUEST_URL length=${#ACTIONS_ID_TOKEN_REQUEST_URL} starts=${ACTIONS_ID_TOKEN_REQUEST_URL:0:8}"
+            echo "diag: client length=${#client}, client_id length=${#client_id_only}"
+            echo "diag: fetching GH OIDC JWT..."
+            GH_JWT=$(curl -fsSL \
+              -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${client%%:*}" \
+              | jq -r .value) || { echo "::error::GH OIDC JWT fetch failed"; exit 1; }
+            echo "diag: GH JWT obtained (length=${#GH_JWT})"
+            # Decode and print the JWT claims OCI will see. Payload is public
+            # information in a signed JWT — safe to log. Padding-safe b64.
+            JWT_PAYLOAD_B64=$(printf '%s' "$GH_JWT" | cut -d. -f2)
+            while [[ $((${#JWT_PAYLOAD_B64} % 4)) -ne 0 ]]; do JWT_PAYLOAD_B64+="="; done
+            JWT_CLAIMS=$(printf '%s' "$JWT_PAYLOAD_B64" | tr '_-' '/+' | base64 -d 2>/dev/null)
+            echo "diag: JWT sub=$(jq -r .sub <<<"$JWT_CLAIMS")"
+            echo "diag: JWT iss=$(jq -r .iss <<<"$JWT_CLAIMS")"
+            echo "diag: JWT aud=$(jq -r .aud <<<"$JWT_CLAIMS")"
+
+            # 2. Ephemeral RSA keypair for UPST proof-of-possession.
+            KEY="$HOME/.oci/upst_${profile}.key"
+            UPST="$HOME/.oci/upst_${profile}.token"
+            openssl genrsa -out "$KEY" 2048 2>/dev/null
+            chmod 0600 "$KEY"
+            PUBKEY_PEM=$(openssl rsa -in "$KEY" -pubout 2>/dev/null)
+            # Strip PEM header/footer/newlines → base64-only body (what OCI expects).
+            PUBKEY_B64=$(printf '%s' "$PUBKEY_PEM" | sed '/-----/d' | tr -d '\n')
+
+            # 3. Normalise the domain base URL — accept input with or without
+            #    scheme, strip :443 and any trailing /. Without a scheme,
+            #    urlparse puts the whole string in .scheme so we pre-prepend
+            #    https:// when none is present.
+            echo "diag: domain length=${#domain} (first 12 chars: '${domain:0:12}')"
+            echo "diag: domain sha256:12=$(printf '%s' "$domain" | sha256sum | head -c 12)"
+            NORM_URL=$(python3 -c "
+          import sys
+          from urllib.parse import urlparse
+          raw = sys.argv[1].strip().rstrip('/')
+          if '://' not in raw:
+              raw = 'https://' + raw
+          u = urlparse(raw)
+          host = u.hostname
+          if not host:
+              sys.exit(f'cannot parse host from {sys.argv[1]!r}')
+          port = u.port
+          scheme = u.scheme or 'https'
+          print(f'{scheme}://{host}' + ('' if port in (None, 443) else f':{port}'))
+          " "$domain")
+            TOKEN_URL="${NORM_URL}/oauth2/v1/token"
+            echo "diag: NORM_URL length=${#NORM_URL} starts=${NORM_URL:0:8}"
+            # Safe fingerprint: short hash of URL so we can cross-reference between runs.
+            echo "diag: NORM_URL sha256:12=$(printf '%s' "$NORM_URL" | sha256sum | head -c 12)"
+
+            # 4. POST to the token exchange endpoint. Basic auth = client_id:client_secret.
+            #    Capture HTTP status + body separately so OCI's OAuth2 error
+            #    responses (e.g. {"error":"invalid_client"...}) surface on failure
+            #    instead of being swallowed by `-f`.
+            HTTP_CODE=$(curl -sS -o /tmp/oci_resp.json -w "%{http_code}" -X POST "${TOKEN_URL}" \
+              -H 'Content-Type: application/x-www-form-urlencoded' \
+              -u "${client}" \
+              --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+              --data-urlencode "requested_token_type=urn:oci:token-type:oci-upst" \
+              --data-urlencode "subject_token=${GH_JWT}" \
+              --data-urlencode "subject_token_type=jwt" \
+              --data-urlencode "public_key=${PUBKEY_B64}")
+            echo "diag: OCI token exchange HTTP $HTTP_CODE"
+            if [[ "$HTTP_CODE" != "200" ]]; then
+              echo "::error::slot $i ($profile): OCI token exchange returned HTTP $HTTP_CODE"
+              echo "--- response body ---"
+              cat /tmp/oci_resp.json
+              echo
+              exit 1
+            fi
+            RESP=$(cat /tmp/oci_resp.json)
+
+            TOKEN=$(echo "$RESP" | jq -r '.token // .access_token // empty')
+            if [[ -z "$TOKEN" ]]; then
+              echo "::error::slot $i ($profile): token exchange returned no token. Response:"
+              echo "$RESP" | head -c 500
+              exit 1
+            fi
+            printf '%s' "$TOKEN" > "$UPST"
+            chmod 0600 "$UPST"
+
+            cat >> "$HOME/.oci/config" <<CFG
+
+          [${profile}]
+          auth = security_token
+          security_token_file = ${UPST}
+          key_file = ${KEY}
+          tenancy = ${tenancy}
+          region = ${region}
+          CFG
+
+            # 5. Append this slot's account entry to the TF_VAR_oci_accounts map.
+            #    Root compartment == tenancy OCID (override with a sub-compartment
+            #    OCID in OCI_WORKERS_JSON_N's surrounding tooling if you shard).
+            jq -c \
+              --arg profile "$profile" \
+              --arg tenancy "$tenancy" \
+              --arg region "$region" \
+              --arg vcn_cidr "$vcn_cidr" \
+              --argjson workers "$workers_json" \
+              '. + {($profile): {tenancy_ocid: $tenancy, compartment_ocid: $tenancy, region: $region, vcn_cidr: $vcn_cidr, workers: $workers}}' \
+              /tmp/oci_accounts.json > /tmp/oci_accounts.json.tmp
+            mv /tmp/oci_accounts.json.tmp /tmp/oci_accounts.json
+
+            echo "wrote ~/.oci/config profile [$profile] + accounts entry"
+            echo "::endgroup::"
+          done
+
+          ACCOUNTS=$(cat /tmp/oci_accounts.json)
+          if [[ -z "$ACCOUNTS" || "$ACCOUNTS" == "{}" ]]; then
+            echo "::error::no OCI accounts configured — populate at least OCI_PROFILE_0, OIDC_CLIENT_IDENTIFIER_0, OCI_DOMAIN_BASE_URL_0, OCI_TENANCY_0, OCI_REGION_0"
+            exit 1
+          fi
+          echo "TF_VAR_oci_accounts=${ACCOUNTS}" >> "$GITHUB_ENV"
+
+      # OpenTofu S3 backend with use_lockfile=true writes `<key>.tflock` as a
+      # conditional PUT. If a prior run aborted ungracefully, the lock file
+      # lingers and blocks all subsequent plan/apply with HTTP 412. The
+      # concurrency group on the caller workflows already prevents concurrent
+      # runs, so any lock we find here is by definition stale — safely delete.
+      - name: Clear stale state lock
+        if: inputs.mode == 'plan' || inputs.mode == 'apply'
+        env:
+          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
+        run: |
+          LOCK_KEY="production/${{ inputs.layer }}.tfstate.tflock"
+          # R2 requires a real AWS region name in the CLI even though R2 ignores it.
+          aws s3 rm "s3://cluster-tofu-state/${LOCK_KEY}" \
+            --endpoint-url "https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com" \
+            --region us-east-1 \
+            2>&1 | grep -v "NoSuchKey\|^$" || true
+
+      - name: Init
+        working-directory: tofu/layers/${{ inputs.layer }}
+        env:
+          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          tofu init \
+            -backend-config="endpoints={s3=\"https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com\"}"
+
+      - name: Validate
+        working-directory: tofu/layers/${{ inputs.layer }}
+        run: tofu validate
+
+      - name: Plan
+        if: inputs.mode == 'plan' || inputs.mode == 'apply'
+        working-directory: tofu/layers/${{ inputs.layer }}
+        env:
+          AWS_ACCESS_KEY_ID:           ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY:       ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          TF_VAR_r2_account_id:        ${{ secrets.R2_ACCOUNT_ID }}
+          TF_VAR_contabo_client_id:    ${{ secrets.CONTABO_CLIENT_ID }}
+          TF_VAR_contabo_client_secret: ${{ secrets.CONTABO_CLIENT_SECRET }}
+          TF_VAR_contabo_api_user:     ${{ secrets.CONTABO_API_USER }}
+          TF_VAR_contabo_api_password: ${{ secrets.CONTABO_API_PASSWORD }}
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_github_app_id:              ${{ secrets.FLUX_GITHUB_APP_ID }}
+          TF_VAR_github_app_installation_id: ${{ secrets.FLUX_GITHUB_APP_INSTALLATION_ID }}
+          TF_VAR_github_app_private_key:     ${{ secrets.FLUX_GITHUB_APP_PRIVATE_KEY }}
+          TF_VAR_sops_age_key:               ${{ secrets.SOPS_AGE_KEY }}
+          TF_VAR_etcd_backup_r2_access_key_id:     ${{ secrets.ETCD_BACKUP_R2_ACCESS_KEY_ID }}
+          TF_VAR_etcd_backup_r2_secret_access_key: ${{ secrets.ETCD_BACKUP_R2_SECRET_ACCESS_KEY }}
+        # Downstream layers (02/03/04) read upstream remote state that doesn't
+        # exist until the first apply lands on main. On a PR pre-bootstrap those
+        # plans will fail with "No stored state was found" — that's expected, so
+        # in plan mode we soft-fail and surface a workflow warning instead of
+        # blocking the PR. In apply mode, all failures are hard.
+        #
+        # -lock=false on plan: plans are read-only for lock purposes; allowing
+        # concurrent plans across PRs prevents cross-ref R2 lockfile collisions
+        # (the apply step below keeps locking so state writes stay serialised
+        # by the tofu-apply-production concurrency group).
+        run: |
+          set +e
+          tofu plan -out=tfplan -input=false -lock=false
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            if [ "${{ inputs.mode }}" = "plan" ] && [[ "${{ inputs.layer }}" =~ ^(02|03|04)- ]]; then
+              echo "::warning::plan failed for ${{ inputs.layer }} (exit $rc) — expected pre-bootstrap when upstream remote state is absent. Soft-failing in plan mode."
+              exit 0
+            fi
+            exit $rc
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: inputs.mode == 'plan' || inputs.mode == 'apply'
+        with:
+          name: tfplan-${{ inputs.layer }}
+          path: tofu/layers/${{ inputs.layer }}/tfplan
+          retention-days: 30
+
+      - name: Apply
+        if: inputs.mode == 'apply'
+        working-directory: tofu/layers/${{ inputs.layer }}
+        env:
+          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: tofu apply -input=false -auto-approve tfplan
+
+      # When a local-exec provisioner has sensitive env vars, Terraform
+      # suppresses its stdout/stderr entirely — which makes it
+      # impossible to see what the script reported. modules/node-contabo/
+      # ensure-image.sh tees its output to /tmp/ensure-image-*.log. Dump
+      # those here so they appear in the job log regardless of whether
+      # Apply succeeded or failed.
+      - name: Dump ensure-image provisioner logs
+        if: always() && inputs.layer == '01-contabo-infra'
+        run: |
+          shopt -s nullglob
+          for f in /tmp/ensure-image-*.log; do
+            echo "::group::$f"
+            cat "$f" || true
+            echo "::endgroup::"
+          done

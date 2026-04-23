@@ -1,0 +1,100 @@
+name: wipe-flux-crds
+# Deletes stale Flux CRDs left over from a flux_bootstrap_git install so
+# the Flux Operator can re-create them cleanly on its next reconcile.
+# Does NOT delete fluxcd.controlplane.io/* — those belong to the Operator.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "delete" to confirm — removes Flux CRDs cluster-wide.'
+        required: true
+        type: string
+
+jobs:
+  wipe-crds:
+    if: inputs.confirm == 'delete'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install kubectl
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/kubectl "https://dl.k8s.io/release/v1.36.0-rc.1/bin/linux/amd64/kubectl"
+          chmod +x /tmp/kubectl
+          sudo install -m 0755 /tmp/kubectl /usr/local/bin/kubectl
+      - name: Pull kubeconfig from R2
+        env:
+          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
+          R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          aws s3 cp "s3://cluster-tofu-state/production/03-talos.tfstate" /tmp/03.tfstate \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" --region us-east-1
+          jq -r '.outputs.kubeconfig.value' /tmp/03.tfstate > /tmp/kc.json
+          HOST=$(jq -r '.host' /tmp/kc.json)
+          CA=$(jq -r '.ca_certificate' /tmp/kc.json)
+          CRT=$(jq -r '.client_certificate' /tmp/kc.json)
+          KEY=$(jq -r '.client_key' /tmp/kc.json)
+          umask 077
+          cat > /tmp/kubeconfig <<KC
+          apiVersion: v1
+          kind: Config
+          clusters:
+          - name: t
+            cluster: { server: ${HOST}, certificate-authority-data: ${CA} }
+          users:
+          - name: t
+            user: { client-certificate-data: ${CRT}, client-key-data: ${KEY} }
+          contexts:
+          - name: t
+            context: { cluster: t, user: t }
+          current-context: t
+          KC
+          echo "KUBECONFIG=/tmp/kubeconfig" >> "$GITHUB_ENV"
+      - name: List + delete stale Flux CRDs
+        run: |
+          # Match: *.toolkit.fluxcd.io — source, kustomize, helm, notification, image controllers.
+          # Exclude: fluxcd.controlplane.io/* — that's the Operator's own CRDs (FluxInstance, ResourceSet).
+          # kubectl returns exit 1 if any CRD has leftover stored objects that can't be garbage
+          # collected. In that case we drop finalizers then retry.
+          mapfile -t CRDS < <(kubectl get crd -o name | grep -E '\.toolkit\.fluxcd\.io$' || true)
+          if (( ${#CRDS[@]} == 0 )); then
+            echo "No stale Flux CRDs — nothing to do."
+            exit 0
+          fi
+          echo "About to delete ${#CRDS[@]} CRDs:"
+          printf '  %s\n' "${CRDS[@]}"
+
+          # 1. Strip finalizers on any surviving CRs so CRD delete isn't blocked.
+          for crd in "${CRDS[@]}" ; do
+            kind="${crd#customresourcedefinition.apiextensions.k8s.io/}"
+            plural="${kind%%.*}"
+            group="${kind#*.}"
+            for res in $(kubectl get -A "${plural}.${group}" -o name 2>/dev/null) ; do
+              ns=$(kubectl get -A "${plural}.${group}" -o jsonpath='{.items[*].metadata.namespace}' 2>/dev/null | tr ' ' '\n' | head -1)
+              kubectl $( [[ -n "$ns" ]] && echo "-n $ns" ) patch "$res" --type=merge -p '{"metadata":{"finalizers":[]}}' || true
+            done
+          done
+
+          # 2. Delete the CRDs.
+          for crd in "${CRDS[@]}" ; do
+            kubectl delete "$crd" --wait=false || true
+          done
+
+          # 3. Verify.
+          sleep 10
+          REMAINING=$(kubectl get crd -o name | grep -E '\.toolkit\.fluxcd\.io$' || true)
+          if [[ -n "$REMAINING" ]]; then
+            echo "::warning::Some CRDs still present after delete:"
+            echo "$REMAINING"
+          else
+            echo "All stale Flux CRDs removed."
+          fi
+      - name: Nudge Flux Operator to reconcile
+        run: |
+          # Bump the fluxinstance's generation by re-patching a no-op annotation.
+          # Operator will see the change and retry CRD install (now clean).
+          kubectl -n flux-system annotate fluxinstance/flux \
+            fluxcd.controlplane.io/reconcile=manual \
+            --overwrite 2>&1 || true

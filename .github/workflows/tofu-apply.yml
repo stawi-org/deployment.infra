@@ -1,0 +1,66 @@
+# .github/workflows/tofu-apply.yml
+name: tofu-apply
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tofu/**'
+      - 'tofu/shared/**'
+      - '.github/workflows/tofu-*.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: tofu-apply-production
+  cancel-in-progress: false
+
+jobs:
+  secrets:
+    uses: ./.github/workflows/tofu-layer.yml
+    with:
+      layer: 00-talos-secrets
+      mode: apply
+      environment: production
+    secrets: inherit
+
+  contabo-infra:
+    needs: secrets
+    uses: ./.github/workflows/tofu-layer.yml
+    with:
+      layer: 01-contabo-infra
+      mode: apply
+      environment: production
+    secrets: inherit
+
+  oracle-infra:
+    needs: secrets
+    uses: ./.github/workflows/tofu-layer.yml
+    with:
+      layer: 02-oracle-infra
+      mode: apply
+      environment: production
+    secrets: inherit
+
+  talos:
+    needs: [contabo-infra, oracle-infra]
+    uses: ./.github/workflows/tofu-layer.yml
+    with:
+      layer: 03-talos
+      mode: apply
+      environment: production
+    secrets: inherit
+
+  flux:
+    needs: talos
+    uses: ./.github/workflows/tofu-layer.yml
+    with:
+      layer: 04-flux
+      mode: apply
+      environment: production
+    secrets: inherit
+
+  # Downloadable machine-config bundle — unencrypted. Lets operators
+  # onboard non-cloud machines as workers without re-running tofu.
+  machine-configs:
+    needs: talos
+    uses: ./.github/workflows/publish-talos-configs.yml
+    secrets: inherit

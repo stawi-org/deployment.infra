@@ -1,0 +1,46 @@
+# .github/workflows/tofu-plan.yml
+name: tofu-plan
+on:
+  pull_request:
+    paths:
+      - 'tofu/**'
+      - '.github/workflows/tofu-*.yml'
+
+concurrency:
+  group: tofu-plan-${{ github.ref }}
+  cancel-in-progress: true
+
+# Downstream layers (01..04) read from upstream remote state. On a fresh repo
+# (or any PR opened before the first apply has landed on main), upstream state
+# won't exist yet and those plans will fail with "No stored state was found".
+# That's expected pre-bootstrap — mark downstream plan jobs as continue-on-error
+# so PR checks don't block merges during initial setup. On main, tofu-apply.yml
+# applies in order and these layers get their upstream state before they plan.
+jobs:
+  secrets:
+    uses: ./.github/workflows/tofu-layer.yml
+    with: { layer: 00-talos-secrets, mode: plan }
+    secrets: inherit
+  contabo-infra:
+    uses: ./.github/workflows/tofu-layer.yml
+    with: { layer: 01-contabo-infra, mode: plan }
+    secrets: inherit
+    needs: secrets
+  oracle-infra:
+    uses: ./.github/workflows/tofu-layer.yml
+    with: { layer: 02-oracle-infra, mode: plan }
+    secrets: inherit
+    needs: secrets
+  talos:
+    uses: ./.github/workflows/tofu-layer.yml
+    with: { layer: 03-talos, mode: plan }
+    secrets: inherit
+    needs: [contabo-infra, oracle-infra]
+  flux:
+    uses: ./.github/workflows/tofu-layer.yml
+    with: { layer: 04-flux, mode: plan }
+    secrets: inherit
+    needs: talos
+# continue-on-error is not allowed on reusable-workflow caller jobs; soft-fail
+# behaviour for downstream layers (02/03/04 in plan mode) is implemented inside
+# tofu-layer.yml's Plan step instead.

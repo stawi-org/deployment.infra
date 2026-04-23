@@ -1,0 +1,121 @@
+name: publish-talos-configs
+# Bundles the rendered Talos machine configs from layer 03's R2 state and
+# uploads them as an unencrypted workflow artifact. Use to onboard a
+# non-cloud machine (laptop, on-prem box, home lab) as a cluster worker —
+# Talos joins via outbound KubeSpan, no public IP needed.
+#
+# Triggered automatically after a successful tofu-apply, or manually via:
+#   gh workflow run publish-talos-configs.yml --ref main
+#
+# Retrieve locally:
+#   ./scripts/get-talos-configs.sh
+# (or `gh run download -n talos-configs -D /tmp/talos`).
+
+on:
+  workflow_call: {}
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch layer-03 state from R2
+        env:
+          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
+          R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          aws s3 cp "s3://cluster-tofu-state/production/03-talos.tfstate" /tmp/03.tfstate \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" --region us-east-1
+          test -s /tmp/03.tfstate
+
+      - name: Render bundle
+        run: |
+          set -euo pipefail
+          OUT=/tmp/talos-configs
+          mkdir -p "$OUT/controlplane" "$OUT/worker"
+
+          # Extract every output we need in one pass.
+          jq -r '.outputs.talosconfig.value' /tmp/03.tfstate > "$OUT/talosconfig"
+          jq -r '.outputs.generic_worker_config.value' /tmp/03.tfstate > "$OUT/generic-worker.yaml"
+
+          # Controlplane configs — one file per node named after the node key.
+          # Iterate keys then fetch the value per key so embedded newlines in
+          # the YAML don't mangle a tab-delimited stream.
+          for NAME in $(jq -r '.outputs.cp_machine_configs.value | keys[]' /tmp/03.tfstate) ; do
+            jq -r --arg k "$NAME" '.outputs.cp_machine_configs.value[$k]' /tmp/03.tfstate \
+              > "$OUT/controlplane/${NAME}.yaml"
+          done
+
+          # Cloud-worker configs — same shape.
+          for NAME in $(jq -r '.outputs.worker_machine_configs.value | keys[]' /tmp/03.tfstate) ; do
+            jq -r --arg k "$NAME" '.outputs.worker_machine_configs.value[$k]' /tmp/03.tfstate \
+              > "$OUT/worker/${NAME}.yaml"
+          done
+
+          # Ship the schematic alongside so the user knows exactly which
+          # Talos image + extensions to boot before applying the config.
+          cp tofu/shared/schematic.yaml "$OUT/schematic.yaml" 2>/dev/null || \
+            cp talos_config/schematic.yaml "$OUT/schematic.yaml" 2>/dev/null || true
+
+          cat > "$OUT/README.md" <<'README'
+          # talos-configs/ bundle
+
+          Machine configs for the antinvestor cluster, produced by layer 03
+          on the last successful tofu-apply.
+
+          Contents:
+          - `talosconfig` — root client config for `talosctl` (cluster-admin).
+          - `controlplane/<node>.yaml` — per-controlplane machine config.
+          - `worker/<node>.yaml` — per-worker machine config (cloud workers).
+          - `generic-worker.yaml` — platform-neutral worker config. Use
+             this for a non-cloud machine (laptop, on-prem, home lab).
+             No LinkConfig, no platform metadata assumed — the host
+             machine sets up its own network (DHCP/SLAAC); the worker
+             joins the cluster via outbound KubeSpan WireGuard.
+          - `schematic.yaml` — boot image factory schematic. Feed to
+             https://factory.talos.sh to get a matching ISO / disk image.
+
+          ## Join a non-cloud machine as a worker
+
+          1. Generate a matching Talos boot image:
+                cat schematic.yaml | curl -fsSL \
+                   -X POST -H 'Content-Type: application/x-yaml' \
+                   --data-binary @- https://factory.talos.sh/schematics
+             The response contains a schematic ID; the ISO is at
+                 https://factory.talos.sh/image/<schematic-id>/<talos-version>/metal-amd64.iso
+
+          2. Boot the machine from that ISO (USB or PXE). Let it DHCP.
+
+          3. Find the machine's LAN IP (Talos prints it on the console).
+
+          4. Apply the config:
+                 talosctl apply-config --insecure \
+                     --nodes <lan-ip> \
+                     --file generic-worker.yaml
+
+          5. Wait a minute. The node joins the cluster via KubeSpan
+             WireGuard (all outbound, NAT-friendly). Confirm:
+                 kubectl get nodes
+
+          ## Notes on IPv6
+          Cluster is IPv6-first: pods prefer fd00:10:244::/48, services
+          prefer fd00:10:96::/112. Workers behind NAT-v4-only ISPs still
+          work — KubeSpan carries all pod / service traffic over its
+          WireGuard mesh regardless of the host network's stack.
+          README
+
+          ls -laR "$OUT" | head -40
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: talos-configs
+          path: /tmp/talos-configs
+          retention-days: 7
