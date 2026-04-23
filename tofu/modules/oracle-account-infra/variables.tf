@@ -41,6 +41,11 @@ variable "annotations" {
 variable "cluster_name" { type = string }
 variable "cluster_endpoint" { type = string }
 variable "talos_version" { type = string }
+variable "force_image_generation" {
+  type        = number
+  default     = 0
+  description = "Bump to force a new Oracle Talos custom image even when the Talos version is unchanged."
+}
 variable "kubernetes_version" { type = string }
 variable "machine_secrets" {
   type      = any

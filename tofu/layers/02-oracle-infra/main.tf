@@ -53,6 +53,7 @@ module "oracle_account" {
   cluster_name                         = var.cluster_name
   cluster_endpoint                     = var.cluster_endpoint
   talos_version                        = var.talos_version
+  force_image_generation               = var.force_image_generation
   kubernetes_version                   = var.kubernetes_version
   machine_secrets                      = data.terraform_remote_state.secrets.outputs.machine_secrets
   shared_patches_dir                   = "${path.module}/../../shared/patches"

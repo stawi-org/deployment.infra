@@ -30,7 +30,11 @@ resource "terraform_data" "image_generation" {
 }
 
 resource "contabo_image" "talos" {
-  name = "Talos ${var.talos_version} gen${var.force_reinstall_generation}"
+  for_each = local.contabo_accounts_effective
+
+  provider = contabo.account[each.key]
+
+  name = "Talos ${var.talos_version} gen${var.force_reinstall_generation}-${each.key}"
   # The urls.iso attribute is the installer ISO URL for the metal platform.
   # If the Talos provider schema uses a different attribute name (e.g. urls.installer),
   # update this reference — Phase 4 validation will surface it.

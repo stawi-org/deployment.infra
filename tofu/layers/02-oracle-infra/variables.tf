@@ -9,6 +9,12 @@ variable "talos_version" {
   type = string
 }
 
+variable "force_image_generation" {
+  type        = number
+  default     = 0
+  description = "Bump to force a new Oracle Talos custom image even when talos_version is unchanged."
+}
+
 variable "kubernetes_version" {
   type = string
 }

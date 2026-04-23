@@ -10,7 +10,7 @@ module "nodes" {
   region      = each.value.node.region
   labels      = merge(each.value.account.labels, each.value.node.labels)
   annotations = merge(each.value.account.annotations, each.value.node.annotations)
-  image_id    = contabo_image.talos.id
+  image_id    = contabo_image.talos[each.value.account_key].id
 
   # Used by null_resource.ensure_image in the module to call the
   # Contabo reinstall PUT directly (the contabo provider's own
