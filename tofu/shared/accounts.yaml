@@ -1,0 +1,9 @@
+# Declares which provider/account keys exist. The node-state module uses
+# these to know which R2 keys to read. Edit this file to onboard a new
+# account; the inventory tree is seeded separately by seed-inventory.sh.
+contabo:
+  - stawi-contabo
+oracle:
+  - stawi-bwire
+onprem:
+  - savannah-hq

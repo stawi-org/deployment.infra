@@ -19,6 +19,10 @@ locals {
   oci_provider_accounts = merge(var.retained_oci_accounts, var.oci_accounts)
 }
 
+locals {
+  accounts_manifest = yamldecode(file("${path.module}/../../shared/accounts.yaml"))
+}
+
 # Each oci_accounts entry gets its own provider alias that reads a matching
 # named profile from ~/.oci/config. The workflow's OCI workload-identity
 # federation step writes one profile per account (profile name == map key,

@@ -12,3 +12,7 @@ locals {
     }
   ]...) : {}
 }
+
+locals {
+  accounts_manifest = yamldecode(file("${path.module}/../../shared/accounts.yaml"))
+}

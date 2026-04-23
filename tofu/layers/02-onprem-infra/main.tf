@@ -14,3 +14,7 @@ locals {
 
   flattened_nodes = length(local.account_node_maps) > 0 ? merge(local.account_node_maps...) : {}
 }
+
+locals {
+  accounts_manifest = yamldecode(file("${path.module}/../../shared/accounts.yaml"))
+}
