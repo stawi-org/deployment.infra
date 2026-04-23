@@ -1,3 +1,5 @@
+# local.*_decoded are defined in main.tf (added in the next commit).
+# tofu validate fails on this module standalone until then.
 output "auth" { value = local.auth_decoded }
 output "nodes" { value = local.nodes_decoded }
 output "state" { value = local.state_decoded }
