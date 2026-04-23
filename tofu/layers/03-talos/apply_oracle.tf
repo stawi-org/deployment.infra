@@ -96,9 +96,9 @@ resource "terraform_data" "oci_config_hash" {
 
 resource "talos_machine_configuration_apply" "oci" {
   for_each                    = local.oci_nodes
-  depends_on                  = [null_resource.bastion_tunnel]
+  depends_on                  = [null_resource.bastion_tunnel, null_resource.talos_upgrade]
   client_configuration        = data.terraform_remote_state.secrets.outputs.client_configuration
-  machine_configuration_input = each.value.role == "controlplane" ? data.talos_machine_configuration.cp[each.key].machine_configuration : data.talos_machine_configuration.worker[each.key].machine_configuration
+  machine_configuration_input = try(each.value.role, "") == "controlplane" ? data.talos_machine_configuration.cp[each.key].machine_configuration : data.talos_machine_configuration.worker[each.key].machine_configuration
   node                        = "127.0.0.1:${local.oci_node_port_map[each.key]}"
   endpoint                    = "127.0.0.1:${local.oci_node_port_map[each.key]}"
   # See apply.tf for the rationale on "reboot" — ensures kubelet restarts on
