@@ -150,6 +150,15 @@ def seed_contabo(acct: str, cfg: dict, bootstrap: dict, out: pathlib.Path) -> No
     for inst in instances:
         by_name.setdefault(inst.get("displayName"), []).append(inst)
 
+    def _ip(leg) -> str | None:
+        # Contabo API returns leg as {"ip": "...", "gateway": "...", "netmaskCidr": N}.
+        # Defend against list-shape too (older API versions / doc drift).
+        if isinstance(leg, list):
+            return (leg or [{}])[0].get("ip") if leg else None
+        if isinstance(leg, dict):
+            return leg.get("ip")
+        return None
+
     resolved: dict[str, dict] = {}
     for node_key, node_decl in nodes.items():
         matches = by_name.get(node_key, [])
@@ -160,8 +169,8 @@ def seed_contabo(acct: str, cfg: dict, bootstrap: dict, out: pathlib.Path) -> No
                 "contabo_instance_id": str(first["instanceId"]),
                 "product_id": node_decl.get("product_id"),
                 "region": node_decl.get("region"),
-                "ipv4": (ipc.get("v4") or [{}])[0].get("ip"),
-                "ipv6": (ipc.get("v6") or [{}])[0].get("ip"),
+                "ipv4": _ip(ipc.get("v4")),
+                "ipv6": _ip(ipc.get("v6")),
                 "status": "running",
             }
             if len(matches) > 1:
