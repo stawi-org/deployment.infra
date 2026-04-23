@@ -1,12 +1,6 @@
 # .github/workflows/tofu-apply.yml
 name: tofu-apply
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'tofu/**'
-      - 'tofu/shared/**'
-      - '.github/workflows/tofu-*.yml'
   workflow_dispatch: {}
 
 concurrency:

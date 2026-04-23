@@ -68,7 +68,7 @@ jobs:
           cat > "$OUT/README.md" <<'README'
           # talos-configs/ bundle
 
-          Machine configs for the antinvestor cluster, produced by layer 03
+          Machine configs for the stawi cluster, produced by layer 03
           on the last successful tofu-apply.
 
           Contents:
