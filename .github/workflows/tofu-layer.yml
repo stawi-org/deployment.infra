@@ -48,6 +48,31 @@ jobs:
           import yaml
           PY
 
+      - name: Seed R2 inventory (one-time bootstrap)
+        if: inputs.layer == '01-contabo-infra' || inputs.layer == '02-oracle-infra' || inputs.layer == '02-onprem-infra'
+        env:
+          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
+          R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ENDPOINT_URL:       https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          CONTABO_CLIENT_ID:     ${{ secrets.CONTABO_CLIENT_ID }}
+          CONTABO_CLIENT_SECRET: ${{ secrets.CONTABO_CLIENT_SECRET }}
+          CONTABO_API_USER:      ${{ secrets.CONTABO_API_USER }}
+          CONTABO_API_PASSWORD:  ${{ secrets.CONTABO_API_PASSWORD }}
+          SOPS_AGE_KEY:          ${{ secrets.SOPS_AGE_KEY }}
+          SOPS_AGE_RECIPIENTS:   ${{ vars.SOPS_AGE_RECIPIENTS }}
+        run: |
+          set -euo pipefail
+          if aws s3 ls "s3://cluster-tofu-state/production/inventory/" \
+               --endpoint-url "$R2_ENDPOINT_URL" --region us-east-1 \
+             | grep -q .; then
+            echo "::notice::inventory/ already present — skipping seed"
+            exit 0
+          fi
+          pip3 install --user pyyaml
+          python3 scripts/seed-orchestrator.py
+
       # Only layer 03 needs talosctl for the null_resource.reboot_cp provisioner.
       - name: Install talosctl
         if: inputs.layer == '03-talos'
@@ -61,8 +86,8 @@ jobs:
           rm /tmp/talosctl
           talosctl version --client
 
-      - name: Fetch cluster config from R2
-        if: inputs.layer == '01-contabo-infra' || inputs.layer == '02-oracle-infra' || inputs.layer == '02-onprem-infra'
+      - name: OCI workload-identity federation
+        if: inputs.layer == '02-oracle-infra'
         env:
           AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -70,81 +95,19 @@ jobs:
           R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
         run: |
           set -euo pipefail
-          mkdir -p /tmp/cluster-config
           ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          aws s3 sync "s3://cluster-tofu-state/production/config/contabo/" /tmp/cluster-config/contabo/ \
-            --endpoint-url "$ENDPOINT" --region us-east-1
-          aws s3 sync "s3://cluster-tofu-state/production/config/oci/" /tmp/cluster-config/oci/ \
-            --endpoint-url "$ENDPOINT" --region us-east-1
-          aws s3 sync "s3://cluster-tofu-state/production/config/onprem/" /tmp/cluster-config/onprem/ \
-            --endpoint-url "$ENDPOINT" --region us-east-1
-          find /tmp/cluster-config -type f \( -name '*.yml' -o -name '*.yaml' \) | grep -q .
-
-      - name: Render canonical inventory
-        if: inputs.layer == '01-contabo-infra' || inputs.layer == '02-oracle-infra' || inputs.layer == '02-onprem-infra'
-        run: |
-          set -euo pipefail
-          python3 scripts/render-cluster-config.py cluster \
-            --input /tmp/cluster-config \
-            --out-contabo-accounts /tmp/contabo_accounts.json \
-            --out-oci-accounts /tmp/oci_accounts.json \
-            --out-retained-oci-accounts /tmp/retained_oci_accounts.json \
-            --out-oci-auth-accounts /tmp/oci_auth_accounts.json \
-            --out-onprem-accounts /tmp/onprem_accounts.json
-
-      - name: Configure Contabo inventory
-        if: inputs.layer == '01-contabo-infra'
-        run: |
-          set -euo pipefail
-          if [[ -s /tmp/contabo_accounts.json && "$(cat /tmp/contabo_accounts.json)" != "{}" ]]; then
-            echo "TF_VAR_contabo_accounts=$(cat /tmp/contabo_accounts.json)" >> "$GITHUB_ENV"
-          fi
-
-      - name: OCI workload-identity federation
-        if: inputs.layer == '02-oracle-infra'
-        env:
-          OCI_RETAINED_PROFILES:    ${{ vars.OCI_RETAINED_PROFILES }}
-        run: |
-          set -euo pipefail
-          if [[ ! -s /tmp/oci_auth_accounts.json ]]; then
-            echo "::error::OCI auth inventory not rendered from production/config/"
-            exit 1
-          fi
-          if [[ ! -s /tmp/oci_accounts.json ]]; then
-            echo "::error::OCI account inventory not rendered from production/config/"
-            exit 1
-          fi
-
-          ACCOUNTS=$(cat /tmp/oci_accounts.json)
-          RETAINED_ACCOUNTS=$(cat /tmp/retained_oci_accounts.json)
-          if [[ -z "$ACCOUNTS" || "$ACCOUNTS" == "{}" ]]; then
-            echo "::notice::no OCI accounts configured; layer 02 will publish empty worker outputs"
-            echo "TF_VAR_oci_accounts={}" >> "$GITHUB_ENV"
+          TMPDIR_AUTH=$(mktemp -d)
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/oracle/" "${TMPDIR_AUTH}/" \
+            --endpoint-url "$ENDPOINT" --region us-east-1 \
+            --exclude "*" --include "*/auth.yaml" || true
+          AUTH_JSON=$(python3 scripts/build-oci-auth-json.py "${TMPDIR_AUTH}")
+          if [[ "$AUTH_JSON" == "[]" ]]; then
+            echo "::notice::no OCI auth profiles in R2 inventory — skipping WIF setup"
           else
-            python3 scripts/check-cidr-overlap.py --oci /tmp/oci_accounts.json
-            echo "TF_VAR_oci_accounts=${ACCOUNTS}" >> "$GITHUB_ENV"
+            echo "$AUTH_JSON" > /tmp/oci_auth_accounts.json
+            scripts/configure-oci-wif.sh /tmp/oci_auth_accounts.json
           fi
-          if [[ -n "$RETAINED_ACCOUNTS" && "$RETAINED_ACCOUNTS" != "{}" ]]; then
-            echo "TF_VAR_retained_oci_accounts=${RETAINED_ACCOUNTS}" >> "$GITHUB_ENV"
-          fi
-          scripts/configure-oci-wif.sh /tmp/oci_auth_accounts.json
 
-      - name: Configure on-prem inventory
-        if: inputs.layer == '02-onprem-infra'
-        run: |
-          set -euo pipefail
-          if [[ ! -s /tmp/onprem_accounts.json ]]; then
-            echo "::error::on-prem inventory not rendered from production/config/"
-            exit 1
-          fi
-          python3 scripts/check-cidr-overlap.py --onprem /tmp/onprem_accounts.json
-          echo "TF_VAR_onprem_accounts=$(jq -c . /tmp/onprem_accounts.json)" >> "$GITHUB_ENV"
-
-      # OpenTofu S3 backend with use_lockfile=true writes `<key>.tflock` as a
-      # conditional PUT. If a prior run aborted ungracefully, the lock file
-      # lingers and blocks all subsequent plan/apply with HTTP 412. The
-      # concurrency group on the caller workflows already prevents concurrent
-      # runs, so any lock we find here is by definition stale — safely delete.
       - name: Clear stale state lock
         if: inputs.mode == 'plan' || inputs.mode == 'apply'
         env:
@@ -186,6 +149,8 @@ jobs:
           TF_VAR_sops_age_key:               ${{ secrets.SOPS_AGE_KEY }}
           TF_VAR_etcd_backup_r2_access_key_id:     ${{ secrets.ETCD_BACKUP_R2_ACCESS_KEY_ID }}
           TF_VAR_etcd_backup_r2_secret_access_key: ${{ secrets.ETCD_BACKUP_R2_SECRET_ACCESS_KEY }}
+          TF_VAR_age_recipients:                   ${{ vars.SOPS_AGE_RECIPIENTS }}
+          SOPS_AGE_KEY:                            ${{ secrets.SOPS_AGE_KEY }}
         # Downstream layers (02/03/04) read upstream remote state that doesn't
         # exist until the first apply lands on main. On a PR pre-bootstrap those
         # plans will fail with "No stored state was found" — that's expected, so
@@ -222,6 +187,8 @@ jobs:
         env:
           AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          TF_VAR_age_recipients: ${{ vars.SOPS_AGE_RECIPIENTS }}
+          SOPS_AGE_KEY:          ${{ secrets.SOPS_AGE_KEY }}
         run: tofu apply -input=false -auto-approve tfplan
 
       # When a local-exec provisioner has sensitive env vars, Terraform
