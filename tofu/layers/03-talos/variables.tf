@@ -36,3 +36,9 @@ variable "age_recipients" {
   type        = string
   description = "Comma-separated age recipient pubkeys. Used to re-encrypt on write."
 }
+
+variable "ci_run_id" {
+  type        = string
+  default     = "local"
+  description = "Set by CI to $GITHUB_RUN_ID; used only for audit metadata in machine-configs.yaml."
+}
