@@ -1,6 +1,6 @@
 # tofu/layers/03-talos/apply_oracle.tf
 locals {
-  oci_nodes = { for k, v in local.all_nodes : k => v if v.provider == "oracle" }
+  oci_nodes = { for k, v in local.all_nodes_from_state : k => v if try(v.provider, "") == "oracle" }
   # Stable forwarded-port assignment: 50001 + sorted-index. Idempotent across applies.
   oci_node_port_map = { for i, k in sort(keys(local.oci_nodes)) : k => 50001 + i }
 }
