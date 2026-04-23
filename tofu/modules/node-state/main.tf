@@ -15,21 +15,47 @@ locals {
   state_key           = "${local.base_key}/state.yaml"
   talos_state_key     = "${local.base_key}/talos-state.yaml"
   machine_configs_key = "${local.base_key}/machine-configs.yaml"
+
+  # Only Contabo currently needs auth encryption (OAuth2 secrets).
+  # Oracle auth carries non-sensitive pointers only (actual tokens come
+  # from GitHub OIDC at runtime). On-prem has no auth.
+  is_encrypted_auth = var.provider_name == "contabo"
+}
+
+# --- 404-safe existence probe -----------------------------------------------
+# List the account prefix once; gate every read on the result so a missing
+# key never causes aws_s3_object to throw a 404 during refresh.
+
+data "aws_s3_objects" "inventory" {
+  bucket = var.bucket
+  prefix = "${local.base_key}/"
+}
+
+locals {
+  inventory_keys      = toset(data.aws_s3_objects.inventory.keys)
+  has_auth            = contains(local.inventory_keys, local.auth_key)
+  has_nodes           = contains(local.inventory_keys, local.nodes_key)
+  has_state           = contains(local.inventory_keys, local.state_key)
+  has_talos_state     = contains(local.inventory_keys, local.talos_state_key)
+  has_machine_configs = contains(local.inventory_keys, local.machine_configs_key)
 }
 
 # --- plaintext reads -------------------------------------------------------
 
 data "aws_s3_object" "nodes" {
+  count  = local.has_nodes ? 1 : 0
   bucket = var.bucket
   key    = local.nodes_key
 }
 
 data "aws_s3_object" "state" {
+  count  = local.has_state ? 1 : 0
   bucket = var.bucket
   key    = local.state_key
 }
 
 data "aws_s3_object" "talos_state" {
+  count  = local.has_talos_state ? 1 : 0
   bucket = var.bucket
   key    = local.talos_state_key
 }
@@ -40,52 +66,44 @@ data "aws_s3_object" "talos_state" {
 # plaintext from normal `tofu show`.
 
 data "aws_s3_object" "auth_raw" {
-  count  = var.provider_name == "contabo" ? 1 : 0
+  count  = local.is_encrypted_auth && local.has_auth ? 1 : 0
   bucket = var.bucket
   key    = local.auth_key
 }
 
 data "aws_s3_object" "machine_configs_raw" {
+  count  = local.has_machine_configs ? 1 : 0
   bucket = var.bucket
   key    = local.machine_configs_key
 }
 
-locals {
-  auth_raw_body = (
-    var.provider_name == "contabo"
-    ? try(data.aws_s3_object.auth_raw[0].body, "")
-    : try(data.aws_s3_object.auth_raw_plain[0].body, "")
-  )
-  machine_configs_raw_body = try(data.aws_s3_object.machine_configs_raw.body, "")
-}
-
 # Non-contabo auth is plaintext.
 data "aws_s3_object" "auth_raw_plain" {
-  count  = var.provider_name == "contabo" ? 0 : 1
+  count  = !local.is_encrypted_auth && local.has_auth ? 1 : 0
   bucket = var.bucket
   key    = local.auth_key
 }
 
 # Stage encrypted bodies to disk so sops_file can decrypt them.
 resource "local_sensitive_file" "auth_staged" {
-  count    = var.provider_name == "contabo" && local.auth_raw_body != "" ? 1 : 0
+  count    = local.is_encrypted_auth && local.has_auth ? 1 : 0
   filename = "${path.module}/.staged/auth-${var.provider_name}-${var.account}.age.yaml"
-  content  = local.auth_raw_body
+  content  = data.aws_s3_object.auth_raw[0].body
 }
 
 resource "local_sensitive_file" "machine_configs_staged" {
-  count    = local.machine_configs_raw_body != "" ? 1 : 0
+  count    = local.has_machine_configs ? 1 : 0
   filename = "${path.module}/.staged/machine-configs-${var.provider_name}-${var.account}.age.yaml"
-  content  = local.machine_configs_raw_body
+  content  = data.aws_s3_object.machine_configs_raw[0].body
 }
 
 data "sops_file" "auth" {
-  count       = var.provider_name == "contabo" && local.auth_raw_body != "" ? 1 : 0
+  count       = local.is_encrypted_auth && local.has_auth ? 1 : 0
   source_file = local_sensitive_file.auth_staged[0].filename
 }
 
 data "sops_file" "machine_configs" {
-  count       = local.machine_configs_raw_body != "" ? 1 : 0
+  count       = local.has_machine_configs ? 1 : 0
   source_file = local_sensitive_file.machine_configs_staged[0].filename
 }
 
@@ -93,28 +111,32 @@ data "sops_file" "machine_configs" {
 
 locals {
   auth_decoded = (
-    var.provider_name == "contabo"
-    ? try(yamldecode(data.sops_file.auth[0].raw), null)
-    : try(yamldecode(data.aws_s3_object.auth_raw_plain[0].body), null)
+    local.is_encrypted_auth
+    ? (local.has_auth ? yamldecode(data.sops_file.auth[0].raw) : null)
+    : (local.has_auth ? yamldecode(data.aws_s3_object.auth_raw_plain[0].body) : null)
   )
 
-  nodes_decoded = try(
-    yamldecode(data.aws_s3_object.nodes.body),
-    { nodes = {} }
+  nodes_decoded = (
+    local.has_nodes
+    ? yamldecode(data.aws_s3_object.nodes[0].body)
+    : { nodes = {} }
   )
 
-  state_decoded = try(
-    yamldecode(data.aws_s3_object.state.body),
-    { nodes = {} }
+  state_decoded = (
+    local.has_state
+    ? yamldecode(data.aws_s3_object.state[0].body)
+    : { nodes = {} }
   )
 
-  talos_state_decoded = try(
-    yamldecode(data.aws_s3_object.talos_state.body),
-    { nodes = {} }
+  talos_state_decoded = (
+    local.has_talos_state
+    ? yamldecode(data.aws_s3_object.talos_state[0].body)
+    : { nodes = {} }
   )
 
-  machine_configs_decoded = try(
-    yamldecode(data.sops_file.machine_configs[0].raw),
-    { nodes = {} }
+  machine_configs_decoded = (
+    local.has_machine_configs
+    ? yamldecode(data.sops_file.machine_configs[0].raw)
+    : { nodes = {} }
   )
 }
