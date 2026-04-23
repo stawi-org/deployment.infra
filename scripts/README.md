@@ -5,7 +5,7 @@ prints usage when run with `-h` / `--help` or with no arguments.
 
 | Script | Purpose | Who runs it |
 |---|---|---|
-| [`bootstrap-oci-oidc.sh`](#bootstrap-oci-oidcsh) | Idempotently configure an OCI Identity Domain and print an inventory-ready OCI account file for `production/config/oci/<account>.yaml`. | Operator, once per OCI tenancy, usually in OCI Cloud Shell. |
+| [`bootstrap-oci-oidc.sh`](#bootstrap-oci-oidcsh) | Idempotently configure an OCI Identity Domain and print an inventory-ready OCI account stanza to stdout. | Operator, once per OCI tenancy, usually in OCI Cloud Shell. |
 | [`get-kubeconfig.sh`](#get-kubeconfigsh) | Dispatch the `dispatch-kubeconfig` workflow and get a short-lived, per-user cluster-admin kubeconfig, encrypted to your SSH keys. | Any collaborator who needs ad-hoc cluster access from their workstation. |
 | [`create-cluster-user.sh`](#create-cluster-usersh) | Mint a long-lived x509 client cert + kubeconfig for a stable Kubernetes user, optionally scoped to namespaces. | Cluster-admin (already holds a kubeconfig), for onboarding collaborators. |
 | [`get-talos-configs.sh`](#get-talos-configssh) | Download the rendered Talos machine-config bundle published by the last apply. Use to onboard non-cloud machines as workers (laptops, on-prem, home labs). | Operator, when joining a new off-cloud node. |
@@ -60,9 +60,8 @@ federate into the tenancy with OIDC + UPST — no long-lived OCI keys.
 4. Identity Propagation Trust `github-actions-antinvestor` that recognises
    GitHub's OIDC JWTs and impersonates the service user.
 
-At the end it prints an OCI account file you can save as
-`production/config/oci/<account>.yaml` — it does **not** write the file for
-you.
+At the end it prints an OCI account stanza to stdout. It does **not** write a
+file or push anything to R2 for you.
 
 **Prereqs:**
 
@@ -87,7 +86,7 @@ you.
 | Flag | Description | Default |
 |---|---|---|
 | `--profile <NAME>` | OCI CLI profile from `~/.oci/config`. | `DEFAULT` |
-| `--gh-profile <NAME>` | Name written to the OCI account key in `production/config/oci/<account>.yaml`. | slugged form of `--profile` |
+| `--gh-profile <NAME>` | Name written to the OCI account key in the rendered inventory stanza. | slugged form of `--profile` |
 | `--suffix <N>` | Inventory export slot label for the printed example block. | `0` |
 | `--tenancy <OCID>` | Tenancy OCID. Auto-detected from the OCI profile. | auto |
 | `--region <REGION>` | OCI region identifier. Auto-detected. | auto |
@@ -97,8 +96,6 @@ you.
 **Output (end of run):**
 
 ```
-Save this as production/config/oci/stawi.yaml:
-
 oci:
   accounts:
     stawi:
@@ -110,13 +107,30 @@ oci:
       auth:
         domain_base_url: https://idcs-...
         oidc_client_identifier: "cid:secret"
-      labels: {}
-      annotations: {}
-      workers: {}
+      labels:
+        node.antinvestor.io/capacity-pool: ampere-a1
+      annotations:
+        node.antinvestor.io/account-owner: platform
+      nodes:
+        oci-stawi-node-1:
+          role: worker
+          shape: VM.Standard.A1.Flex
+          ocpus: 4
+          memory_gb: 24
+          labels:
+            node.antinvestor.io/plane: control-plane
+            node.antinvestor.io/role-cache: "true"
+            node.antinvestor.io/role-database: "true"
+            node.antinvestor.io/role-queue: "true"
+            node.kubernetes.io/external-load-balancer: "true"
+          annotations:
+            node.antinvestor.io/operator-note: control-plane
 ```
 
-Add worker entries under `workers`, then sync the `production/config/`
-directory to `s3://cluster-tofu-state/production/config/`.
+Copy the printed stanza into your inventory file, add node entries under
+`nodes`, then sync `providers/config/` to
+`s3://cluster-tofu-state/production/config/` after you are satisfied with the
+result.
 
 The script is safe to re-run: every resource is looked up by name and either
 no-op'd or patched into the correct shape. In particular it self-heals the

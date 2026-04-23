@@ -1,6 +1,6 @@
 # tofu/modules/oracle-account-infra/nodes.tf
-data "talos_machine_configuration" "worker" {
-  for_each           = var.workers
+data "talos_machine_configuration" "node" {
+  for_each           = var.nodes
   cluster_name       = var.cluster_name
   cluster_endpoint   = var.cluster_endpoint
   machine_type       = each.value.role
@@ -56,7 +56,7 @@ data "talos_machine_configuration" "worker" {
 }
 
 module "node" {
-  for_each = var.workers
+  for_each = var.nodes
   source   = "../node-oracle"
 
   name                = "${var.account_key}-${each.key}"
@@ -71,7 +71,7 @@ module "node" {
   availability_domain = local.ad_0
   labels              = merge(var.labels, each.value.labels)
   annotations         = merge(var.annotations, each.value.annotations)
-  user_data           = base64encode(data.talos_machine_configuration.worker[each.key].machine_configuration)
+  user_data           = base64encode(data.talos_machine_configuration.node[each.key].machine_configuration)
   bastion_id          = oci_bastion_bastion.this.id
   account_key         = var.account_key
   region              = var.region

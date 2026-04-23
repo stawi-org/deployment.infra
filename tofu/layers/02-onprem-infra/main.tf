@@ -5,6 +5,7 @@ locals {
       for node_key, node in location.nodes : "${location_key}-${node_key}" => {
         location_key = location_key
         node_key     = node_key
+        region       = coalesce(try(node.region, null), location.region)
         location     = location
         node         = node
       }

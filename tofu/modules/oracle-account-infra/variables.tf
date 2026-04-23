@@ -9,7 +9,7 @@ variable "enable_ipv6" {
   description = "Enable Oracle-assigned IPv6 on the VCN, subnet, and worker VNICs."
 }
 
-variable "workers" {
+variable "nodes" {
   type = map(object({
     role        = optional(string, "worker")
     shape       = string
@@ -20,7 +20,7 @@ variable "workers" {
   }))
   validation {
     condition = alltrue([
-      for _, worker in var.workers : contains(["controlplane", "worker"], worker.role)
+      for _, node in var.nodes : contains(["controlplane", "worker"], node.role)
     ])
     error_message = "OCI node role must be 'controlplane' or 'worker'."
   }

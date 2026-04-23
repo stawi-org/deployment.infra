@@ -9,6 +9,7 @@ onprem:
         - 2001:db8:10::/64
       nodes:
         rack-1:
+          region: UG
           role: worker
           labels:
             node.antinvestor.io/hardware-class: mini-pc

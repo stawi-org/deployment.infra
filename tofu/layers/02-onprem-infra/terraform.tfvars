@@ -12,7 +12,7 @@
 #     site_ipv4_cidrs = ["192.0.2.0/24"]
 #     site_ipv6_cidrs = ["2001:db8:10::/64"]
 #     nodes = {
-#       rack-1 = {} # IPs are optional; on-prem workers may not have stable addresses.
+#       rack-1 = { region = "UG" } # IPs are optional; on-prem nodes may not have stable addresses.
 #     }
 #   }
 # }

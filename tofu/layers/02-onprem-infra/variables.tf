@@ -18,6 +18,7 @@ variable "onprem_locations" {
     site_ipv4_cidrs = optional(list(string), [])
     site_ipv6_cidrs = optional(list(string), [])
     nodes = map(object({
+      region      = optional(string)
       role        = optional(string, "worker")
       ipv4        = optional(string)
       ipv6        = optional(string)
@@ -30,7 +31,7 @@ variable "onprem_locations" {
     First-class on-premises location inventory. This layer does not provision
     physical machines; it declares stable node identity, topology labels, and
     optional last-known addresses so layer 03 can generate audited Talos
-    worker configs. Addresses are deliberately optional because on-prem worker
+    node configs. Addresses are deliberately optional because on-prem nodes
     IPs may be DHCP, SLAAC, CGNAT, or otherwise non-permanent.
   EOT
 

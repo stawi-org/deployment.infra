@@ -13,7 +13,7 @@ oci:
       auth:
         domain_base_url: https://idcs-example.identity.oraclecloud.com
         oidc_client_identifier: "<clientId>:<clientSecret>"
-      workers:
+      nodes:
         wk-1:
           role: worker
           shape: VM.Standard.A1.Flex

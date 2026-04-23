@@ -46,7 +46,7 @@ module "oracle_account" {
   region                               = each.value.region
   vcn_cidr                             = each.value.vcn_cidr
   enable_ipv6                          = each.value.enable_ipv6
-  workers                              = each.value.workers
+  nodes                                = each.value.nodes
   labels                               = each.value.labels
   annotations                          = each.value.annotations
   bastion_client_cidr_block_allow_list = each.value.bastion_client_cidr_block_allow_list

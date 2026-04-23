@@ -15,7 +15,7 @@ output "vcn_id" {
 output "bastion_sessions" {
   description = "Per-node bastion port-forwarding session details. Keys are globally-unique node names."
   value = {
-    for k, s in oci_bastion_session.worker : "${var.account_key}-${k}" => {
+    for k, s in oci_bastion_session.node : "${var.account_key}-${k}" => {
       session_id     = s.id
       bastion_region = var.region
       target_ip      = module.node[k].node.ipv4

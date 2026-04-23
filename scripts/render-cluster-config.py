@@ -16,7 +16,15 @@ except ImportError:  # pragma: no cover - CI images should provide PyYAML or ins
 
 
 DEFAULT_VCN_CIDR = "10.200.0.0/16"
-DEFAULT_WORKERS = {"wk-1": {"shape": "VM.Standard.A1.Flex", "ocpus": 4, "memory_gb": 24}}
+DEFAULT_NODES = {"wk-1": {"shape": "VM.Standard.A1.Flex", "ocpus": 4, "memory_gb": 24}}
+
+
+def ensure_map(value: Any, context: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{context} must be an object")
+    return value
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -98,14 +106,14 @@ def dump(path: Path, data: Any) -> None:
 
 
 def normalize_oci_account(name: str, raw: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
-    auth = raw.get("auth") or {}
-    if not isinstance(auth, dict):
-        raise ValueError(f"OCI account {name}: auth must be an object")
+    auth = ensure_map(raw.get("auth"), f"OCI account {name}: auth")
 
     tenancy = raw.get("tenancy_ocid")
     region = raw.get("region")
     vcn_cidr = raw.get("vcn_cidr", DEFAULT_VCN_CIDR)
-    workers = raw.get("workers", DEFAULT_WORKERS)
+    nodes = raw.get("nodes")
+    if nodes is None:
+        nodes = raw.get("workers", DEFAULT_NODES)
     domain = auth.get("domain_base_url") or raw.get("domain_base_url") or raw.get("oci_domain_base_url")
     client = auth.get("oidc_client_identifier") or raw.get("oidc_client_identifier")
 
@@ -121,8 +129,20 @@ def normalize_oci_account(name: str, raw: dict[str, Any]) -> tuple[dict[str, Any
     ]
     if missing:
         raise ValueError(f"OCI account {name}: missing required field(s): {', '.join(missing)}")
-    if not isinstance(workers, dict):
-        raise ValueError(f"OCI account {name}: workers must be an object")
+    if not isinstance(nodes, dict):
+        raise ValueError(f"OCI account {name}: nodes must be an object")
+    labels = ensure_map(raw.get("labels"), f"OCI account {name}: labels")
+    annotations = ensure_map(raw.get("annotations"), f"OCI account {name}: annotations")
+
+    normalized_nodes: dict[str, Any] = {}
+    for node_name, node_raw in nodes.items():
+        if not isinstance(node_raw, dict):
+            raise ValueError(f"OCI node {name}/{node_name}: node value must be an object")
+        node = dict(node_raw)
+        node["role"] = node.get("role", "worker")
+        node["labels"] = ensure_map(node.get("labels"), f"OCI node {name}/{node_name}: labels")
+        node["annotations"] = ensure_map(node.get("annotations"), f"OCI node {name}/{node_name}: annotations")
+        normalized_nodes[node_name] = node
 
     tf_account = {
         "tenancy_ocid": tenancy,
@@ -131,9 +151,9 @@ def normalize_oci_account(name: str, raw: dict[str, Any]) -> tuple[dict[str, Any
         "vcn_cidr": vcn_cidr,
         "enable_ipv6": raw.get("enable_ipv6", True),
         "bastion_client_cidr_block_allow_list": raw.get("bastion_client_cidr_block_allow_list", ["0.0.0.0/0"]),
-        "labels": raw.get("labels", {}),
-        "annotations": raw.get("annotations", {}),
-        "workers": workers,
+        "labels": labels,
+        "annotations": annotations,
+        "nodes": normalized_nodes,
     }
     auth_account = {
         "profile": name,
@@ -187,9 +207,9 @@ def contabo_from_config(path: Path) -> dict[str, Any]:
     for account_name, raw in accounts.items():
         if not isinstance(raw, dict):
             raise ValueError(f"Contabo account {account_name}: account value must be an object")
-        auth = raw.get("auth") or {}
-        if not isinstance(auth, dict):
-            raise ValueError(f"Contabo account {account_name}: auth must be an object")
+        auth = ensure_map(raw.get("auth"), f"Contabo account {account_name}: auth")
+        labels = ensure_map(raw.get("labels"), f"Contabo account {account_name}: labels")
+        annotations = ensure_map(raw.get("annotations"), f"Contabo account {account_name}: annotations")
 
         missing = [
             field
@@ -219,8 +239,8 @@ def contabo_from_config(path: Path) -> dict[str, Any]:
 
         rendered[account_name] = {
             "auth": auth,
-            "labels": raw.get("labels", {}),
-            "annotations": raw.get("annotations", {}),
+            "labels": labels,
+            "annotations": annotations,
             "nodes": rendered_nodes,
         }
 
@@ -297,7 +317,32 @@ def onprem_from_map(data: dict[str, Any]) -> dict[str, Any]:
     locations = data.get("locations") or data.get("onprem_locations") or data
     if not isinstance(locations, dict):
         raise ValueError("locations must be an object")
-    return locations
+    normalized: dict[str, Any] = {}
+    for location_name, raw in locations.items():
+        if not isinstance(raw, dict):
+            raise ValueError(f"On-prem location {location_name}: location value must be an object")
+        location_region = raw.get("region")
+        nodes = raw.get("nodes")
+        if nodes is None:
+            nodes = raw.get("workers", {})
+        if not isinstance(nodes, dict):
+            raise ValueError(f"On-prem location {location_name}: nodes must be an object")
+        normalized_nodes: dict[str, Any] = {}
+        for node_name, node_raw in nodes.items():
+            if not isinstance(node_raw, dict):
+                raise ValueError(f"On-prem node {location_name}/{node_name}: node value must be an object")
+            node = dict(node_raw)
+            node["region"] = node.get("region", location_region)
+            node["role"] = node.get("role", "worker")
+            node["labels"] = ensure_map(node.get("labels"), f"On-prem node {location_name}/{node_name}: labels")
+            node["annotations"] = ensure_map(node.get("annotations"), f"On-prem node {location_name}/{node_name}: annotations")
+            normalized_nodes[node_name] = node
+        normalized[location_name] = {
+            **raw,
+            "nodes": normalized_nodes,
+        }
+        normalized[location_name].pop("workers", None)
+    return normalized
 
 
 def render_onprem(args: argparse.Namespace) -> int:

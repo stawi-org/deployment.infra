@@ -13,18 +13,18 @@ resource "oci_bastion_bastion" "this" {
   max_session_ttl_in_seconds   = 10800 # 3h max per session
 }
 
-# Per-worker SSH keypair used to authenticate the port-forwarding session.
+# Per-node SSH keypair used to authenticate the port-forwarding session.
 # Fresh keys every tofu apply is fine — sessions last ≤3h anyway.
 resource "tls_private_key" "bastion" {
-  for_each  = var.workers
+  for_each  = var.nodes
   algorithm = "RSA"
   rsa_bits  = 2048
 }
 
-# Per-worker port-forwarding session. layer 03 consumes .id + the region to construct
+# Per-node port-forwarding session. layer 03 consumes .id + the region to construct
 # the SSH jump string `<session-id>@host.bastion.<region>.oci.oraclecloud.com`.
-resource "oci_bastion_session" "worker" {
-  for_each               = var.workers
+resource "oci_bastion_session" "node" {
+  for_each               = var.nodes
   bastion_id             = oci_bastion_bastion.this.id
   display_name           = "talos-apply-${each.key}"
   session_ttl_in_seconds = 10800

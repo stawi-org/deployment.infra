@@ -1,10 +1,11 @@
 # tofu/layers/02-onprem-infra/outputs.tf
 output "nodes" {
-  description = "On-prem worker node contracts consumed by layer 03."
+  description = "On-prem node contracts consumed by layer 03."
   value = {
     for key, item in local.flattened_nodes : key => {
       name     = key
       role     = item.node.role
+      region   = coalesce(try(item.node.region, null), item.location.region)
       provider = "onprem"
       ipv4     = try(item.node.ipv4, null)
       ipv6     = try(item.node.ipv6, null)
@@ -19,7 +20,7 @@ output "nodes" {
       derived_labels = merge(
         item.node.labels,
         {
-          "topology.kubernetes.io/region"     = item.location.region
+          "topology.kubernetes.io/region"     = coalesce(try(item.node.region, null), item.location.region)
           "node.antinvestor.io/provider"      = "onprem"
           "node.antinvestor.io/location"      = item.location_key
           "node.antinvestor.io/role"          = item.node.role

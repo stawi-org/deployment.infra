@@ -31,7 +31,7 @@ Once layer 04 has reconciled, the cluster is self-managing via FluxCD — applic
                 Contabo API           Oracle Cloud API         On-prem inventory
                     |                     |                          |
                     v                     v                          v
-              VPS control plane      OCI workers              Manual Talos workers
+              VPS control plane      OCI nodes                Manual Talos nodes
                     |                     |                          |
                     +----+----+----------+--------------------------+
                          v
@@ -111,7 +111,7 @@ state, under `production/config/`. Keep one YAML file per account or site:
 | Object | Purpose |
 |---|---|
 | `production/config/contabo/<account>.yaml` | One Contabo account and all of its nodes. |
-| `production/config/oci/<account>.yaml` | One OCI account and all of its workers. |
+| `production/config/oci/<account>.yaml` | One OCI account and all of its nodes. |
 | `production/config/onprem/<location>.yaml` | One on-prem location and all declared nodes. |
 
 The reusable workflow consumes every YAML file under `production/config/` and
@@ -121,10 +121,10 @@ no longer consumed by the workflow.
 The structure is:
 
 - `contabo/<account>.yaml`: Contabo credentials plus grouped node inventory.
-- `oci/<account>.yaml`: OCI auth, tenancy, network, and worker inventory.
+- `oci/<account>.yaml`: OCI auth, tenancy, network, and node inventory.
 - `onprem/<location>.yaml`: Physical-site inventory and optional hints.
 
-Contabo node names and OCI worker names must remain RFC 1123-safe and unique
+Contabo node names and OCI node names must remain RFC 1123-safe and unique
 within the cluster. The inventory compiler uses the account and node keys to
 render provider-specific Terraform variables.
 
@@ -133,10 +133,12 @@ whether layer 03 renders a controlplane or worker Talos machine config, and it
 drives the standardized node-role labels alongside the provider-specific
 metadata.
 
-Contabo account and node metadata can be attached with `labels` and
-`annotations`. OCI account-level metadata applies to every worker in that
-account, with worker-level keys overriding the account defaults. On-prem nodes
-follow the same rule, but their IPs are optional because they may change.
+Contabo, OCI, and on-prem all support `labels` and `annotations` at both the
+account/location level and the node level. Node-level keys override the
+account/location defaults for the same field. On-prem nodes also keep IPs
+optional because they may change.
+On-prem node `region` defaults to the location's `region`, but you can set it
+per node when a site needs an explicit override.
 
 OCI accounts are IPv6-enabled by default. Each VCN receives an Oracle-assigned
 IPv6 prefix, each private worker subnet receives an IPv6 subnet, and worker
@@ -193,12 +195,16 @@ oci:
       auth:
         domain_base_url: https://idcs-example.identity.oraclecloud.com
         oidc_client_identifier: "<clientId>:<clientSecret>"
-      workers:
+      nodes:
         wk-1:
           role: worker
           shape: VM.Standard.A1.Flex
           ocpus: 4
           memory_gb: 24
+          labels:
+            node.antinvestor.io/workload-class: edge
+          annotations:
+            node.antinvestor.io/operator-note: primary-oci-worker
 ```
 
 ### GitHub Repository Variables
@@ -216,14 +222,14 @@ Each layer is run via `workflow_dispatch` of the per-mode workflow, which dispat
 1. **Layer 00 — Talos secrets.** Run `tofu-plan` with `layer=00-talos-secrets`, review, then `tofu-apply` with the same layer.
 2. **Layer 01 — Contabo infra.** Same pattern. Provisions VPSes.
 3. **Layer 02 — Oracle infra.** Same pattern. Provisions IPv4/IPv6 OCI nodes from the inventory file.
-4. **Layer 02-onprem — On-prem inventory.** Same pattern. Produces node contracts and Talos worker configs for declared physical locations.
-5. **Layer 03 — Talos apply + bootstrap.** Same pattern. Applies machine configs to CI-reachable nodes, bootstraps etcd, and renders manual on-prem worker configs. Kubeconfig becomes available via `dispatch-kubeconfig` workflow.
+4. **Layer 02-onprem — On-prem inventory.** Same pattern. Produces node contracts and Talos node configs for declared physical locations. On-prem inventory uses `nodes` per location.
+5. **Layer 03 — Talos apply + bootstrap.** Same pattern. Applies machine configs to CI-reachable nodes, bootstraps etcd, and renders manual on-prem node configs. Kubeconfig becomes available via `dispatch-kubeconfig` workflow.
 6. **Layer 04 — Flux.** Same pattern. Installs Flux Operator, applies `FluxInstance` pointing at `stawi-org/deployment.manifest`. Verify FluxInstance reaches Ready with `kubectl get fluxinstance -A`.
 
 ### Topology boundary
 
 The current production-safe topology keeps the Talos control plane on Contabo
-and treats OCI plus on-prem as workers joined through KubeSpan. This avoids
+and treats OCI plus on-prem as nodes joined through KubeSpan. This avoids
 stretching etcd quorum across unmanaged WAN paths. For provider/location
 control-plane survivability, prefer multiple clusters reconciled from the same
 GitOps source rather than one WAN-stretched etcd cluster. See

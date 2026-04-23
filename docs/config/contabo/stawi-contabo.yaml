@@ -15,6 +15,10 @@ contabo:
           role: controlplane
           product_id: V94
           region: EU
+          labels:
+            node.antinvestor.io/plane: control
+          annotations:
+            node.antinvestor.io/operator-note: primary-controlplane
         kubernetes-controlplane-api-2:
           role: controlplane
           product_id: V94

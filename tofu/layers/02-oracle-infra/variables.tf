@@ -37,7 +37,7 @@ variable "oci_accounts" {
     bastion_client_cidr_block_allow_list = optional(list(string), ["0.0.0.0/0"])
     labels                               = optional(map(string), {})
     annotations                          = optional(map(string), {})
-    workers = map(object({
+    nodes = map(object({
       role        = optional(string, "worker")
       shape       = string
       ocpus       = number
@@ -65,13 +65,13 @@ variable "oci_accounts" {
   validation {
     condition = alltrue(flatten([
       for account_key, account in var.oci_accounts : [
-        for worker_key, worker in account.workers :
-        length("${account_key}-${worker_key}") <= 63
-        && can(regex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "${account_key}-${worker_key}"))
-        && contains(["controlplane", "worker"], worker.role)
+        for node_key, node in account.nodes :
+        length("${account_key}-${node_key}") <= 63
+        && can(regex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "${account_key}-${node_key}"))
+        && contains(["controlplane", "worker"], node.role)
       ]
     ]))
-    error_message = "OCI account and worker keys must combine into valid RFC 1123 node names, for example stawi-a-wk-1."
+    error_message = "OCI account and node keys must combine into valid RFC 1123 node names, for example stawi-a-wk-1."
   }
 }
 
@@ -85,7 +85,7 @@ variable "retained_oci_accounts" {
     bastion_client_cidr_block_allow_list = optional(list(string), ["0.0.0.0/0"])
     labels                               = optional(map(string), {})
     annotations                          = optional(map(string), {})
-    workers = map(object({
+    nodes = map(object({
       role        = optional(string, "worker")
       shape       = string
       ocpus       = number
@@ -104,12 +104,12 @@ variable "retained_oci_accounts" {
   validation {
     condition = alltrue(flatten([
       for account_key, account in var.retained_oci_accounts : [
-        for worker_key, worker in account.workers :
-        length("${account_key}-${worker_key}") <= 63
-        && can(regex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "${account_key}-${worker_key}"))
-        && contains(["controlplane", "worker"], worker.role)
+        for node_key, node in account.nodes :
+        length("${account_key}-${node_key}") <= 63
+        && can(regex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "${account_key}-${node_key}"))
+        && contains(["controlplane", "worker"], node.role)
       ]
     ]))
-    error_message = "Retained OCI account and worker keys must combine into valid RFC 1123 node names, for example stawi-a-wk-1."
+    error_message = "Retained OCI account and node keys must combine into valid RFC 1123 node names, for example stawi-a-wk-1."
   }
 }

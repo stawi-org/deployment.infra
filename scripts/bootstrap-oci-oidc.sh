@@ -20,15 +20,14 @@
 #   - jq, curl, python3
 #
 # Runs unchanged on OCI Cloud Shell. The `gh` CLI is NOT required here —
-# the script prints an inventory-ready OCI account stanza for
-# `production/config/oci/<account>.yaml`.
+# the script prints an inventory-ready OCI account stanza to stdout.
 #
 # Multi-tenancy / multi-profile:
 #   --profile <NAME>     OCI CLI profile from ~/.oci/config. Default "DEFAULT".
 #   --gh-profile <NAME>  Profile name written to the OCI account key in
-#                        production/config/oci/<account>.yaml. Defaults to a slugged form
-#                        of --profile (lowercase alnum). Pick something short,
-#                        e.g. "stawi", "acctB".
+#                        the rendered inventory stanza. Defaults to a slugged
+#                        form of --profile (lowercase alnum). Pick something
+#                        short, e.g. "stawi", "acctB".
 #   --suffix <N>         Inventory export label for the printed example block.
 #                        Default "0".
 #   --tenancy / --region / --compartment auto-detect from the profile when
@@ -44,7 +43,7 @@
 #
 # Each invocation prints an OCI account stanza that (when pasted) sets:
 # tenancy_ocid, compartment_ocid, region, vcn_cidr, enable_ipv6, auth, labels,
-# annotations, workers.
+# annotations, nodes.
 #
 # Re-running is safe. Every resource is looked up by name; missing ones are
 # created, existing ones are updated.
@@ -562,9 +561,7 @@ say "=========================================================="
 say "OCI workload identity federation ready for profile [$PROFILE]."
 say ""
 
-cat <<EOF
-Save this as production/config/oci/${GH_PROFILE}.yaml:
-
+inventory_yaml=$(cat <<EOF
 oci:
   accounts:
     ${GH_PROFILE}:
@@ -576,10 +573,28 @@ oci:
       auth:
         domain_base_url: ${DOMAIN_BASE_URL}
         oidc_client_identifier: "${CLIENT_ID}:${CLIENT_SECRET:-<PASTE_CLIENT_SECRET>}"
-      labels: {}
-      annotations: {}
-      workers: {}
+      labels:
+        node.antinvestor.io/capacity-pool: ampere-a1
+      annotations:
+        node.antinvestor.io/account-owner: platform
+      nodes:
+        oci-${GH_PROFILE}-node-1:
+          role: worker
+          shape: VM.Standard.A1.Flex
+          ocpus: 4
+          memory_gb: 24
+          labels:
+            node.antinvestor.io/plane: control-plane
+            node.antinvestor.io/role-cache: "true"
+            node.antinvestor.io/role-database: "true"
+            node.antinvestor.io/role-queue: "true"
+            node.kubernetes.io/external-load-balancer: "true"
+          annotations:
+            node.antinvestor.io/operator-note: control-plane
 EOF
+)
+say "Rendered OCI inventory stanza:"
+printf '%s\n' "$inventory_yaml"
 
 say ""
 say "Impersonation rule:"
