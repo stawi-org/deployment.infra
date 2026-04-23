@@ -61,8 +61,8 @@ variable "contabo_api_password" {
 }
 
 variable "force_reinstall_generation" {
-  type    = number
-  default = 0
+  type        = number
+  default     = 0
   description = <<-EOT
     Bump this to force a disk-wipe reinstall of this instance on the
     next apply. Normally 0 (no reinstall). Change only when:
@@ -75,4 +75,3 @@ variable "force_reinstall_generation" {
     preserves etcd and data). Bumping this wipes the disk.
   EOT
 }
-

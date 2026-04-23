@@ -60,4 +60,3 @@ variable "oci_accounts" {
     error_message = "All oci_accounts must have non-overlapping vcn_cidr values (heuristic check — see scripts/check-cidr-overlap.py for exhaustive)."
   }
 }
-

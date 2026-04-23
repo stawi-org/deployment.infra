@@ -27,4 +27,3 @@ variable "bastion_client_cidr_block_allow_list" {
   description = "CIDR ranges allowed to open OCI Bastion sessions for this account. Defaults to 0.0.0.0/0 (session still requires SSH key auth). Override with operator/CI-runner IP ranges for defense in depth."
   default     = ["0.0.0.0/0"]
 }
-

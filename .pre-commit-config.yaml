@@ -23,14 +23,11 @@ repos:
         pass_filenames: false
         files: '\.tf$|\.tfvars$'
 
-  - repo: https://github.com/terraform-linters/tflint
-    rev: v0.53.0
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.105.0
     hooks:
-      - id: tflint
-        args: ["--chdir=tofu/layers/03-talos"]
+      - id: terraform_tflint
+        args:
+          - --args=--config=__GIT_WORKING_DIR__/.tflint.hcl
 
-  - repo: https://github.com/aquasecurity/tfsec
-    rev: v1.28.11
-    hooks:
-      - id: tfsec
-        args: ["tofu/"]
+      - id: terraform_trivy

@@ -1,9 +1,9 @@
 # tofu/layers/00-talos-secrets/backend.tf
 terraform {
   backend "s3" {
-    bucket                      = "cluster-tofu-state"
-    key                         = "production/00-talos-secrets.tfstate"
-    region                      = "auto"
+    bucket = "cluster-tofu-state"
+    key    = "production/00-talos-secrets.tfstate"
+    region = "auto"
     # endpoints.s3 provided at init time via -backend-config
     use_path_style              = true
     skip_credentials_validation = true

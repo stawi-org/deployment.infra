@@ -40,8 +40,8 @@ variable "controlplane_nodes" {
 }
 
 variable "force_reinstall_generation" {
-  type    = number
-  default = 0
+  type        = number
+  default     = 0
   description = <<-EOT
     Bump this (e.g. 0 → 1) to force a disk-wipe reinstall of ALL
     Contabo CPs on the next apply. Cluster goes down for ~10 minutes
