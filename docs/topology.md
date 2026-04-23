@@ -6,7 +6,13 @@ This repository now has three node ownership modes:
 2. **OCI workers**: layer `02-oracle-infra` provisions workers across OCI accounts. OCI networking is dual-stack by default. Account and worker sizing comes from the canonical R2 inventory file.
 3. **On-prem workers**: layer `02-onprem-infra` declares physical site inventory and emits node contracts. Layer `03-talos` renders matching Talos worker configs, but config application is manual because physical networks are not reachable from GitHub Actions by default. Location and node inventory also comes from the canonical R2 inventory file.
 
-The canonical inventory object is `production/config/cluster-inventory.yaml`. It contains the Contabo account inventory, OCI account inventory, and on-prem location inventory in one place.
+The canonical inventory lives under `production/config/` as multiple YAML files:
+
+- `contabo/<account>.yaml`
+- `oci/<account>.yaml`
+- `onprem/<location>.yaml`
+
+Layer 03 aggregates those files by provider and account key.
 
 ## Control-Plane Boundary
 

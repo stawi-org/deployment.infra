@@ -58,6 +58,12 @@ locals {
       "topology.kubernetes.io/zone"   = lower(replace(var.availability_domain, ":", "-"))
       "node.antinvestor.io/provider"  = "oracle"
       "node.antinvestor.io/account"   = var.account_key
+      "node.antinvestor.io/role"      = var.role
+    },
+    var.role == "controlplane" ? {
+      "node-role.kubernetes.io/control-plane" = ""
+      } : {
+      "node-role.kubernetes.io/worker" = ""
     }
   )
   derived_annotations = merge(
@@ -65,6 +71,9 @@ locals {
     {
       "node.antinvestor.io/shape"               = var.shape
       "node.antinvestor.io/availability-domain" = var.availability_domain
+      "node.antinvestor.io/provider"            = "oracle"
+      "node.antinvestor.io/account"             = var.account_key
+      "node.antinvestor.io/role"                = var.role
     }
   )
 }

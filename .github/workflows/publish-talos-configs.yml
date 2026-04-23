@@ -1,8 +1,9 @@
 name: publish-talos-configs
 # Bundles the rendered Talos machine configs from layer 03's R2 state and
-# uploads them as an encrypted workflow artifact. Machine configs and
-# talosconfig contain cluster trust material, so the tarball is encrypted to
-# the dispatching user's public SSH keys before upload.
+# uploads them as an encrypted workflow artifact and an encrypted R2 audit
+# archive. Machine configs and talosconfig contain cluster trust material, so
+# the tarball is encrypted to the dispatching user's public SSH keys before
+# upload.
 #
 # Triggered automatically after a successful tofu-apply, or manually via:
 #   gh workflow run publish-talos-configs.yml --ref main
@@ -148,6 +149,21 @@ jobs:
           rm -rf "$OUT"
 
           ls -lh /tmp/talos-configs.tar.gz.age
+
+      - name: Upload encrypted bundle to R2 for audit
+        env:
+          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
+          R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
+          RUN_ID:                ${{ github.run_id }}
+          GIT_SHA:               ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          AUDIT_KEY="production/audit/talos-configs/${RUN_ID}/${GIT_SHA}/talos-configs.tar.gz.age"
+          aws s3 cp /tmp/talos-configs.tar.gz.age "s3://cluster-tofu-state/${AUDIT_KEY}" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" --region us-east-1
+          echo "Uploaded audit bundle to s3://cluster-tofu-state/${AUDIT_KEY}"
 
       - uses: actions/upload-artifact@v4
         with:

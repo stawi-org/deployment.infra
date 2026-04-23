@@ -3,6 +3,10 @@ variable "name" { type = string }
 variable "role" {
   type    = string
   default = "worker"
+  validation {
+    condition     = contains(["controlplane", "worker"], var.role)
+    error_message = "OCI node role must be 'controlplane' or 'worker'."
+  }
 }
 variable "shape" { type = string }
 variable "ocpus" { type = number }

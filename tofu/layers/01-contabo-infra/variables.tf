@@ -41,7 +41,7 @@ variable "contabo_accounts" {
       for account_key, account in var.contabo_accounts : [
         for node_key, node in account.nodes :
         "${account_key}/${node_key}" if(
-          node.role == "controlplane"
+          contains(["controlplane", "worker"], node.role)
           && length(node_key) <= 63
           && can(regex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", node_key))
         )
@@ -51,7 +51,7 @@ variable "contabo_accounts" {
           for node_key, _ in account.nodes : node_key
         ]
     ])))
-    error_message = "Contabo node keys must be valid RFC 1123 labels, unique across accounts, and currently must have role = \"controlplane\"."
+    error_message = "Contabo node keys must be valid RFC 1123 labels, unique across accounts, and node role must be controlplane or worker."
   }
 }
 

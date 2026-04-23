@@ -105,69 +105,79 @@ All authentication material is sourced from **GitHub Actions secrets** (Settings
 
 ## Cluster inventory in R2
 
-Cluster inventory is driven by one canonical YAML file in the same R2 bucket
-as OpenTofu state, under a separate `production/config/` folder:
+Cluster inventory is driven by a folder in the same R2 bucket as OpenTofu
+state, under `production/config/`. Keep one YAML file per account or site:
 
 | Object | Purpose |
 |---|---|
-| `production/config/cluster-inventory.yaml` | Canonical inventory for Contabo, OCI, and on-prem. |
+| `production/config/contabo/<account>.yaml` | One Contabo account and all of its nodes. |
+| `production/config/oci/<account>.yaml` | One OCI account and all of its workers. |
+| `production/config/onprem/<location>.yaml` | One on-prem location and all declared nodes. |
 
-The old provider-specific objects and secret ladders still work as bootstrap
-fallbacks, but the scalable path is editing the canonical inventory file.
+The reusable workflow consumes every YAML file under `production/config/` and
+aggregates them by provider. Provider-specific objects and secret ladders are
+no longer consumed by the workflow.
 
 The structure is:
 
-- `contabo.accounts.<account>`: Contabo credentials plus grouped node inventory.
-- `oci.accounts.<account>`: OCI auth, tenancy, network, and worker inventory.
-- `onprem.locations.<location>`: Physical-site inventory and optional hints.
+- `contabo/<account>.yaml`: Contabo credentials plus grouped node inventory.
+- `oci/<account>.yaml`: OCI auth, tenancy, network, and worker inventory.
+- `onprem/<location>.yaml`: Physical-site inventory and optional hints.
 
 Contabo node names and OCI worker names must remain RFC 1123-safe and unique
 within the cluster. The inventory compiler uses the account and node keys to
 render provider-specific Terraform variables.
 
+Node `role` is explicit in every provider inventory. It currently determines
+whether layer 03 renders a controlplane or worker Talos machine config, and it
+drives the standardized node-role labels alongside the provider-specific
+metadata.
+
 Contabo account and node metadata can be attached with `labels` and
 `annotations`. OCI account-level metadata applies to every worker in that
-account, with worker-level keys overriding the account defaults.
+account, with worker-level keys overriding the account defaults. On-prem nodes
+follow the same rule, but their IPs are optional because they may change.
 
 OCI accounts are IPv6-enabled by default. Each VCN receives an Oracle-assigned
 IPv6 prefix, each private worker subnet receives an IPv6 subnet, and worker
 VNICs receive IPv6 addresses that flow into the Talos node contract.
 
+The rendered Talos bundle is also archived back into R2 as an encrypted
+`tar.gz.age` under `production/audit/talos-configs/<run-id>/<sha>/` for later
+reference or audit.
+
 Upload example:
 
 ```bash
-aws s3 cp cluster-inventory.yaml \
-  s3://cluster-tofu-state/production/config/cluster-inventory.yaml \
+aws s3 sync production/config/contabo/ \
+  s3://cluster-tofu-state/production/config/contabo/ \
+  --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+  --region us-east-1
+aws s3 sync production/config/oci/ \
+  s3://cluster-tofu-state/production/config/oci/ \
+  --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+  --region us-east-1
+aws s3 sync production/config/onprem/ \
+  s3://cluster-tofu-state/production/config/onprem/ \
   --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
   --region us-east-1
 ```
 
-Example `cluster-inventory.yaml`:
+Example file layout:
+
+```text
+production/config/
+  contabo/
+    stawi-contabo.yaml
+  oci/
+    stawi-a.yaml
+  onprem/
+    kampala-hq.yaml
+```
+
+Example `production/config/oci/stawi-a.yaml`:
 
 ```yaml
-contabo:
-  accounts:
-    stawi-contabo:
-      auth:
-        oauth2_client_id: "<clientId>"
-        oauth2_client_secret: "<clientSecret>"
-        oauth2_user: "<api-user>"
-        oauth2_pass: "<api-password>"
-      labels:
-        node.antinvestor.io/capacity-pool: control-plane
-      nodes:
-        kubernetes-controlplane-api-1:
-          role: controlplane
-          product_id: V94
-          region: EU
-        kubernetes-controlplane-api-2:
-          role: controlplane
-          product_id: V94
-          region: EU
-        kubernetes-controlplane-api-3:
-          role: controlplane
-          product_id: V94
-          region: EU
 oci:
   accounts:
     stawi-a:
@@ -185,34 +195,19 @@ oci:
         oidc_client_identifier: "<clientId>:<clientSecret>"
       workers:
         wk-1:
+          role: worker
           shape: VM.Standard.A1.Flex
           ocpus: 4
           memory_gb: 24
-onprem:
-  locations:
-    kampala-hq:
-      region: UG
-      site_ipv4_cidrs:
-        - 192.0.2.0/24
-      site_ipv6_cidrs:
-        - 2001:db8:10::/64
-      nodes:
-        rack-1:
-          labels:
-            node.antinvestor.io/hardware-class: mini-pc
-        rack-2:
-          annotations:
-            node.antinvestor.io/operator-note: dhcp-address-changes
 ```
 
 ### GitHub Repository Variables
 
-These optional variables remain available for bootstrap and decommissioning:
+This optional variable remains available for decommissioning:
 
 | Variable | Purpose |
 |---|---|
 | `OCI_RETAINED_PROFILES` | Comma-separated OCI profile names that remain provider-only for one apply during account decommissioning. |
-| `ONPREM_LOCATIONS_YAML` | Inline YAML fallback when the R2 on-prem object is not present. |
 
 ## Bringup sequence
 
@@ -220,7 +215,7 @@ Each layer is run via `workflow_dispatch` of the per-mode workflow, which dispat
 
 1. **Layer 00 — Talos secrets.** Run `tofu-plan` with `layer=00-talos-secrets`, review, then `tofu-apply` with the same layer.
 2. **Layer 01 — Contabo infra.** Same pattern. Provisions VPSes.
-3. **Layer 02 — Oracle infra.** Same pattern. Provisions IPv4/IPv6 OCI workers (skip if no OCI slots populated).
+3. **Layer 02 — Oracle infra.** Same pattern. Provisions IPv4/IPv6 OCI nodes from the inventory file.
 4. **Layer 02-onprem — On-prem inventory.** Same pattern. Produces node contracts and Talos worker configs for declared physical locations.
 5. **Layer 03 — Talos apply + bootstrap.** Same pattern. Applies machine configs to CI-reachable nodes, bootstraps etcd, and renders manual on-prem worker configs. Kubeconfig becomes available via `dispatch-kubeconfig` workflow.
 6. **Layer 04 — Flux.** Same pattern. Installs Flux Operator, applies `FluxInstance` pointing at `stawi-org/deployment.manifest`. Verify FluxInstance reaches Ready with `kubectl get fluxinstance -A`.
@@ -244,7 +239,11 @@ Layer 04 requires a Flux GitHub App that is **installed on `stawi-org/deployment
 
 ## Teardown
 
-- `reset-cluster` workflow performs a Talos-level cluster reset.
+- `tofu-reinstall` opens a cluster-reset PR with the requested reason.
+- `reset-cluster` runs after that PR is approved and merged, or via manual
+  `workflow_dispatch` for break-glass use.
+- See [docs/reset-approval.md](docs/reset-approval.md) for the exact request
+  -> approval -> execution flow.
 - `wipe-flux-crds` / `wipe-flux-namespace` workflows clean up Flux state without touching Talos.
 - Destroy order for a full tear-down: layer 04 -> layer 03 -> layer 02-onprem -> layer 02-oracle -> layer 01. Layer 00 (secrets) is left alone unless you're rotating.
 
@@ -254,7 +253,7 @@ Layer 04 requires a Flux GitHub App that is **installed on `stawi-org/deployment
 
 ## Contributing
 
-- Run `pre-commit run -a` before opening a PR.
+- Run `make verify` before opening a PR.
 - The CI validates `tofu fmt -check` and `tofu validate` for every layer on PR.
 - Security reports: use GitHub private advisories.
 

@@ -5,8 +5,11 @@
 #                       static networking (LinkConfig + HostnameConfig +
 #                       kubelet.nodeIP.validSubnets) for Contabo nodes
 #                       auto-derived from layer 01's live IPs.
-#   - `worker[<key>]` — per-worker config for cloud workers (OCI); these
-#                       use the cloud metadata service for networking.
+#   - `worker[<key>]` — per-worker config for every declared worker node
+#                       (OCI, Contabo worker pools, and named on-prem
+#                       workers). Contabo workers get static IP patches;
+#                       OCI workers use cloud metadata; on-prem workers
+#                       rely on their local network and KubeSpan.
 #   - `generic_worker` — a platform-neutral worker config with only the
 #                       shared patches, suitable for on-prem/home-lab
 #                       machines joining via KubeSpan over outbound

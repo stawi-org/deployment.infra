@@ -21,50 +21,11 @@ on:
       SOPS_AGE_KEY:                     { required: false }
       ETCD_BACKUP_R2_ACCESS_KEY_ID:     { required: false }
       ETCD_BACKUP_R2_SECRET_ACCESS_KEY: { required: false }
-      # OCI accounts — ladder of up to 4 slots (0–3). Each slot contributes one
-      # profile in ~/.oci/config and one entry in TF_VAR_oci_accounts. Empty
-      # slots are skipped; add more slots by extending the ladder below and in
-      # the env block of the "OCI workload-identity federation" step.
-      # Required per populated slot:
-      #   OCI_PROFILE_N           — profile name (must match tofu oci_accounts key)
-      #   OIDC_CLIENT_IDENTIFIER_N — "<clientId>:<clientSecret>"
-      #   OCI_DOMAIN_BASE_URL_N   — Identity Domain base URL (https://idcs-xxx...)
-      #   OCI_TENANCY_N           — tenancy OCID
-      #   OCI_REGION_N            — OCI region identifier
-      # Optional per slot (fall back to defaults in the run step):
-      #   OCI_VCN_CIDR_N          — VCN CIDR (default 10.200.0.0/16)
-      #   OCI_WORKERS_JSON_N      — workers map JSON (default single A1.Flex)
+      # OCI accounts now come exclusively from production/config/ under R2.
+      # The workflow syncs the provider/account YAML files and aggregates them.
       # Repository variable:
       #   OCI_RETAINED_PROFILES   — comma-separated profile names kept provider-only
       #                            for one apply while their resources are destroyed.
-      OCI_PROFILE_0:                    { required: false }
-      OCI_TENANCY_0:                    { required: false }
-      OCI_REGION_0:                     { required: false }
-      OCI_DOMAIN_BASE_URL_0:            { required: false }
-      OIDC_CLIENT_IDENTIFIER_0:         { required: false }
-      OCI_VCN_CIDR_0:                   { required: false }
-      OCI_WORKERS_JSON_0:               { required: false }
-      OCI_PROFILE_1:                    { required: false }
-      OCI_TENANCY_1:                    { required: false }
-      OCI_REGION_1:                     { required: false }
-      OCI_DOMAIN_BASE_URL_1:            { required: false }
-      OIDC_CLIENT_IDENTIFIER_1:         { required: false }
-      OCI_VCN_CIDR_1:                   { required: false }
-      OCI_WORKERS_JSON_1:               { required: false }
-      OCI_PROFILE_2:                    { required: false }
-      OCI_TENANCY_2:                    { required: false }
-      OCI_REGION_2:                     { required: false }
-      OCI_DOMAIN_BASE_URL_2:            { required: false }
-      OIDC_CLIENT_IDENTIFIER_2:         { required: false }
-      OCI_VCN_CIDR_2:                   { required: false }
-      OCI_WORKERS_JSON_2:               { required: false }
-      OCI_PROFILE_3:                    { required: false }
-      OCI_TENANCY_3:                    { required: false }
-      OCI_REGION_3:                     { required: false }
-      OCI_DOMAIN_BASE_URL_3:            { required: false }
-      OIDC_CLIENT_IDENTIFIER_3:         { required: false }
-      OCI_VCN_CIDR_3:                   { required: false }
-      OCI_WORKERS_JSON_3:               { required: false }
 
 jobs:
   run:
@@ -111,40 +72,25 @@ jobs:
           set -euo pipefail
           mkdir -p /tmp/cluster-config
           ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          for OBJECT in \
-            production/config/cluster-inventory.yaml \
-            production/config/cluster-inventory.yml \
-            production/config/contabo-accounts.yaml \
-            production/config/contabo-accounts.yml \
-            production/config/oci-accounts.yaml \
-            production/config/oci-accounts.yml \
-            production/config/onprem-locations.yaml \
-            production/config/onprem-locations.yml
-          do
-            if aws s3 ls "s3://cluster-tofu-state/${OBJECT}" --endpoint-url "$ENDPOINT" --region us-east-1 >/dev/null 2>&1; then
-              aws s3 cp "s3://cluster-tofu-state/${OBJECT}" "/tmp/cluster-config/$(basename "$OBJECT")" \
-                --endpoint-url "$ENDPOINT" --region us-east-1
-            fi
-          done
-          find /tmp/cluster-config -maxdepth 1 -type f -print | sort
+          aws s3 sync "s3://cluster-tofu-state/production/config/contabo/" /tmp/cluster-config/contabo/ \
+            --endpoint-url "$ENDPOINT" --region us-east-1
+          aws s3 sync "s3://cluster-tofu-state/production/config/oci/" /tmp/cluster-config/oci/ \
+            --endpoint-url "$ENDPOINT" --region us-east-1
+          aws s3 sync "s3://cluster-tofu-state/production/config/onprem/" /tmp/cluster-config/onprem/ \
+            --endpoint-url "$ENDPOINT" --region us-east-1
+          find /tmp/cluster-config -type f \( -name '*.yml' -o -name '*.yaml' \) | grep -q .
 
       - name: Render canonical inventory
         if: inputs.layer == '01-contabo-infra' || inputs.layer == '02-oracle-infra' || inputs.layer == '02-onprem-infra'
         run: |
           set -euo pipefail
-          CONFIG=""
-          for CANDIDATE in /tmp/cluster-config/cluster-inventory.yaml /tmp/cluster-config/cluster-inventory.yml; do
-            [[ -s "$CANDIDATE" ]] && CONFIG="$CANDIDATE" && break
-          done
-          if [[ -n "$CONFIG" ]]; then
-            python3 scripts/render-cluster-config.py cluster \
-              --input "$CONFIG" \
-              --out-contabo-accounts /tmp/contabo_accounts.json \
-              --out-oci-accounts /tmp/oci_accounts.json \
-              --out-retained-oci-accounts /tmp/retained_oci_accounts.json \
-              --out-oci-auth-accounts /tmp/oci_auth_accounts.json \
-              --out-onprem-locations /tmp/onprem_locations.json
-          fi
+          python3 scripts/render-cluster-config.py cluster \
+            --input /tmp/cluster-config \
+            --out-contabo-accounts /tmp/contabo_accounts.json \
+            --out-oci-accounts /tmp/oci_accounts.json \
+            --out-retained-oci-accounts /tmp/retained_oci_accounts.json \
+            --out-oci-auth-accounts /tmp/oci_auth_accounts.json \
+            --out-onprem-locations /tmp/onprem_locations.json
 
       - name: Configure Contabo inventory
         if: inputs.layer == '01-contabo-infra'
@@ -154,65 +100,20 @@ jobs:
             echo "TF_VAR_contabo_accounts=$(cat /tmp/contabo_accounts.json)" >> "$GITHUB_ENV"
           fi
 
-      # Prefer the canonical R2 inventory at production/config/cluster-inventory.yaml.
-      # The old four-slot secret ladder remains as a fallback for bootstrap.
       - name: OCI workload-identity federation
         if: inputs.layer == '02-oracle-infra'
         env:
-          # Slot 0
-          OCI_PROFILE_0:            ${{ secrets.OCI_PROFILE_0 }}
-          OIDC_CLIENT_IDENTIFIER_0: ${{ secrets.OIDC_CLIENT_IDENTIFIER_0 }}
-          OCI_DOMAIN_BASE_URL_0:    ${{ secrets.OCI_DOMAIN_BASE_URL_0 }}
-          OCI_TENANCY_0:            ${{ secrets.OCI_TENANCY_0 }}
-          OCI_REGION_0:             ${{ secrets.OCI_REGION_0 }}
-          OCI_VCN_CIDR_0:           ${{ secrets.OCI_VCN_CIDR_0 }}
-          OCI_WORKERS_JSON_0:       ${{ secrets.OCI_WORKERS_JSON_0 }}
-          # Slot 1
-          OCI_PROFILE_1:            ${{ secrets.OCI_PROFILE_1 }}
-          OIDC_CLIENT_IDENTIFIER_1: ${{ secrets.OIDC_CLIENT_IDENTIFIER_1 }}
-          OCI_DOMAIN_BASE_URL_1:    ${{ secrets.OCI_DOMAIN_BASE_URL_1 }}
-          OCI_TENANCY_1:            ${{ secrets.OCI_TENANCY_1 }}
-          OCI_REGION_1:             ${{ secrets.OCI_REGION_1 }}
-          OCI_VCN_CIDR_1:           ${{ secrets.OCI_VCN_CIDR_1 }}
-          OCI_WORKERS_JSON_1:       ${{ secrets.OCI_WORKERS_JSON_1 }}
-          # Slot 2
-          OCI_PROFILE_2:            ${{ secrets.OCI_PROFILE_2 }}
-          OIDC_CLIENT_IDENTIFIER_2: ${{ secrets.OIDC_CLIENT_IDENTIFIER_2 }}
-          OCI_DOMAIN_BASE_URL_2:    ${{ secrets.OCI_DOMAIN_BASE_URL_2 }}
-          OCI_TENANCY_2:            ${{ secrets.OCI_TENANCY_2 }}
-          OCI_REGION_2:             ${{ secrets.OCI_REGION_2 }}
-          OCI_VCN_CIDR_2:           ${{ secrets.OCI_VCN_CIDR_2 }}
-          OCI_WORKERS_JSON_2:       ${{ secrets.OCI_WORKERS_JSON_2 }}
-          # Slot 3
-          OCI_PROFILE_3:            ${{ secrets.OCI_PROFILE_3 }}
-          OIDC_CLIENT_IDENTIFIER_3: ${{ secrets.OIDC_CLIENT_IDENTIFIER_3 }}
-          OCI_DOMAIN_BASE_URL_3:    ${{ secrets.OCI_DOMAIN_BASE_URL_3 }}
-          OCI_TENANCY_3:            ${{ secrets.OCI_TENANCY_3 }}
-          OCI_REGION_3:             ${{ secrets.OCI_REGION_3 }}
-          OCI_VCN_CIDR_3:           ${{ secrets.OCI_VCN_CIDR_3 }}
-          OCI_WORKERS_JSON_3:       ${{ secrets.OCI_WORKERS_JSON_3 }}
           OCI_RETAINED_PROFILES:    ${{ vars.OCI_RETAINED_PROFILES }}
         run: |
           set -euo pipefail
-          CONFIG=""
-          if [[ -s /tmp/oci_accounts.json && "$(cat /tmp/oci_accounts.json)" != "{}" ]]; then
-            CONFIG=/tmp/oci_accounts.json
+          if [[ ! -s /tmp/oci_auth_accounts.json ]]; then
+            echo "::error::OCI auth inventory not rendered from production/config/"
+            exit 1
           fi
-          if [[ -z "$CONFIG" ]]; then
-            for CANDIDATE in /tmp/cluster-config/oci-accounts.yaml /tmp/cluster-config/oci-accounts.yml; do
-              [[ -s "$CANDIDATE" ]] && CONFIG="$CANDIDATE" && break
-            done
+          if [[ ! -s /tmp/oci_accounts.json ]]; then
+            echo "::error::OCI account inventory not rendered from production/config/"
+            exit 1
           fi
-
-          ARGS=(
-            oci
-            --retained-profiles "${OCI_RETAINED_PROFILES:-}"
-            --out-accounts /tmp/oci_accounts.json
-            --out-retained-accounts /tmp/retained_oci_accounts.json
-            --out-auth /tmp/oci_auth_accounts.json
-          )
-          [[ -n "$CONFIG" ]] && ARGS+=(--input "$CONFIG")
-          python3 scripts/render-cluster-config.py "${ARGS[@]}"
 
           ACCOUNTS=$(cat /tmp/oci_accounts.json)
           RETAINED_ACCOUNTS=$(cat /tmp/retained_oci_accounts.json)
@@ -230,27 +131,12 @@ jobs:
 
       - name: Configure on-prem inventory
         if: inputs.layer == '02-onprem-infra'
-        env:
-          ONPREM_LOCATIONS_YAML: ${{ vars.ONPREM_LOCATIONS_YAML }}
         run: |
           set -euo pipefail
-          CONFIG=""
-          if [[ -s /tmp/onprem_locations.json && "$(cat /tmp/onprem_locations.json)" != "{}" ]]; then
-            CONFIG=/tmp/onprem_locations.json
+          if [[ ! -s /tmp/onprem_locations.json ]]; then
+            echo "::error::on-prem inventory not rendered from production/config/"
+            exit 1
           fi
-          if [[ -z "$CONFIG" ]]; then
-            for CANDIDATE in /tmp/cluster-config/onprem-locations.yaml /tmp/cluster-config/onprem-locations.yml; do
-              [[ -s "$CANDIDATE" ]] && CONFIG="$CANDIDATE" && break
-            done
-          fi
-          if [[ -z "$CONFIG" && -n "${ONPREM_LOCATIONS_YAML:-}" ]]; then
-            CONFIG=/tmp/onprem-locations.yaml
-            printf '%s\n' "$ONPREM_LOCATIONS_YAML" > "$CONFIG"
-          fi
-
-          ARGS=(onprem --out /tmp/onprem_locations.json)
-          [[ -n "$CONFIG" ]] && ARGS+=(--input "$CONFIG")
-          python3 scripts/render-cluster-config.py "${ARGS[@]}"
           python3 scripts/check-cidr-overlap.py --onprem /tmp/onprem_locations.json
           echo "TF_VAR_onprem_locations=$(jq -c . /tmp/onprem_locations.json)" >> "$GITHUB_ENV"
 

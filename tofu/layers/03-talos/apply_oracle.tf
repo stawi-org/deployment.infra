@@ -1,17 +1,17 @@
 # tofu/layers/03-talos/apply_oracle.tf
 locals {
-  oci_worker_nodes = { for k, v in local.worker_nodes : k => v if v.provider == "oracle" }
+  oci_nodes = { for k, v in local.all_nodes : k => v if v.provider == "oracle" }
   # Stable forwarded-port assignment: 50001 + sorted-index. Idempotent across applies.
-  oci_worker_port_map = { for i, k in sort(keys(local.oci_worker_nodes)) : k => 50001 + i }
+  oci_node_port_map = { for i, k in sort(keys(local.oci_nodes)) : k => 50001 + i }
 }
 
 resource "null_resource" "bastion_tunnel" {
-  for_each = local.oci_worker_nodes
+  for_each = local.oci_nodes
 
   triggers = {
     # Re-run when the session ID changes (ttl expiry → layer 02 re-plans a new session).
     session_id = data.terraform_remote_state.oracle.outputs.bastion_sessions[each.key].session_id
-    port       = local.oci_worker_port_map[each.key]
+    port       = local.oci_node_port_map[each.key]
     node_ip    = data.terraform_remote_state.oracle.outputs.bastion_sessions[each.key].target_ip
     node_key   = each.key # carried in triggers so the destroy provisioner can reference it
   }
@@ -23,7 +23,7 @@ resource "null_resource" "bastion_tunnel" {
       SESSION_ID      = data.terraform_remote_state.oracle.outputs.bastion_sessions[each.key].session_id
       BASTION_REGION  = data.terraform_remote_state.oracle.outputs.bastion_sessions[each.key].bastion_region
       TARGET_IP       = data.terraform_remote_state.oracle.outputs.bastion_sessions[each.key].target_ip
-      LOCAL_PORT      = tostring(local.oci_worker_port_map[each.key])
+      LOCAL_PORT      = tostring(local.oci_node_port_map[each.key])
       NODE_KEY        = each.key
     }
     # HCL heredoc: $$ escapes a literal $ so the shell (not HCL) expands the variable.
@@ -84,28 +84,28 @@ resource "null_resource" "bastion_tunnel" {
   }
 }
 
-resource "terraform_data" "worker_oci_config_hash" {
-  for_each = local.oci_worker_nodes
+resource "terraform_data" "oci_config_hash" {
+  for_each = local.oci_nodes
   input = {
-    config     = data.talos_machine_configuration.worker[each.key].machine_configuration
+    config     = each.value.role == "controlplane" ? data.talos_machine_configuration.cp[each.key].machine_configuration : data.talos_machine_configuration.worker[each.key].machine_configuration
     generation = var.force_talos_reapply_generation
     # Mirrors the cp_config_hash behavior — see apply.tf for rationale.
     image_apply_generation = each.value.image_apply_generation
   }
 }
 
-resource "talos_machine_configuration_apply" "worker_oci" {
-  for_each                    = local.oci_worker_nodes
+resource "talos_machine_configuration_apply" "oci" {
+  for_each                    = local.oci_nodes
   depends_on                  = [null_resource.bastion_tunnel]
   client_configuration        = data.terraform_remote_state.secrets.outputs.client_configuration
-  machine_configuration_input = data.talos_machine_configuration.worker[each.key].machine_configuration
-  node                        = "127.0.0.1:${local.oci_worker_port_map[each.key]}"
-  endpoint                    = "127.0.0.1:${local.oci_worker_port_map[each.key]}"
+  machine_configuration_input = each.value.role == "controlplane" ? data.talos_machine_configuration.cp[each.key].machine_configuration : data.talos_machine_configuration.worker[each.key].machine_configuration
+  node                        = "127.0.0.1:${local.oci_node_port_map[each.key]}"
+  endpoint                    = "127.0.0.1:${local.oci_node_port_map[each.key]}"
   # See apply.tf for the rationale on "reboot" — ensures kubelet restarts on
   # every machine config change.
   apply_mode = "reboot"
 
   lifecycle {
-    replace_triggered_by = [terraform_data.worker_oci_config_hash[each.key]]
+    replace_triggered_by = [terraform_data.oci_config_hash[each.key]]
   }
 }

@@ -5,7 +5,7 @@ prints usage when run with `-h` / `--help` or with no arguments.
 
 | Script | Purpose | Who runs it |
 |---|---|---|
-| [`bootstrap-oci-oidc.sh`](#bootstrap-oci-oidcsh) | Idempotently configure an OCI Identity Domain so GitHub Actions can federate into it via OIDC. | Operator, once per OCI tenancy, usually in OCI Cloud Shell. |
+| [`bootstrap-oci-oidc.sh`](#bootstrap-oci-oidcsh) | Idempotently configure an OCI Identity Domain and print an inventory-ready OCI account file for `production/config/oci/<account>.yaml`. | Operator, once per OCI tenancy, usually in OCI Cloud Shell. |
 | [`get-kubeconfig.sh`](#get-kubeconfigsh) | Dispatch the `dispatch-kubeconfig` workflow and get a short-lived, per-user cluster-admin kubeconfig, encrypted to your SSH keys. | Any collaborator who needs ad-hoc cluster access from their workstation. |
 | [`create-cluster-user.sh`](#create-cluster-usersh) | Mint a long-lived x509 client cert + kubeconfig for a stable Kubernetes user, optionally scoped to namespaces. | Cluster-admin (already holds a kubeconfig), for onboarding collaborators. |
 | [`get-talos-configs.sh`](#get-talos-configssh) | Download the rendered Talos machine-config bundle published by the last apply. Use to onboard non-cloud machines as workers (laptops, on-prem, home labs). | Operator, when joining a new off-cloud node. |
@@ -60,8 +60,9 @@ federate into the tenancy with OIDC + UPST — no long-lived OCI keys.
 4. Identity Propagation Trust `github-actions-antinvestor` that recognises
    GitHub's OIDC JWTs and impersonates the service user.
 
-At the end it prints the `gh secret set` commands you need to run to install
-the secrets into the GitHub repository — it does **not** push them itself.
+At the end it prints an OCI account file you can save as
+`production/config/oci/<account>.yaml` — it does **not** write the file for
+you.
 
 **Prereqs:**
 
@@ -72,7 +73,7 @@ the secrets into the GitHub repository — it does **not** push them itself.
 **Usage:**
 
 ```bash
-# Single tenancy, slot 0 of 4:
+# Single tenancy:
 ./scripts/bootstrap-oci-oidc.sh --profile DEFAULT --gh-profile stawi --suffix 0
 
 # Multi-tenancy, one invocation per OCI account:
@@ -86,26 +87,36 @@ the secrets into the GitHub repository — it does **not** push them itself.
 | Flag | Description | Default |
 |---|---|---|
 | `--profile <NAME>` | OCI CLI profile from `~/.oci/config`. | `DEFAULT` |
-| `--gh-profile <NAME>` | Name written to `OCI_PROFILE_<N>` (also the tofu `oci_accounts` map key). | slugged form of `--profile` |
-| `--suffix <N>` | GitHub-secret slot (0..3). The workflow iterates all slots. | `0` |
+| `--gh-profile <NAME>` | Name written to the OCI account key in `production/config/oci/<account>.yaml`. | slugged form of `--profile` |
+| `--suffix <N>` | Inventory export slot label for the printed example block. | `0` |
 | `--tenancy <OCID>` | Tenancy OCID. Auto-detected from the OCI profile. | auto |
 | `--region <REGION>` | OCI region identifier. Auto-detected. | auto |
 | `--compartment <OCID>` | Compartment to scope resources to. | tenancy root |
-| `--repo <owner/name>` | GitHub repo for the emitted `gh secret set` lines. | `antinvestor/deployments` |
+| `--repo <owner/name>` | GitHub repo used in the informational footer. | `antinvestor/deployments` |
 
 **Output (end of run):**
 
 ```
-Run these to install the GitHub Actions secrets (slot 0, repo antinvestor/deployments):
+Save this as production/config/oci/stawi.yaml:
 
-gh secret set OCI_PROFILE_0         -R antinvestor/deployments --body 'stawi'
-gh secret set OCI_DOMAIN_BASE_URL_0 -R antinvestor/deployments --body 'https://idcs-...'
-gh secret set OCI_TENANCY_0         -R antinvestor/deployments --body 'ocid1.tenancy....'
-gh secret set OCI_REGION_0          -R antinvestor/deployments --body 'eu-frankfurt-1'
-gh secret set OIDC_CLIENT_IDENTIFIER_0 -R antinvestor/deployments --body 'cid:secret'
+oci:
+  accounts:
+    stawi:
+      tenancy_ocid: ocid1.tenancy....
+      compartment_ocid: ocid1.compartment....
+      region: eu-frankfurt-1
+      vcn_cidr: 10.200.0.0/16
+      enable_ipv6: true
+      auth:
+        domain_base_url: https://idcs-...
+        oidc_client_identifier: "cid:secret"
+      labels: {}
+      annotations: {}
+      workers: {}
 ```
 
-Paste the block into a shell where `gh auth status` reports you logged in.
+Add worker entries under `workers`, then sync the `production/config/`
+directory to `s3://cluster-tofu-state/production/config/`.
 
 The script is safe to re-run: every resource is looked up by name and either
 no-op'd or patched into the correct shape. In particular it self-heals the

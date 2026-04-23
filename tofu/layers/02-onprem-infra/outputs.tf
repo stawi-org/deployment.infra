@@ -17,22 +17,31 @@ output "nodes" {
       kubespan_endpoint = try(item.node.ipv6, null) != null ? item.node.ipv6 : try(item.node.ipv4, null)
 
       derived_labels = merge(
+        item.node.labels,
         {
           "topology.kubernetes.io/region"     = item.location.region
           "node.antinvestor.io/provider"      = "onprem"
           "node.antinvestor.io/location"      = item.location_key
+          "node.antinvestor.io/role"          = item.node.role
           "node.antinvestor.io/apply-source"  = "manual"
           "node.antinvestor.io/managed-plane" = "inventory"
         },
-        item.node.labels,
+        item.node.role == "controlplane" ? {
+          "node-role.kubernetes.io/control-plane" = ""
+          } : {
+          "node-role.kubernetes.io/worker" = ""
+        },
       )
       derived_annotations = merge(
+        item.node.annotations,
         {
           "node.antinvestor.io/location-description" = item.location.description
           "node.antinvestor.io/site-ipv4-cidrs"      = join(",", item.location.site_ipv4_cidrs)
           "node.antinvestor.io/site-ipv6-cidrs"      = join(",", item.location.site_ipv6_cidrs)
+          "node.antinvestor.io/provider"             = "onprem"
+          "node.antinvestor.io/location"             = item.location_key
+          "node.antinvestor.io/role"                 = item.node.role
         },
-        item.node.annotations,
       )
 
       instance_id         = key

@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Render cluster inventory from R2/S3 YAML config or legacy workflow env."""
+"""Render cluster inventory from R2/S3 YAML config files or a config directory."""
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -34,6 +33,64 @@ def load_config(path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"{path} must contain a mapping/object")
     return data
+
+
+def load_inventory_source(path: Path) -> dict[str, Any]:
+    if path.is_file():
+        return load_config(path)
+    if not path.is_dir():
+        raise ValueError(f"{path} does not exist or is not a directory")
+
+    merged: dict[str, Any] = {
+        "contabo": {"accounts": {}},
+        "oci": {"accounts": {}, "retained_accounts": {}},
+        "onprem": {"locations": {}},
+    }
+
+    files = sorted(
+        [
+            candidate
+            for candidate in path.rglob("*")
+            if candidate.is_file() and candidate.suffix.lower() in {".yaml", ".yml"}
+        ],
+        key=lambda candidate: str(candidate.relative_to(path)),
+    )
+    if not files:
+        raise ValueError(f"{path} does not contain any YAML inventory files")
+
+    def merge_section(section: str, key: str, value: dict[str, Any], source: Path) -> None:
+        target = merged[section][key]
+        if not isinstance(value, dict):
+            raise ValueError(f"{source}: {section}.{key} must be an object")
+        for name, item in value.items():
+            if name in target:
+                raise ValueError(f"{source}: duplicate {section}.{key[:-1]} {name}")
+            target[name] = item
+
+    for file in files:
+        data = load_config(file)
+        if "contabo" in data:
+            contabo = data["contabo"] or {}
+            if not isinstance(contabo, dict):
+                raise ValueError(f"{file}: contabo must be an object")
+            accounts = contabo.get("accounts") or contabo.get("contabo_accounts") or {}
+            merge_section("contabo", "accounts", accounts, file)
+        if "oci" in data:
+            oci = data["oci"] or {}
+            if not isinstance(oci, dict):
+                raise ValueError(f"{file}: oci must be an object")
+            accounts = oci.get("accounts") or oci.get("oci_accounts") or {}
+            retained = oci.get("retained_accounts") or oci.get("retained_oci_accounts") or {}
+            merge_section("oci", "accounts", accounts, file)
+            merge_section("oci", "retained_accounts", retained, file)
+        if "onprem" in data:
+            onprem = data["onprem"] or {}
+            if not isinstance(onprem, dict):
+                raise ValueError(f"{file}: onprem must be an object")
+            locations = onprem.get("locations") or onprem.get("onprem_locations") or {}
+            merge_section("onprem", "locations", locations, file)
+
+    return merged
 
 
 def dump(path: Path, data: Any) -> None:
@@ -98,8 +155,8 @@ def normalize_contabo_node(account_name: str, node_name: str, raw: dict[str, Any
     missing = [field for field, value in {"product_id": product_id}.items() if not value]
     if missing:
         raise ValueError(f"Contabo node {account_name}/{node_name}: missing required field(s): {', '.join(missing)}")
-    if role != "controlplane":
-        raise ValueError(f"Contabo node {account_name}/{node_name}: role must be 'controlplane'")
+    if role not in {"controlplane", "worker"}:
+        raise ValueError(f"Contabo node {account_name}/{node_name}: role must be 'controlplane' or 'worker'")
     if not isinstance(labels, dict) or not isinstance(annotations, dict):
         raise ValueError(f"Contabo node {account_name}/{node_name}: labels and annotations must be objects")
 
@@ -113,7 +170,7 @@ def normalize_contabo_node(account_name: str, node_name: str, raw: dict[str, Any
 
 
 def contabo_from_config(path: Path) -> dict[str, Any]:
-    data = load_config(path)
+    data = load_inventory_source(path)
     contabo = data.get("contabo") or {}
     if "accounts" in contabo:
         accounts = contabo["accounts"]
@@ -211,60 +268,8 @@ def oci_from_map(data: dict[str, Any], retained_profiles: set[str]) -> tuple[dic
 
 
 def oci_from_config(path: Path, retained_profiles: set[str]) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, str]]]:
-    data = load_config(path)
+    data = load_inventory_source(path)
     return oci_from_map(data, retained_profiles)
-
-
-def oci_from_env(retained_profiles: set[str]) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, str]]]:
-    active_tf: dict[str, Any] = {}
-    retained_tf: dict[str, Any] = {}
-    auth_accounts: list[dict[str, str]] = []
-
-    for i in range(4):
-        client = os.getenv(f"OIDC_CLIENT_IDENTIFIER_{i}", "")
-        if not client:
-            continue
-
-        profile = os.getenv(f"OCI_PROFILE_{i}", "")
-        domain = os.getenv(f"OCI_DOMAIN_BASE_URL_{i}", "")
-        tenancy = os.getenv(f"OCI_TENANCY_{i}", "")
-        region = os.getenv(f"OCI_REGION_{i}", "")
-        if not all([profile, domain, tenancy, region]):
-            raise ValueError(
-                f"slot {i} has OIDC_CLIENT_IDENTIFIER set but OCI_PROFILE/OCI_DOMAIN_BASE_URL/OCI_TENANCY/OCI_REGION missing"
-            )
-
-        workers_raw = os.getenv(f"OCI_WORKERS_JSON_{i}") or json.dumps(DEFAULT_WORKERS)
-        try:
-            workers = json.loads(workers_raw)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"slot {i} ({profile}) OCI_WORKERS_JSON is invalid JSON: {exc}") from exc
-
-        tf_account = {
-            "tenancy_ocid": tenancy,
-            "compartment_ocid": tenancy,
-            "region": region,
-            "vcn_cidr": os.getenv(f"OCI_VCN_CIDR_{i}") or DEFAULT_VCN_CIDR,
-            "enable_ipv6": True,
-            "bastion_client_cidr_block_allow_list": ["0.0.0.0/0"],
-            "workers": workers,
-        }
-        auth_accounts.append(
-            {
-                "profile": profile,
-                "tenancy_ocid": tenancy,
-                "region": region,
-                "domain_base_url": domain,
-                "oidc_client_identifier": client,
-            }
-        )
-        if profile in retained_profiles:
-            retained_tf[profile] = tf_account
-        else:
-            active_tf[profile] = tf_account
-
-    return active_tf, retained_tf, auth_accounts
-
 
 def render_oci(args: argparse.Namespace) -> int:
     retained_profiles = {
@@ -272,11 +277,11 @@ def render_oci(args: argparse.Namespace) -> int:
         for item in (args.retained_profiles or "").split(",")
         if item.strip()
     }
+    if not args.input or not args.input.exists():
+        print("OCI config error: input file is required", file=sys.stderr)
+        return 2
     try:
-        if args.input and args.input.exists():
-            active, retained, auth = oci_from_config(args.input, retained_profiles)
-        else:
-            active, retained, auth = oci_from_env(retained_profiles)
+        active, retained, auth = oci_from_config(args.input, retained_profiles)
     except ValueError as exc:
         print(f"OCI config error: {exc}", file=sys.stderr)
         return 2
@@ -296,12 +301,10 @@ def onprem_from_map(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def render_onprem(args: argparse.Namespace) -> int:
-    if not args.input or not args.input.exists():
-        dump(args.out, {})
-        print("Rendered on-prem config: locations=0")
-        return 0
     try:
-        data = load_config(args.input)
+        if not args.input:
+            raise ValueError("input path is required")
+        data = load_inventory_source(args.input)
     except ValueError as exc:
         print(f"On-prem config error: {exc}", file=sys.stderr)
         return 2
@@ -316,12 +319,10 @@ def render_onprem(args: argparse.Namespace) -> int:
 
 
 def render_cluster(args: argparse.Namespace) -> int:
-    if not args.input or not args.input.exists():
-        print("Cluster config error: input file is required", file=sys.stderr)
-        return 2
-
     try:
-        data = load_config(args.input)
+        if not args.input:
+            raise ValueError("input path is required")
+        data = load_inventory_source(args.input)
     except ValueError as exc:
         print(f"Cluster config error: {exc}", file=sys.stderr)
         return 2

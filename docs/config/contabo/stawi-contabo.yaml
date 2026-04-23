@@ -1,0 +1,25 @@
+contabo:
+  accounts:
+    stawi-contabo:
+      auth:
+        oauth2_client_id: "<clientId>"
+        oauth2_client_secret: "<clientSecret>"
+        oauth2_user: "<api-user>"
+        oauth2_pass: "<api-password>"
+      labels:
+        node.antinvestor.io/capacity-pool: control-plane
+      annotations:
+        node.antinvestor.io/account-owner: platform
+      nodes:
+        kubernetes-controlplane-api-1:
+          role: controlplane
+          product_id: V94
+          region: EU
+        kubernetes-controlplane-api-2:
+          role: controlplane
+          product_id: V94
+          region: EU
+        kubernetes-controlplane-api-3:
+          role: controlplane
+          product_id: V94
+          region: EU

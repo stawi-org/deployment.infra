@@ -19,9 +19,14 @@
 #
 # Trigger:
 #   gh workflow run reset-cluster.yml --ref main -f confirm=RESET
+#   or merge an approved PR that changes .github/reset-requests/**
 
 name: reset-cluster
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/reset-requests/**'
   workflow_dispatch:
     inputs:
       confirm:
@@ -42,7 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - env:
-          CONFIRM: ${{ inputs.confirm }}
+          CONFIRM: ${{ github.event_name == 'workflow_dispatch' && inputs.confirm || 'RESET' }}
         run: |
           [[ "$CONFIRM" == "RESET" ]] || { echo "::error::confirm must be RESET"; exit 1; }
 
@@ -153,4 +158,4 @@ jobs:
       - run: |
           echo "::notice::Reset complete. Next step — dispatch tofu-apply:"
           echo "::notice::  gh workflow run tofu-apply.yml --ref main"
-          echo "::notice::Or use tofu-reinstall.yml if you want the 30-min notification buffer first."
+          echo "::notice::Or merge a fresh cluster-reset request PR to run it through approval."

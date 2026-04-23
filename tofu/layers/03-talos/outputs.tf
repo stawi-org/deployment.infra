@@ -67,7 +67,7 @@ output "cp_machine_configs" {
 }
 
 output "worker_machine_configs" {
-  description = "Map of worker node name → rendered machine config, including OCI and declared on-prem workers."
+  description = "Map of worker node name → rendered machine config, including Contabo, OCI, and declared on-prem workers."
   value       = { for k, c in data.talos_machine_configuration.worker : k => c.machine_configuration }
   sensitive   = true
 }

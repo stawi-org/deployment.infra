@@ -70,10 +70,11 @@ locals {
     data.terraform_remote_state.onprem.outputs.nodes,
   )
 
-  controlplane_nodes = { for k, v in local.all_nodes : k => v if v.role == "controlplane" }
-  worker_nodes       = { for k, v in local.all_nodes : k => v if v.role == "worker" }
-  ci_applied_nodes   = { for k, v in local.all_nodes : k => v if v.config_apply_source == "ci" }
-  bootstrap_node     = values(local.controlplane_nodes)[0]
+  controlplane_nodes   = { for k, v in local.all_nodes : k => v if v.role == "controlplane" }
+  worker_nodes         = { for k, v in local.all_nodes : k => v if v.role == "worker" }
+  contabo_worker_nodes = { for k, v in local.worker_nodes : k => v if v.provider == "contabo" }
+  ci_applied_nodes     = { for k, v in local.all_nodes : k => v if v.config_apply_source == "ci" }
+  bootstrap_node       = values(local.controlplane_nodes)[0]
   all_node_addresses = compact(flatten([
     for n in local.all_nodes : [
       try(n.ipv4, null),

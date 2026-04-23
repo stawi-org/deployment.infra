@@ -1,14 +1,16 @@
 # .github/workflows/tofu-reinstall.yml
 #
-# Safe wrapper around tofu-apply for destructive changes, such as an
-# operator-forced Contabo reinstall generation bump. It notifies
-# every repo collaborator via an issue, waits 30 minutes (cancellable
-# via `gh run cancel`), then dispatches tofu-apply.
+# Request workflow for destructive cluster reinstalls / resets.
 #
-# The actual reinstall behavior lives in the tofu modules. Contabo disk
-# wipes only happen when force_reinstall_generation is bumped; normal Talos
-# version changes must use the in-place Talos upgrade path once implemented.
-# OCI image changes still destroy and recreate workers.
+# A user runs this workflow with a reason. It writes a reset-request file under
+# `.github/reset-requests/` and opens a PR. The PR must be reviewed and merged
+# before the actual reset workflow runs.
+#
+# Merge path:
+#   1. approve the PR
+#   2. merge it to main
+#   3. .github/workflows/reset-cluster.yml triggers on the push and performs
+#      the reset
 #
 # Trigger:
 #   gh workflow run tofu-reinstall.yml --ref main \
@@ -24,155 +26,83 @@ on:
         required: true
         type: string
       reason:
-        description: 'Short reason — shown in the notification issue.'
+        description: 'Short reason — shown in the notification PR.'
         required: true
         type: string
 
-concurrency:
-  group: tofu-apply-production
-  cancel-in-progress: false
-
 permissions:
-  contents: read
-  issues: write
-  actions: write
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: tofu-reset-request
+  cancel-in-progress: false
 
 jobs:
   guard:
     runs-on: ubuntu-latest
-    outputs:
-      ok: ${{ steps.check.outputs.ok }}
     steps:
-      - id: check
-        env:
+      - env:
           CONFIRM: ${{ inputs.confirm }}
         run: |
           if [[ "$CONFIRM" != "REINSTALL" ]]; then
             echo "::error::`confirm` input must be the literal string REINSTALL. Got: $CONFIRM"
             exit 1
           fi
-          echo "ok=true" >> "$GITHUB_OUTPUT"
 
-  notify:
+  request:
     needs: guard
     runs-on: ubuntu-latest
-    outputs:
-      issue_number: ${{ steps.open.outputs.issue_number }}
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Open notification issue
-        id: open
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Write reset request file
+        id: request
         env:
-          ACTOR:  ${{ github.triggering_actor }}
+          ACTOR: ${{ github.triggering_actor }}
           REASON: ${{ inputs.reason }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          NOW_ISO=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
-          GO_ISO=$(date -u -d '+30 minutes' +'%Y-%m-%dT%H:%M:%SZ')
+          REQUEST_ID="$(date -u +'%Y%m%dT%H%M%SZ')-${RUN_ID}"
+          REQUEST_DIR=".github/reset-requests"
+          REQUEST_FILE="${REQUEST_DIR}/${REQUEST_ID}.yaml"
+          mkdir -p "$REQUEST_DIR"
+          cat <<EOF | sed 's/^          //' > "$REQUEST_FILE"
+          request:
+            requested_at: $(date -u +'%Y-%m-%dT%H:%M:%SZ')
+            requested_by: ${ACTOR}
+            reason: |-
+              ${REASON}
+            source_run_id: ${RUN_ID}
+            source_run_url: ${RUN_URL}
+          EOF
+          echo "request_file=$REQUEST_FILE" >> "$GITHUB_OUTPUT"
+          echo "request_id=$REQUEST_ID" >> "$GITHUB_OUTPUT"
 
-          MENTIONS=$(
-            gh api -H 'Accept: application/vnd.github+json' \
-               --paginate "/repos/${GITHUB_REPOSITORY}/collaborators" \
-               --jq '.[].login' \
-            | sed 's/^/@/' | paste -sd' ' -
-          )
+      - name: Open reset PR
+        id: pr
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: reset-request/${{ github.run_id }}
+          commit-message: "cluster reset request ${{ steps.request.outputs.request_id }}"
+          title: "[cluster reset] ${{ inputs.reason }}"
+          body: |
+            This PR requests a cluster reset.
 
-          BODY=$(cat <<MARKDOWN
-          **Cluster reinstall scheduled.**
+            Merge this PR after approval to trigger the reset workflow on `main`.
+            The reset workflow runs from `.github/workflows/reset-cluster.yml`
+            when `.github/reset-requests/**` changes land on `main`.
+          labels: cluster-reset
+          add-paths: |
+            .github/reset-requests
+          delete-branch: true
 
-          | Field | Value |
-          |---|---|
-          | Triggered by | @${ACTOR} |
-          | Reason | ${REASON} |
-          | Triggered at | ${NOW_ISO} |
-          | Apply starts at | **${GO_ISO}** (30-minute cancellable buffer) |
-          | Workflow run | [${GITHUB_RUN_ID}](${RUN_URL}) |
-
-          ### What this does
-
-          Dispatches \`tofu-apply\`. A bumped
-          \`force_reinstall_generation\` in layer 01 will disk-wipe and
-          reinstall the Contabo control plane while preserving fixed instance
-          IDs and IPs. OCI image changes destroy and recreate workers.
-          Cluster state outside of the infra (Flux, tofu state, Git repo) is
-          preserved.
-
-          ### Cancel window
-
-          Anyone with write access can abort during the buffer:
-
-          \`\`\`
-          gh run cancel ${GITHUB_RUN_ID} -R ${GITHUB_REPOSITORY}
-          \`\`\`
-
-          or click Cancel on the [run page](${RUN_URL}).
-
-          cc: ${MENTIONS}
-          MARKDOWN
-          )
-
-          ISSUE_URL=$(
-            gh issue create -R "$GITHUB_REPOSITORY" \
-              --title "[cluster reinstall] scheduled at ${GO_ISO} by @${ACTOR}" \
-              --body "$BODY" \
-              --label "cluster-reinstall"
-          )
-          ISSUE_NUMBER=$(basename "$ISSUE_URL")
-          echo "issue_number=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
-
-  buffer:
-    needs: notify
-    runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - name: Wait 30 minutes (cancel during this step to abort)
-        env:
-          ISSUE: ${{ needs.notify.outputs.issue_number }}
-        run: |
-          echo "::notice::Buffer started. gh run cancel ${GITHUB_RUN_ID} during the next 30 minutes to abort. Issue #${ISSUE}."
-          sleep 1800
-          echo "Buffer elapsed."
-
-  apply:
-    needs: [notify, buffer]
-    runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - name: Dispatch tofu-apply
-        env:
-          ISSUE: ${{ needs.notify.outputs.issue_number }}
+      - name: Summarize
         run: |
           set -euo pipefail
-          gh workflow run tofu-apply.yml \
-            -R "$GITHUB_REPOSITORY" \
-            --ref "${GITHUB_REF_NAME}"
-          sleep 5
-          RUN_ID=$(
-            gh run list -R "$GITHUB_REPOSITORY" \
-              --workflow tofu-apply.yml \
-              --limit 5 --json databaseId,event,status \
-              --jq ".[] | select(.event==\"workflow_dispatch\" and (.status==\"queued\" or .status==\"in_progress\")) | .databaseId" \
-              | head -1
-          )
-          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID:-unknown}"
-          gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" --body "Buffer elapsed. tofu-apply dispatched: ${RUN_URL}"
-
-  aborted-comment:
-    needs: [notify]
-    if: cancelled() && needs.notify.outputs.issue_number != ''
-    runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - name: Note the cancellation
-        env:
-          ISSUE: ${{ needs.notify.outputs.issue_number }}
-          ACTOR: ${{ github.triggering_actor }}
-        run: |
-          gh issue comment "$ISSUE" -R "$GITHUB_REPOSITORY" \
-            --body "**Reinstall cancelled** during the buffer period. No apply was dispatched. (triggered originally by @${ACTOR})"
-          gh issue close "$ISSUE" -R "$GITHUB_REPOSITORY" --reason "not planned"
+          echo "::notice::Opened reset PR ${{ steps.pr.outputs.pull-request-url }}"

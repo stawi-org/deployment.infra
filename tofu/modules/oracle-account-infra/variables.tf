@@ -11,24 +11,31 @@ variable "enable_ipv6" {
 
 variable "workers" {
   type = map(object({
+    role        = optional(string, "worker")
     shape       = string
     ocpus       = number
     memory_gb   = number
     labels      = optional(map(string), {})
     annotations = optional(map(string), {})
   }))
+  validation {
+    condition = alltrue([
+      for _, worker in var.workers : contains(["controlplane", "worker"], worker.role)
+    ])
+    error_message = "OCI node role must be 'controlplane' or 'worker'."
+  }
 }
 
 variable "labels" {
   type        = map(string)
   default     = {}
-  description = "Labels applied to every worker generated for this OCI account."
+  description = "Labels applied to every node generated for this OCI account."
 }
 
 variable "annotations" {
   type        = map(string)
   default     = {}
-  description = "Annotations applied to every worker generated for this OCI account."
+  description = "Annotations applied to every node generated for this OCI account."
 }
 
 variable "cluster_name" { type = string }

@@ -3,7 +3,7 @@ data "talos_machine_configuration" "worker" {
   for_each           = var.workers
   cluster_name       = var.cluster_name
   cluster_endpoint   = var.cluster_endpoint
-  machine_type       = "worker"
+  machine_type       = each.value.role
   machine_secrets    = var.machine_secrets
   kubernetes_version = var.kubernetes_version
   talos_version      = var.talos_version
@@ -28,8 +28,15 @@ data "talos_machine_configuration" "worker" {
           each.value.labels,
           {
             "topology.kubernetes.io/region" = var.region
+            "topology.kubernetes.io/zone"   = lower(replace(local.ad_0, ":", "-"))
             "node.antinvestor.io/provider"  = "oracle"
             "node.antinvestor.io/account"   = var.account_key
+            "node.antinvestor.io/role"      = each.value.role
+          },
+          each.value.role == "controlplane" ? {
+            "node-role.kubernetes.io/control-plane" = ""
+            } : {
+            "node-role.kubernetes.io/worker" = ""
           }
         )
         nodeAnnotations = merge(
@@ -38,6 +45,9 @@ data "talos_machine_configuration" "worker" {
           {
             "node.antinvestor.io/shape"               = each.value.shape
             "node.antinvestor.io/availability-domain" = local.ad_0
+            "node.antinvestor.io/provider"            = "oracle"
+            "node.antinvestor.io/account"             = var.account_key
+            "node.antinvestor.io/role"                = each.value.role
           }
         )
       }
@@ -50,7 +60,7 @@ module "node" {
   source   = "../node-oracle"
 
   name                = "${var.account_key}-${each.key}"
-  role                = "worker"
+  role                = each.value.role
   shape               = each.value.shape
   ocpus               = each.value.ocpus
   memory_gb           = each.value.memory_gb

@@ -20,17 +20,17 @@
 #   - jq, curl, python3
 #
 # Runs unchanged on OCI Cloud Shell. The `gh` CLI is NOT required here —
-# the script only PRINTS the `gh secret set` commands; run that block on
-# any machine (or CI) that has gh authenticated against the target repo.
+# the script prints an inventory-ready OCI account stanza for
+# `production/config/oci/<account>.yaml`.
 #
 # Multi-tenancy / multi-profile:
 #   --profile <NAME>     OCI CLI profile from ~/.oci/config. Default "DEFAULT".
-#   --gh-profile <NAME>  Profile name written to OCI_PROFILE_<N> and used as
-#                        the oci_accounts map key in tofu (layer 02). Defaults
-#                        to a slugged form of --profile (lowercase alnum).
-#                        Pick something short, e.g. "stawi", "acctB".
-#   --suffix <N>         GH secret slot (OIDC_CLIENT_IDENTIFIER_<N> etc.).
-#                        The workflow iterates slots 0..3. Default "0".
+#   --gh-profile <NAME>  Profile name written to the OCI account key in
+#                        production/config/oci/<account>.yaml. Defaults to a slugged form
+#                        of --profile (lowercase alnum). Pick something short,
+#                        e.g. "stawi", "acctB".
+#   --suffix <N>         Inventory export label for the printed example block.
+#                        Default "0".
 #   --tenancy / --region / --compartment auto-detect from the profile when
 #                        omitted (via `oci iam region get` and profile config).
 #
@@ -42,9 +42,9 @@
 #   ./scripts/bootstrap-oci-oidc.sh --profile tenantB --gh-profile acctB --suffix 1
 #   ./scripts/bootstrap-oci-oidc.sh --profile tenantC --gh-profile acctC --suffix 2
 #
-# Each invocation prints gh-cli commands that (when run) set:
-# OCI_PROFILE_<N>, OIDC_CLIENT_IDENTIFIER_<N>, OCI_DOMAIN_BASE_URL_<N>,
-# OCI_TENANCY_<N>, OCI_REGION_<N>.
+# Each invocation prints an OCI account stanza that (when pasted) sets:
+# tenancy_ocid, compartment_ocid, region, vcn_cidr, enable_ipv6, auth, labels,
+# annotations, workers.
 #
 # Re-running is safe. Every resource is looked up by name; missing ones are
 # created, existing ones are updated.
@@ -105,7 +105,7 @@ if [[ -z "$GH_PROFILE" ]]; then
   GH_PROFILE=$(printf '%s' "$PROFILE" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]')
   [[ -z "$GH_PROFILE" ]] && GH_PROFILE="account${SUFFIX}"
 fi
-say "workflow/tofu profile name: $GH_PROFILE (OCI_PROFILE_${SUFFIX})"
+say "inventory account key: $GH_PROFILE"
 
 # -------- auto-detect from profile --------
 CONFIG_FILE="${OCI_CLI_CONFIG_FILE:-$HOME/.oci/config}"
@@ -555,7 +555,7 @@ fi
 say "  trust:   $TRUST_OCID"
 
 # =========================================================================
-# 7. EMIT GH SECRET COMMANDS
+# 7. EMIT INVENTORY STANZA
 # =========================================================================
 say ""
 say "=========================================================="
@@ -563,40 +563,26 @@ say "OCI workload identity federation ready for profile [$PROFILE]."
 say ""
 
 cat <<EOF
-Tofu oci_accounts.<key> (key must equal OCI_PROFILE_${SUFFIX}):
+Save this as production/config/oci/${GH_PROFILE}.yaml:
 
-  key              = $GH_PROFILE
-  tenancy_ocid     = $TENANCY_OCID
-  compartment_ocid = $COMPARTMENT_OCID
-  region           = $REGION
-
-Impersonation rule:
-  sub sw "$SUB_PATTERN"  →  user $SERVICE_USER_NAME ($USER_OCID)
-                         →  group $GROUP_NAME ($GROUP_OCID)
-                         →  policy $POLICY_NAME ($POLICY_OCID)
-
+oci:
+  accounts:
+    ${GH_PROFILE}:
+      tenancy_ocid: ${TENANCY_OCID}
+      compartment_ocid: ${COMPARTMENT_OCID}
+      region: ${REGION}
+      vcn_cidr: ${VCN_CIDR:-10.200.0.0/16}
+      enable_ipv6: true
+      auth:
+        domain_base_url: ${DOMAIN_BASE_URL}
+        oidc_client_identifier: "${CLIENT_ID}:${CLIENT_SECRET:-<PASTE_CLIENT_SECRET>}"
+      labels: {}
+      annotations: {}
+      workers: {}
 EOF
 
-# Emit the gh-cli commands needed to install / refresh these secrets in the
-# target repo. Copy-paste the whole block. `gh secret set --body <value>`
-# takes the value inline — no pipes, no stdin, no shell quoting surprises.
-# Single-quoted values pass through verbatim.
-#
-# CLIENT_SECRET is only available on fresh app creation. On re-runs against
-# an existing app the line is commented out and you must regenerate it in
-# the OCI console.
-CLIENT_SECRET_LINE="gh secret set OIDC_CLIENT_IDENTIFIER_${SUFFIX} -R ${GH_REPO} --body '${CLIENT_ID}:${CLIENT_SECRET}'"
-if [[ -z "$CLIENT_SECRET" ]]; then
-  CLIENT_SECRET_LINE="# CLIENT_SECRET unavailable on re-run — regenerate it in the OCI console, then:
-# gh secret set OIDC_CLIENT_IDENTIFIER_${SUFFIX} -R ${GH_REPO} --body '${CLIENT_ID}:<PASTE_CLIENT_SECRET>'"
-fi
-
-cat <<EOF
-Run these to install the GitHub Actions secrets (slot ${SUFFIX}, repo ${GH_REPO}):
-
-gh secret set OCI_PROFILE_${SUFFIX}         -R ${GH_REPO} --body '${GH_PROFILE}'
-gh secret set OCI_DOMAIN_BASE_URL_${SUFFIX} -R ${GH_REPO} --body '${DOMAIN_BASE_URL}'
-gh secret set OCI_TENANCY_${SUFFIX}         -R ${GH_REPO} --body '${TENANCY_OCID}'
-gh secret set OCI_REGION_${SUFFIX}          -R ${GH_REPO} --body '${REGION}'
-${CLIENT_SECRET_LINE}
-EOF
+say ""
+say "Impersonation rule:"
+say "  sub sw \"$SUB_PATTERN\"  →  user $SERVICE_USER_NAME ($USER_OCID)"
+say "                         →  group $GROUP_NAME ($GROUP_OCID)"
+say "                         →  policy $POLICY_NAME ($POLICY_OCID)"

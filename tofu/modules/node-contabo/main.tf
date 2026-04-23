@@ -96,12 +96,21 @@ locals {
       "topology.kubernetes.io/region" = var.region
       "node.antinvestor.io/provider"  = "contabo"
       "node.antinvestor.io/account"   = var.account_key
+      "node.antinvestor.io/role"      = var.role
+    },
+    var.role == "controlplane" ? {
+      "node-role.kubernetes.io/control-plane" = ""
+      } : {
+      "node-role.kubernetes.io/worker" = ""
     }
   )
   derived_annotations = merge(
     var.annotations,
     {
       "node.antinvestor.io/product-id" = var.product_id
+      "node.antinvestor.io/provider"   = "contabo"
+      "node.antinvestor.io/account"    = var.account_key
+      "node.antinvestor.io/role"       = var.role
     }
   )
 }

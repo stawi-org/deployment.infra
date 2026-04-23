@@ -38,6 +38,7 @@ variable "oci_accounts" {
     labels                               = optional(map(string), {})
     annotations                          = optional(map(string), {})
     workers = map(object({
+      role        = optional(string, "worker")
       shape       = string
       ocpus       = number
       memory_gb   = number
@@ -64,9 +65,10 @@ variable "oci_accounts" {
   validation {
     condition = alltrue(flatten([
       for account_key, account in var.oci_accounts : [
-        for worker_key, _ in account.workers :
+        for worker_key, worker in account.workers :
         length("${account_key}-${worker_key}") <= 63
         && can(regex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "${account_key}-${worker_key}"))
+        && contains(["controlplane", "worker"], worker.role)
       ]
     ]))
     error_message = "OCI account and worker keys must combine into valid RFC 1123 node names, for example stawi-a-wk-1."
@@ -84,6 +86,7 @@ variable "retained_oci_accounts" {
     labels                               = optional(map(string), {})
     annotations                          = optional(map(string), {})
     workers = map(object({
+      role        = optional(string, "worker")
       shape       = string
       ocpus       = number
       memory_gb   = number
@@ -101,9 +104,10 @@ variable "retained_oci_accounts" {
   validation {
     condition = alltrue(flatten([
       for account_key, account in var.retained_oci_accounts : [
-        for worker_key, _ in account.workers :
+        for worker_key, worker in account.workers :
         length("${account_key}-${worker_key}") <= 63
         && can(regex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "${account_key}-${worker_key}"))
+        && contains(["controlplane", "worker"], worker.role)
       ]
     ]))
     error_message = "Retained OCI account and worker keys must combine into valid RFC 1123 node names, for example stawi-a-wk-1."

@@ -1,0 +1,18 @@
+onprem:
+  locations:
+    kampala-hq:
+      description: Kampala headquarters
+      region: UG
+      site_ipv4_cidrs:
+        - 192.0.2.0/24
+      site_ipv6_cidrs:
+        - 2001:db8:10::/64
+      nodes:
+        rack-1:
+          role: worker
+          labels:
+            node.antinvestor.io/hardware-class: mini-pc
+        rack-2:
+          role: worker
+          annotations:
+            node.antinvestor.io/operator-note: dhcp-address-changes
