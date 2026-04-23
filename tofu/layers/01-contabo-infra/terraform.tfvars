@@ -1,4 +1,6 @@
 # tofu/layers/01-contabo-infra/terraform.tfvars
+# Legacy fallback inventory for local use. Production should prefer the
+# canonical R2 inventory object at production/config/cluster-inventory.yaml.
 controlplane_nodes = {
   "kubernetes-controlplane-api-1" = { product_id = "V94", region = "EU" }
   "kubernetes-controlplane-api-2" = { product_id = "V94", region = "EU" }

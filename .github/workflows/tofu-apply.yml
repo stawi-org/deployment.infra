@@ -34,8 +34,17 @@ jobs:
       environment: production
     secrets: inherit
 
+  onprem-infra:
+    needs: secrets
+    uses: ./.github/workflows/tofu-layer.yml
+    with:
+      layer: 02-onprem-infra
+      mode: apply
+      environment: production
+    secrets: inherit
+
   talos:
-    needs: [contabo-infra, oracle-infra]
+    needs: [contabo-infra, oracle-infra, onprem-infra]
     uses: ./.github/workflows/tofu-layer.yml
     with:
       layer: 03-talos
@@ -52,8 +61,8 @@ jobs:
       environment: production
     secrets: inherit
 
-  # Downloadable machine-config bundle — unencrypted. Lets operators
-  # onboard non-cloud machines as workers without re-running tofu.
+  # Downloadable machine-config bundle encrypted to the dispatching user's
+  # GitHub SSH keys. Lets operators onboard non-cloud machines as workers.
   machine-configs:
     needs: talos
     uses: ./.github/workflows/publish-talos-configs.yml

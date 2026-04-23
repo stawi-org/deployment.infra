@@ -1,15 +1,14 @@
 # .github/workflows/tofu-reinstall.yml
 #
-# Safe wrapper around tofu-apply for destructive changes (typically a
-# Talos version bump in tofu/shared/versions.auto.tfvars). It notifies
+# Safe wrapper around tofu-apply for destructive changes, such as an
+# operator-forced Contabo reinstall generation bump. It notifies
 # every repo collaborator via an issue, waits 30 minutes (cancellable
 # via `gh run cancel`), then dispatches tofu-apply.
 #
-# The actual reinstall behavior lives in the tofu modules: changing
-# image_id in layer 01 (via var.talos_version) causes the Contabo
-# provider to execute its update-with-reinstall flow (disk wiped, IP
-# and instance ID preserved). On OCI, same logic produces destroy+create
-# of the workers.
+# The actual reinstall behavior lives in the tofu modules. Contabo disk
+# wipes only happen when force_reinstall_generation is bumped; normal Talos
+# version changes must use the in-place Talos upgrade path once implemented.
+# OCI image changes still destroy and recreate workers.
 #
 # Trigger:
 #   gh workflow run tofu-reinstall.yml --ref main \
@@ -93,11 +92,12 @@ jobs:
 
           ### What this does
 
-          Dispatches \`tofu-apply\`. Any Talos version change in
-          tofu/shared/versions.auto.tfvars will cascade to the Contabo
-          provider's update-with-reinstall (CP disks wiped, IPs preserved)
-          and to OCI workers (destroy + create). Cluster state outside
-          of the infra (Flux, tofu state, Git repo) is preserved.
+          Dispatches \`tofu-apply\`. A bumped
+          \`force_reinstall_generation\` in layer 01 will disk-wipe and
+          reinstall the Contabo control plane while preserving fixed instance
+          IDs and IPs. OCI image changes destroy and recreate workers.
+          Cluster state outside of the infra (Flux, tofu state, Git repo) is
+          preserved.
 
           ### Cancel window
 

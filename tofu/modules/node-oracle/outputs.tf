@@ -6,7 +6,7 @@ output "node" {
     role                = var.role
     provider            = "oracle"
     ipv4                = local.private_ip
-    ipv6                = null
+    ipv6                = local.ipv6
     talos_endpoint      = "127.0.0.1" # per-node port is determined by layer 03 when it opens bastion sessions
     kubespan_endpoint   = local.private_ip
     derived_labels      = local.derived_labels

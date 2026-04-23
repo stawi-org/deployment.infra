@@ -7,12 +7,11 @@
 #
 # What it does:
 #   1. Deletes every DNS record matching cp* on both Cloudflare zones.
-#   2. Wipes the R2 state objects for layers 02-oracle, 03-talos,
-#      04-flux. Layer 00 (secrets) and layer 01 (Contabo instances)
-#      are preserved — secrets so the cluster keeps the same PKI
-#      identity, and layer 01 so the 3 CP instances aren't destroyed
-#      (layer 01's imports.tf would re-import them anyway but keeping
-#      state avoids that round-trip).
+#   2. Wipes the R2 state objects for layers 01-contabo, 02-oracle,
+#      02-onprem, 03-talos, and 04-flux. Layer 00 is preserved so the
+#      cluster keeps the same PKI identity. Contabo instances themselves
+#      are not destroyed by this workflow; layer 01's imports.tf re-adopts
+#      the fixed CP instance IDs on the next apply.
 #
 # After a successful reset, dispatch tofu-apply manually — it will
 # reapply layer 01 (triggering Contabo reinstall if the Talos image
@@ -79,13 +78,12 @@ jobs:
       R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
     steps:
       - name: Delete R2 state objects for layers 01, 02, 03, 04
-        # Layer 00 preserved (cluster PKI identity). Layer 01 too
-        # because contabo_image replace races with existing image.
-        # imports.tf re-imports the 3 CP instances on next apply.
+        # Layer 00 preserved (cluster PKI identity). Cloud-side CP
+        # instances are preserved; imports.tf re-imports them next apply.
         run: |
           set -euo pipefail
           ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          for LAYER in 01-contabo-infra 02-oracle-infra 03-talos 04-flux ; do
+          for LAYER in 01-contabo-infra 02-oracle-infra 02-onprem-infra 03-talos 04-flux ; do
             for OBJ in "production/${LAYER}.tfstate" "production/${LAYER}.tfstate.tflock" "production/${LAYER}.tfstate.backup" ; do
               aws s3 rm "s3://cluster-tofu-state/$OBJ" --endpoint-url "$ENDPOINT" --region us-east-1 2>&1 \
                 | grep -v "NoSuchKey\|^$" || true

@@ -11,6 +11,7 @@ This repository owns everything required to bring up, tear down, or replace the 
 - Talos machine-config generation (layer 00)
 - Contabo VPS fleet provisioning (layer 01)
 - Oracle Cloud VM provisioning (layer 02)
+- On-premises location/node inventory (layer 02-onprem)
 - Talos node configuration apply + bootstrap (layer 03)
 - Flux Operator install + FluxInstance declaration that points the cluster at [stawi-org/deployment.manifest](https://github.com/stawi-org/deployment.manifest) (layer 04)
 
@@ -27,14 +28,14 @@ Once layer 04 has reconciled, the cluster is self-managing via FluxCD — applic
                          +----------+----------+
                          |                     |
                          v                     v
-                Contabo API           Oracle Cloud API
-                    |                     |
-                    v                     v
-                 VPS fleet           OCI workers (A1.Flex)
-                    |                     |
-                    +----+----+-----------+
+                Contabo API           Oracle Cloud API         On-prem inventory
+                    |                     |                          |
+                    v                     v                          v
+              VPS control plane      OCI workers              Manual Talos workers
+                    |                     |                          |
+                    +----+----+----------+--------------------------+
                          v
-                  Talos nodes (layer 03)
+                  Talos nodes + KubeSpan (layer 03)
                          |
                          v
                   FluxCD (layer 04)
@@ -102,21 +103,116 @@ All authentication material is sourced from **GitHub Actions secrets** (Settings
 | `ETCD_BACKUP_R2_ACCESS_KEY_ID` | R2 access key for etcd snapshots |
 | `ETCD_BACKUP_R2_SECRET_ACCESS_KEY` | R2 secret key for etcd snapshots |
 
-### Oracle Cloud (up to 4 accounts, slot ladder 0-3)
+## Cluster inventory in R2
 
-Per populated slot N (0, 1, 2, 3):
+Cluster inventory is driven by one canonical YAML file in the same R2 bucket
+as OpenTofu state, under a separate `production/config/` folder:
 
-| Secret | Purpose |
+| Object | Purpose |
 |---|---|
-| `OCI_PROFILE_N` | Profile name (must match the tofu `oci_accounts` key) |
-| `OIDC_CLIENT_IDENTIFIER_N` | `<clientId>:<clientSecret>` for workload-identity federation |
-| `OCI_DOMAIN_BASE_URL_N` | Identity-domain base URL (`https://idcs-...`) |
-| `OCI_TENANCY_N` | Tenancy OCID |
-| `OCI_REGION_N` | OCI region identifier |
-| `OCI_VCN_CIDR_N` (optional) | VCN CIDR; defaults to `10.200.0.0/16` |
-| `OCI_WORKERS_JSON_N` (optional) | Workers map JSON; defaults to single A1.Flex |
+| `production/config/cluster-inventory.yaml` | Canonical inventory for Contabo, OCI, and on-prem. |
 
-Empty slots are skipped automatically by the workflow.
+The old provider-specific objects and secret ladders still work as bootstrap
+fallbacks, but the scalable path is editing the canonical inventory file.
+
+The structure is:
+
+- `contabo.accounts.<account>`: Contabo credentials plus grouped node inventory.
+- `oci.accounts.<account>`: OCI auth, tenancy, network, and worker inventory.
+- `onprem.locations.<location>`: Physical-site inventory and optional hints.
+
+Contabo node names and OCI worker names must remain RFC 1123-safe and unique
+within the cluster. The inventory compiler uses the account and node keys to
+render provider-specific Terraform variables.
+
+Contabo account and node metadata can be attached with `labels` and
+`annotations`. OCI account-level metadata applies to every worker in that
+account, with worker-level keys overriding the account defaults.
+
+OCI accounts are IPv6-enabled by default. Each VCN receives an Oracle-assigned
+IPv6 prefix, each private worker subnet receives an IPv6 subnet, and worker
+VNICs receive IPv6 addresses that flow into the Talos node contract.
+
+Upload example:
+
+```bash
+aws s3 cp cluster-inventory.yaml \
+  s3://cluster-tofu-state/production/config/cluster-inventory.yaml \
+  --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+  --region us-east-1
+```
+
+Example `cluster-inventory.yaml`:
+
+```yaml
+contabo:
+  accounts:
+    stawi-contabo:
+      auth:
+        oauth2_client_id: "<clientId>"
+        oauth2_client_secret: "<clientSecret>"
+        oauth2_user: "<api-user>"
+        oauth2_pass: "<api-password>"
+      labels:
+        node.antinvestor.io/capacity-pool: control-plane
+      nodes:
+        kubernetes-controlplane-api-1:
+          role: controlplane
+          product_id: V94
+          region: EU
+        kubernetes-controlplane-api-2:
+          role: controlplane
+          product_id: V94
+          region: EU
+        kubernetes-controlplane-api-3:
+          role: controlplane
+          product_id: V94
+          region: EU
+oci:
+  accounts:
+    stawi-a:
+      tenancy_ocid: ocid1.tenancy.oc1..example
+      compartment_ocid: ocid1.compartment.oc1..example
+      region: eu-frankfurt-1
+      vcn_cidr: 10.200.0.0/16
+      enable_ipv6: true
+      labels:
+        node.antinvestor.io/capacity-pool: ampere-a1
+      annotations:
+        node.antinvestor.io/account-owner: platform
+      auth:
+        domain_base_url: https://idcs-example.identity.oraclecloud.com
+        oidc_client_identifier: "<clientId>:<clientSecret>"
+      workers:
+        wk-1:
+          shape: VM.Standard.A1.Flex
+          ocpus: 4
+          memory_gb: 24
+onprem:
+  locations:
+    kampala-hq:
+      region: UG
+      site_ipv4_cidrs:
+        - 192.0.2.0/24
+      site_ipv6_cidrs:
+        - 2001:db8:10::/64
+      nodes:
+        rack-1:
+          labels:
+            node.antinvestor.io/hardware-class: mini-pc
+        rack-2:
+          annotations:
+            node.antinvestor.io/operator-note: dhcp-address-changes
+```
+
+### GitHub Repository Variables
+
+These optional variables remain available for bootstrap and decommissioning:
+
+| Variable | Purpose |
+|---|---|
+| `OCI_RETAINED_PROFILES` | Comma-separated OCI profile names that remain provider-only for one apply during account decommissioning. |
+| `ONPREM_LOCATIONS_YAML` | Inline YAML fallback when the R2 on-prem object is not present. |
 
 ## Bringup sequence
 
@@ -124,9 +220,19 @@ Each layer is run via `workflow_dispatch` of the per-mode workflow, which dispat
 
 1. **Layer 00 — Talos secrets.** Run `tofu-plan` with `layer=00-talos-secrets`, review, then `tofu-apply` with the same layer.
 2. **Layer 01 — Contabo infra.** Same pattern. Provisions VPSes.
-3. **Layer 02 — Oracle infra.** Same pattern. Provisions OCI workers (skip if no OCI slots populated).
-4. **Layer 03 — Talos apply + bootstrap.** Same pattern. Applies machine configs, bootstraps etcd. Kubeconfig becomes available via `dispatch-kubeconfig` workflow.
-5. **Layer 04 — Flux.** Same pattern. Installs Flux Operator, applies `FluxInstance` pointing at `stawi-org/deployment.manifest`. Verify FluxInstance reaches Ready with `kubectl get fluxinstance -A`.
+3. **Layer 02 — Oracle infra.** Same pattern. Provisions IPv4/IPv6 OCI workers (skip if no OCI slots populated).
+4. **Layer 02-onprem — On-prem inventory.** Same pattern. Produces node contracts and Talos worker configs for declared physical locations.
+5. **Layer 03 — Talos apply + bootstrap.** Same pattern. Applies machine configs to CI-reachable nodes, bootstraps etcd, and renders manual on-prem worker configs. Kubeconfig becomes available via `dispatch-kubeconfig` workflow.
+6. **Layer 04 — Flux.** Same pattern. Installs Flux Operator, applies `FluxInstance` pointing at `stawi-org/deployment.manifest`. Verify FluxInstance reaches Ready with `kubectl get fluxinstance -A`.
+
+### Topology boundary
+
+The current production-safe topology keeps the Talos control plane on Contabo
+and treats OCI plus on-prem as workers joined through KubeSpan. This avoids
+stretching etcd quorum across unmanaged WAN paths. For provider/location
+control-plane survivability, prefer multiple clusters reconciled from the same
+GitOps source rather than one WAN-stretched etcd cluster. See
+[docs/topology.md](docs/topology.md) for the detailed boundary.
 
 ### Flux GitHub App prerequisite
 
@@ -140,7 +246,7 @@ Layer 04 requires a Flux GitHub App that is **installed on `stawi-org/deployment
 
 - `reset-cluster` workflow performs a Talos-level cluster reset.
 - `wipe-flux-crds` / `wipe-flux-namespace` workflows clean up Flux state without touching Talos.
-- Destroy order for a full tear-down: layer 04 -> layer 03 -> layer 02 -> layer 01. Layer 00 (secrets) is left alone unless you're rotating.
+- Destroy order for a full tear-down: layer 04 -> layer 03 -> layer 02-onprem -> layer 02-oracle -> layer 01. Layer 00 (secrets) is left alone unless you're rotating.
 
 ## Related repositories
 

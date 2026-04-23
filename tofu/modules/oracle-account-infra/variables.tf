@@ -3,13 +3,32 @@ variable "account_key" { type = string }
 variable "compartment_ocid" { type = string }
 variable "region" { type = string }
 variable "vcn_cidr" { type = string }
+variable "enable_ipv6" {
+  type        = bool
+  default     = true
+  description = "Enable Oracle-assigned IPv6 on the VCN, subnet, and worker VNICs."
+}
 
 variable "workers" {
   type = map(object({
-    shape     = string
-    ocpus     = number
-    memory_gb = number
+    shape       = string
+    ocpus       = number
+    memory_gb   = number
+    labels      = optional(map(string), {})
+    annotations = optional(map(string), {})
   }))
+}
+
+variable "labels" {
+  type        = map(string)
+  default     = {}
+  description = "Labels applied to every worker generated for this OCI account."
+}
+
+variable "annotations" {
+  type        = map(string)
+  default     = {}
+  description = "Annotations applied to every worker generated for this OCI account."
 }
 
 variable "cluster_name" { type = string }

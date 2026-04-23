@@ -1,0 +1,602 @@
+#!/usr/bin/env bash
+# scripts/bootstrap-oci-oidc.sh
+#
+# Idempotently configure OCI Identity Domain for GitHub Actions OIDC workload
+# identity federation, per Oracle's documented pattern:
+#
+#   GitHub JWT  →  Identity Propagation Trust (with rule)
+#                       ↓ matched claim
+#                  Service User (specific OCI principal)
+#                       ↓ member of
+#                  Group  ←— IAM policy (compute / network / bastion)
+#                       ↑ exchange result
+#                  UPST (short-lived OCI session token)
+#                       ↓ consumed by
+#                  terraform-provider-oci (via ~/.oci/config)
+#
+# Prereqs:
+#   - oci CLI installed and authed (or run from OCI Cloud Shell — all deps
+#     below are pre-installed there)
+#   - jq, curl, python3
+#
+# Runs unchanged on OCI Cloud Shell. The `gh` CLI is NOT required here —
+# the script only PRINTS the `gh secret set` commands; run that block on
+# any machine (or CI) that has gh authenticated against the target repo.
+#
+# Multi-tenancy / multi-profile:
+#   --profile <NAME>     OCI CLI profile from ~/.oci/config. Default "DEFAULT".
+#   --gh-profile <NAME>  Profile name written to OCI_PROFILE_<N> and used as
+#                        the oci_accounts map key in tofu (layer 02). Defaults
+#                        to a slugged form of --profile (lowercase alnum).
+#                        Pick something short, e.g. "stawi", "acctB".
+#   --suffix <N>         GH secret slot (OIDC_CLIENT_IDENTIFIER_<N> etc.).
+#                        The workflow iterates slots 0..3. Default "0".
+#   --tenancy / --region / --compartment auto-detect from the profile when
+#                        omitted (via `oci iam region get` and profile config).
+#
+# Usage (single tenancy):
+#   ./scripts/bootstrap-oci-oidc.sh --profile DEFAULT --gh-profile stawi --suffix 0
+#
+# Usage (multi-tenancy — run once per profile):
+#   ./scripts/bootstrap-oci-oidc.sh --profile tenantA --gh-profile stawi --suffix 0
+#   ./scripts/bootstrap-oci-oidc.sh --profile tenantB --gh-profile acctB --suffix 1
+#   ./scripts/bootstrap-oci-oidc.sh --profile tenantC --gh-profile acctC --suffix 2
+#
+# Each invocation prints gh-cli commands that (when run) set:
+# OCI_PROFILE_<N>, OIDC_CLIENT_IDENTIFIER_<N>, OCI_DOMAIN_BASE_URL_<N>,
+# OCI_TENANCY_<N>, OCI_REGION_<N>.
+#
+# Re-running is safe. Every resource is looked up by name; missing ones are
+# created, existing ones are updated.
+
+set -euo pipefail
+
+# -------- defaults --------
+PROFILE="DEFAULT"
+SUFFIX="0"
+TENANCY_OCID=""
+REGION=""
+COMPARTMENT_OCID=""
+GH_REPO="antinvestor/deployments"
+GH_BRANCH="main"
+# Tofu/workflow-facing profile name. Defaults to a slugged form of the local
+# OCI CLI profile. It must match the key in the tofu oci_accounts map AND
+# resolve to a valid filesystem name for the ~/.oci/config profile written
+# by the workflow runner.
+GH_PROFILE=""
+
+APP_NAME="${APP_NAME:-github-actions-cluster}"
+SERVICE_USER_NAME="${SERVICE_USER_NAME:-cluster-provisioner}"
+GROUP_NAME="${GROUP_NAME:-cluster-provisioners}"
+POLICY_NAME="${POLICY_NAME:-cluster-provisioners-policy}"
+TRUST_NAME="${TRUST_NAME:-github-actions-antinvestor}"
+
+usage() {
+  sed -n '2,50p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  exit 1
+}
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --profile)        PROFILE="$2"; shift 2 ;;
+    --gh-profile)     GH_PROFILE="$2"; shift 2 ;;
+    --suffix)         SUFFIX="$2"; shift 2 ;;
+    --tenancy)        TENANCY_OCID="$2"; shift 2 ;;
+    --region)         REGION="$2"; shift 2 ;;
+    --compartment)    COMPARTMENT_OCID="$2"; shift 2 ;;
+    --repo)           GH_REPO="$2"; shift 2 ;;
+    --branch)         GH_BRANCH="$2"; shift 2 ;;
+    -h|--help)        usage ;;
+    *)                echo "unknown arg: $1" >&2; usage ;;
+  esac
+done
+
+for cmd in oci jq curl python3 ; do
+  command -v "$cmd" >/dev/null 2>&1 || { echo "missing: $cmd" >&2; exit 2; }
+done
+
+say()  { printf '\e[1;34m[%s][%s]\e[0m %s\n' "$(date +%H:%M:%S)" "$PROFILE" "$*"; }
+warn() { printf '\e[1;33m[%s][%s]\e[0m %s\n' "$(date +%H:%M:%S)" "$PROFILE" "$*" >&2; }
+die()  { printf '\e[1;31m[%s][%s]\e[0m %s\n' "$(date +%H:%M:%S)" "$PROFILE" "$*" >&2; exit 1; }
+
+# Default GH_PROFILE = slug of local PROFILE: lowercase, only a-z0-9, collapsed.
+# e.g. "BWIRE@STAWI.ORG" → "bwirestawiorg". Override with --gh-profile.
+if [[ -z "$GH_PROFILE" ]]; then
+  GH_PROFILE=$(printf '%s' "$PROFILE" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]')
+  [[ -z "$GH_PROFILE" ]] && GH_PROFILE="account${SUFFIX}"
+fi
+say "workflow/tofu profile name: $GH_PROFILE (OCI_PROFILE_${SUFFIX})"
+
+# -------- auto-detect from profile --------
+CONFIG_FILE="${OCI_CLI_CONFIG_FILE:-$HOME/.oci/config}"
+
+autodetect_from_profile() {
+  local key="$1"
+  [[ -r "$CONFIG_FILE" ]] || return 1
+  awk -v profile="$PROFILE" -v key="$key" '
+    BEGIN { in_section=0 }
+    /^\[/ {
+      in_section = ( $0 == "[" profile "]" )
+      next
+    }
+    in_section && $1 ~ "^"key"=" { sub("^"key"=",""); print; exit }
+  ' "$CONFIG_FILE" | tr -d '[:space:]'
+}
+
+if [[ -z "$TENANCY_OCID" ]]; then
+  TENANCY_OCID=$(autodetect_from_profile "tenancy" || true)
+  [[ -n "$TENANCY_OCID" ]] && say "auto-detected tenancy: $TENANCY_OCID"
+fi
+if [[ -z "$REGION" ]]; then
+  REGION=$(autodetect_from_profile "region" || true)
+  [[ -n "$REGION" ]] && say "auto-detected region: $REGION"
+fi
+
+# If the profile has security_token_file, it's a session-token profile
+# (created via `oci session authenticate`) and CLI calls need --auth security_token.
+# Otherwise the default API-key auth applies.
+SECURITY_TOKEN_FILE=$(autodetect_from_profile "security_token_file" || true)
+OCI_CLI=(oci --profile "$PROFILE")
+if [[ -n "$SECURITY_TOKEN_FILE" ]]; then
+  say "profile uses session-token auth (security_token_file=$SECURITY_TOKEN_FILE)"
+  OCI_CLI+=(--auth security_token)
+
+  # Check that the session hasn't expired — validate via token file mtime OR
+  # by invoking a harmless API call. If expired, prompt for refresh.
+  if ! "${OCI_CLI[@]}" iam region list >/dev/null 2>&1 ; then
+    warn "Session token appears expired. Refresh with:"
+    warn "  oci session refresh --profile \"$PROFILE\""
+    warn "  # or if that fails:"
+    warn "  oci session authenticate --profile-name \"$PROFILE\" --region $REGION"
+    die "Aborting until the session is valid."
+  fi
+fi
+if [[ -z "$COMPARTMENT_OCID" ]]; then
+  # Default to the root compartment (== tenancy)
+  COMPARTMENT_OCID="$TENANCY_OCID"
+  [[ -n "$COMPARTMENT_OCID" ]] && say "compartment default (root): $COMPARTMENT_OCID"
+fi
+
+: "${TENANCY_OCID:?--tenancy required (not found in profile $PROFILE of $CONFIG_FILE)}"
+: "${REGION:?--region required (not found in profile $PROFILE of $CONFIG_FILE)}"
+: "${COMPARTMENT_OCID:?--compartment required}"
+
+# =========================================================================
+# 1. IDENTITY DOMAIN DISCOVERY
+# =========================================================================
+say "Discovering Identity Domain"
+DOMAIN_JSON=$("${OCI_CLI[@]}" iam domain list \
+  --compartment-id "$TENANCY_OCID" \
+  --lifecycle-state ACTIVE \
+  --all --output json)
+
+DOMAIN_OCID=$(jq -r '.data[] | select(."display-name"=="Default") | .id' <<<"$DOMAIN_JSON" | head -1)
+[[ -z "$DOMAIN_OCID" || "$DOMAIN_OCID" == "null" ]] && DOMAIN_OCID=$(jq -r '.data[0].id' <<<"$DOMAIN_JSON")
+[[ -z "$DOMAIN_OCID" || "$DOMAIN_OCID" == "null" ]] && die "No active Identity Domain found"
+
+DOMAIN_URL=$(jq -r --arg id "$DOMAIN_OCID" '.data[] | select(.id==$id) | .url' <<<"$DOMAIN_JSON")
+# Normalise the domain URL with Python's urllib — strips trailing slash,
+# drops the default :443 port, enforces https scheme. gtrevorrow/oci-
+# token-exchange-action validates via new URL(base + '/oauth2/v1/token')
+# and rejects anything that produces an invalid URL (empty, unscoped port,
+# missing scheme, etc.).
+DOMAIN_BASE_URL=$(python3 - <<PY
+from urllib.parse import urlparse
+u = urlparse("$DOMAIN_URL")
+scheme = u.scheme or "https"
+host = u.hostname
+port = u.port
+if port in (None, 443):
+    print(f"{scheme}://{host}")
+else:
+    print(f"{scheme}://{host}:{port}")
+PY
+)
+
+say "  domain:  $DOMAIN_OCID"
+say "  URL raw: $DOMAIN_URL"
+say "  URL gh:  $DOMAIN_BASE_URL  (emitted as OCI_DOMAIN_BASE_URL_${SUFFIX})"
+
+# For oci CLI calls we use the raw URL (with :443 if OCI returned it) — the
+# SDK is happy either way. Only the GH secret needs the normalised form so
+# gtrevorrow/oci-token-exchange-action's JS URL() parse succeeds.
+ID_ENDPOINT=(--endpoint "$DOMAIN_URL")
+
+# =========================================================================
+# 2. SERVICE USER
+# =========================================================================
+say "Ensuring service user '$SERVICE_USER_NAME'"
+# Service Users are regular /admin/v1/Users resources with the extension
+# schema urn:...:extension:user:User and serviceUser: true set.
+# The serviceUser flag is mutability: immutable — set only at creation.
+# OCI rejects token exchange impersonation of non-service users with:
+#   {"error":"unauthorized_client",
+#    "error_description":"User requesting is not a service user."}
+USER_EXT_SCHEMA="urn:ietf:params:scim:schemas:oracle:idcs:extension:user:User"
+USER_JSON=$("${OCI_CLI[@]}" identity-domains users list "${ID_ENDPOINT[@]}" \
+  --filter "userName eq \"$SERVICE_USER_NAME\"" \
+  --attributes "id,userName,${USER_EXT_SCHEMA}:serviceUser" \
+  --output json)
+USER_OCID=$(jq -r '.data.resources[0].id // empty' <<<"$USER_JSON")
+IS_SVC=$(jq -r --arg s "$USER_EXT_SCHEMA" '.data.resources[0]? | .[$s].serviceUser // false' <<<"$USER_JSON")
+
+USER_RECREATED="false"
+if [[ -n "$USER_OCID" && "$IS_SVC" != "true" ]]; then
+  warn "  existing user '$SERVICE_USER_NAME' is NOT a service user (serviceUser=$IS_SVC)"
+  warn "  Deleting and recreating — serviceUser flag is immutable."
+
+  # OCI refuses to delete a user that's still referenced by a Group or
+  # IdentityPropagationTrust. Detach from each before deleting the user.
+  EXISTING_GROUP_JSON=$("${OCI_CLI[@]}" identity-domains groups list "${ID_ENDPOINT[@]}" \
+    --filter "displayName eq \"$GROUP_NAME\"" --output json 2>/dev/null || echo '{"data":{"resources":[]}}')
+  EXISTING_GROUP_OCID=$(jq -r '.data.resources[0].id // empty' <<<"$EXISTING_GROUP_JSON")
+  if [[ -n "$EXISTING_GROUP_OCID" ]]; then
+    # Group members, like trust impersonationServiceUsers, are
+    # SCIM returned=request — omitted from default GET responses.
+    if "${OCI_CLI[@]}" identity-domains group get "${ID_ENDPOINT[@]}" --group-id "$EXISTING_GROUP_OCID" \
+        --attributes "members" --output json 2>/dev/null \
+        | jq -e --arg u "$USER_OCID" '.data.members // [] | any(.value==$u)' >/dev/null; then
+      say "  removing user from group '$GROUP_NAME'"
+      "${OCI_CLI[@]}" identity-domains group patch "${ID_ENDPOINT[@]}" --group-id "$EXISTING_GROUP_OCID" \
+        --schemas '["urn:ietf:params:scim:api:messages:2.0:PatchOp"]' \
+        --operations "[{\"op\":\"remove\",\"path\":\"members[value eq \\\"$USER_OCID\\\"]\"}]" \
+        >/dev/null
+    fi
+  fi
+
+  EXISTING_TRUST_JSON=$("${OCI_CLI[@]}" identity-domains identity-propagation-trusts list "${ID_ENDPOINT[@]}" \
+    --filter "name eq \"$TRUST_NAME\"" --output json 2>/dev/null || echo '{"data":{"resources":[]}}')
+  EXISTING_TRUST_OCID=$(jq -r '.data.resources[0].id // empty' <<<"$EXISTING_TRUST_JSON")
+  if [[ -n "$EXISTING_TRUST_OCID" ]]; then
+    say "  deleting dependent trust '$TRUST_NAME' (will be recreated later)"
+    "${OCI_CLI[@]}" identity-domains identity-propagation-trust delete "${ID_ENDPOINT[@]}" \
+      --identity-propagation-trust-id "$EXISTING_TRUST_OCID" --force >/dev/null
+  fi
+
+  "${OCI_CLI[@]}" identity-domains user delete "${ID_ENDPOINT[@]}" \
+    --user-id "$USER_OCID" --force >/dev/null
+  USER_OCID=""
+  USER_RECREATED="true"
+fi
+
+if [[ -z "$USER_OCID" ]]; then
+  say "  creating as service user (via raw SCIM POST)"
+  # OCI CLI --from-json silently drops the nested "serviceUser": true inside
+  # the extension schema — probably normalises camelCase inner keys in a way
+  # the API doesn't recognise. Bypass by POSTing directly to the SCIM API
+  # endpoint, which preserves the JSON body verbatim.
+  USER_PAYLOAD=$(cat <<JSON
+{
+  "schemas": [
+    "urn:ietf:params:scim:schemas:core:2.0:User",
+    "$USER_EXT_SCHEMA"
+  ],
+  "userName": "$SERVICE_USER_NAME",
+  "name": {"familyName": "Provisioner", "givenName": "Cluster"},
+  "emails": [{"primary": true, "type": "work", "value": "${SERVICE_USER_NAME}@noreply.example.com"}],
+  "active": true,
+  "$USER_EXT_SCHEMA": {"serviceUser": true}
+}
+JSON
+)
+  USER_CREATE_RESP=$("${OCI_CLI[@]}" raw-request \
+    --target-uri "${DOMAIN_URL}/admin/v1/Users" \
+    --http-method POST \
+    --request-body "$USER_PAYLOAD" \
+    --output json)
+  USER_OCID=$(jq -r '.data.id // empty' <<<"$USER_CREATE_RESP")
+  if [[ -z "$USER_OCID" ]]; then
+    echo "$USER_CREATE_RESP" | head -c 800 >&2
+    die "User creation failed — see response above."
+  fi
+fi
+say "  user:    $USER_OCID  (service user)"
+
+# =========================================================================
+# 3. GROUP
+# =========================================================================
+say "Ensuring group '$GROUP_NAME'"
+GROUP_JSON=$("${OCI_CLI[@]}" identity-domains groups list "${ID_ENDPOINT[@]}" \
+  --filter "displayName eq \"$GROUP_NAME\"" --output json)
+GROUP_OCID=$(jq -r '.data.resources[0].id // empty' <<<"$GROUP_JSON")
+
+if [[ -z "$GROUP_OCID" ]]; then
+  say "  creating"
+  GROUP_OCID=$("${OCI_CLI[@]}" identity-domains group create "${ID_ENDPOINT[@]}" \
+    --schemas '["urn:ietf:params:scim:schemas:core:2.0:Group"]' \
+    --display-name "$GROUP_NAME" \
+    --members "[{\"type\":\"User\",\"value\":\"$USER_OCID\"}]" \
+    --output json | jq -r '.data.id')
+else
+  IS_MEMBER=$("${OCI_CLI[@]}" identity-domains group get "${ID_ENDPOINT[@]}" --group-id "$GROUP_OCID" \
+    --output json | jq -r --arg u "$USER_OCID" '.data.members // [] | map(select(.value==$u)) | length')
+  if [[ "$IS_MEMBER" == "0" ]]; then
+    say "  adding service user"
+    "${OCI_CLI[@]}" identity-domains group patch "${ID_ENDPOINT[@]}" --group-id "$GROUP_OCID" \
+      --schemas '["urn:ietf:params:scim:api:messages:2.0:PatchOp"]' \
+      --operations "[{\"op\":\"add\",\"path\":\"members\",\"value\":[{\"type\":\"User\",\"value\":\"$USER_OCID\"}]}]" \
+      >/dev/null
+  fi
+fi
+say "  group:   $GROUP_OCID"
+
+# =========================================================================
+# 4. IAM POLICY
+# =========================================================================
+say "Ensuring IAM policy '$POLICY_NAME'"
+POLICY_STMTS=$(cat <<EOF
+[
+  "Allow group id $GROUP_OCID to manage virtual-network-family in compartment id $COMPARTMENT_OCID",
+  "Allow group id $GROUP_OCID to manage instance-family in compartment id $COMPARTMENT_OCID",
+  "Allow group id $GROUP_OCID to manage bastion-family in compartment id $COMPARTMENT_OCID",
+  "Allow group id $GROUP_OCID to read all-resources in compartment id $COMPARTMENT_OCID",
+  "Allow group id $GROUP_OCID to use tag-namespaces in tenancy",
+  "Allow group id $GROUP_OCID to read compartments in tenancy"
+]
+EOF
+)
+POLICY_JSON=$("${OCI_CLI[@]}" iam policy list \
+  --compartment-id "$COMPARTMENT_OCID" --name "$POLICY_NAME" \
+  --output json 2>/dev/null || echo '{"data":[]}')
+POLICY_OCID=$(jq -r '.data[0].id // empty' <<<"$POLICY_JSON")
+
+if [[ -z "$POLICY_OCID" ]]; then
+  say "  creating"
+  POLICY_OCID=$("${OCI_CLI[@]}" iam policy create \
+    --compartment-id "$COMPARTMENT_OCID" \
+    --name "$POLICY_NAME" \
+    --description "Grants $GROUP_NAME network/compute/bastion management" \
+    --statements "$POLICY_STMTS" \
+    --output json | jq -r '.data.id')
+else
+  say "  updating"
+  # OCI CLI requires --version-date alongside --statements when updating.
+  # Setting version-date to today = effective from today.
+  "${OCI_CLI[@]}" iam policy update --policy-id "$POLICY_OCID" \
+    --statements "$POLICY_STMTS" \
+    --version-date "$(date -u +%Y-%m-%d)" \
+    --force >/dev/null
+fi
+say "  policy:  $POLICY_OCID"
+
+# =========================================================================
+# 5. CONFIDENTIAL OAUTH APP
+# =========================================================================
+say "Ensuring confidential OAuth app '$APP_NAME'"
+APP_JSON=$("${OCI_CLI[@]}" identity-domains apps list "${ID_ENDPOINT[@]}" \
+  --filter "displayName eq \"$APP_NAME\"" --output json)
+APP_OCID=$(jq -r '.data.resources[0].id // empty' <<<"$APP_JSON")
+
+APP_PAYLOAD=$(cat <<JSON
+{
+  "schemas": ["urn:ietf:params:scim:schemas:oracle:idcs:App"],
+  "displayName": "$APP_NAME",
+  "description": "Confidential OAuth client for GitHub Actions → OCI UPST exchange",
+  "isOAuthClient": true,
+  "clientType": "confidential",
+  "active": true,
+  "allowedGrants": [
+    "client_credentials",
+    "urn:ietf:params:oauth:grant-type:jwt-bearer"
+  ],
+  "allowedOperations": ["introspect", "onBehalfOfUser"],
+  "trustScope": "Explicit",
+  "basedOnTemplate": {
+    "value": "CustomWebAppTemplateId"
+  }
+}
+JSON
+)
+
+if [[ -z "$APP_OCID" ]]; then
+  say "  creating"
+  CREATE_OUT=$("${OCI_CLI[@]}" identity-domains app create "${ID_ENDPOINT[@]}" \
+    --from-json "$APP_PAYLOAD" --output json 2>&1) || true
+  APP_OCID=$(echo "$CREATE_OUT" | jq -r '.data.id // empty' 2>/dev/null || true)
+  if [[ -z "$APP_OCID" ]]; then
+    warn "CLI app creation failed. Error:"
+    echo "$CREATE_OUT" | head -40 >&2
+    warn "Create manually (Identity Domain → Applications → + Add application → Confidential), then re-run."
+    exit 3
+  fi
+else
+  # App already exists — skip the full `put` replacement. oci's `app put`
+  # requires the complete resource schema (not just the fields we set on
+  # create), so attempting a partial put prompts "Are you sure?" or fails
+  # schema validation. The resource was fully configured on first create;
+  # re-runs are no-ops for the app itself.
+  say "  exists (no-op; delete manually + re-run to regenerate)"
+fi
+
+APP_DETAIL=$("${OCI_CLI[@]}" identity-domains app get "${ID_ENDPOINT[@]}" --app-id "$APP_OCID" --output json)
+CLIENT_ID=$(jq -r '.data.name' <<<"$APP_DETAIL")
+CLIENT_SECRET=$(jq -r '.data."client-secret" // empty' <<<"$APP_DETAIL")
+
+if [[ -z "$CLIENT_SECRET" ]]; then
+  warn "client_secret not returned by API (common after first-read)."
+  warn "Regenerate via: Identity Domain → Applications → $APP_NAME → OAuth → Regenerate secret"
+  read -r -p "Paste the client_secret (or press enter to skip GH secret push): " CLIENT_SECRET || true
+fi
+
+say "  app:     $APP_OCID"
+say "  clientID: $CLIENT_ID"
+
+# =========================================================================
+# 6. IDENTITY PROPAGATION TRUST
+# =========================================================================
+say "Ensuring Identity Propagation Trust '$TRUST_NAME'"
+# First look up by name (normal case)
+TRUST_LIST=$("${OCI_CLI[@]}" identity-domains identity-propagation-trusts list "${ID_ENDPOINT[@]}" \
+  --filter "name eq \"$TRUST_NAME\"" --output json 2>/dev/null || echo '{"data":{"resources":[]}}')
+TRUST_OCID=$(jq -r '.data.resources[0].id // empty' <<<"$TRUST_LIST")
+
+# Fall back to issuer match. OCI enforces issuer uniqueness, so a prior
+# failed run may have left a trust with a different name but same issuer.
+if [[ -z "$TRUST_OCID" ]]; then
+  TRUST_ALL=$("${OCI_CLI[@]}" identity-domains identity-propagation-trusts list "${ID_ENDPOINT[@]}" \
+    --all --output json 2>/dev/null || echo '{"data":{"resources":[]}}')
+  EXISTING=$(jq -r --arg iss "https://token.actions.githubusercontent.com" \
+    '.data.resources[]? | select(.issuer==$iss) | {id,name}' <<<"$TRUST_ALL" | head -c 2000)
+  if [[ -n "$EXISTING" ]]; then
+    TRUST_OCID=$(jq -r --arg iss "https://token.actions.githubusercontent.com" \
+      '[.data.resources[]? | select(.issuer==$iss)][0].id // empty' <<<"$TRUST_ALL")
+    EXISTING_NAME=$(jq -r --arg iss "https://token.actions.githubusercontent.com" \
+      '[.data.resources[]? | select(.issuer==$iss)][0].name // empty' <<<"$TRUST_ALL")
+    warn "Trust with GitHub issuer already exists under a different name: '$EXISTING_NAME' ($TRUST_OCID)"
+    warn "Reusing it. If you need the impersonation rule updated, delete it in the UI:"
+    warn "  Identity Domain → Security → Identity Propagation Trusts → $EXISTING_NAME → Delete"
+    warn "  Then re-run this script."
+  fi
+fi
+
+SUB_PATTERN="repo:${GH_REPO}:"
+
+# OCI's impersonation rule DSL only reliably supports the forms documented
+# by Oracle: `<claim> eq *` (universal) and `<claim> eq <prefix>*` (wildcard).
+# We use the universal form here; the REAL security boundary for this
+# federation is:
+#
+#   1. clientClaimValues=[<client_id>] on the trust — only tokens whose `aud`
+#      equals our confidential OAuth app's client_id are accepted.
+#   2. The client_secret (Basic-auth on the token exchange) is stored in
+#      GH Actions secrets scoped to this repo — only workflows that can
+#      read the secret can complete the exchange.
+#   3. GitHub signs every JWT with its own JWKS, so tokens can't be forged.
+#
+# Narrowing the sub-claim further (e.g. `sub eq repo:owner/name:*`) adds
+# minimal extra defence and has proven brittle across OCI rule-DSL
+# variations. The universal form ("sub eq *") is Oracle's canonical example
+# in the JWT-to-UPST guide.
+RULE='sub eq *'
+
+TRUST_PAYLOAD=$(cat <<JSON
+{
+  "schemas": ["urn:ietf:params:scim:schemas:oracle:idcs:IdentityPropagationTrust"],
+  "name": "$TRUST_NAME",
+  "description": "Trusts GitHub Actions OIDC tokens from $GH_REPO",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "publicKeyEndpoint": "https://token.actions.githubusercontent.com/.well-known/jwks",
+  "type": "JWT",
+  "subjectType": "User",
+  "subjectClaimName": "sub",
+  "subjectMappingAttribute": "userName",
+  "clientClaimName": "aud",
+  "clientClaimValues": ["$CLIENT_ID"],
+  "oauthClients": ["$CLIENT_ID"],
+  "active": true,
+  "allowImpersonation": true,
+  "impersonationServiceUsers": [
+    {
+      "rule": "$RULE",
+      "value": "$USER_OCID"
+    }
+  ]
+}
+JSON
+)
+
+if [[ -n "$TRUST_OCID" && "$USER_RECREATED" == "true" ]]; then
+  say "  user was recreated → trust's impersonation value is stale, forcing recreate"
+  "${OCI_CLI[@]}" identity-domains identity-propagation-trust delete "${ID_ENDPOINT[@]}" \
+    --identity-propagation-trust-id "$TRUST_OCID" --force >/dev/null
+  TRUST_OCID=""
+fi
+
+if [[ -n "$TRUST_OCID" ]]; then
+  # Validate the existing trust has all the fields the token-exchange flow
+  # requires (clientClaimName/clientClaimValues/subjectMappingAttribute).
+  # Old versions of this script created trusts without them, leading to
+  # OCI returning {"error":"unauthorized_client","error_description":
+  # "No rules matched from given token to find impersonation user."}.
+  # If we find a broken trust, delete + recreate so re-runs self-heal.
+  # impersonationServiceUsers has SCIM "returned: request" so default GETs
+  # omit it — must pass --attributes to inspect the stored rule.
+  TRUST_CURRENT=$("${OCI_CLI[@]}" identity-domains identity-propagation-trust get "${ID_ENDPOINT[@]}" \
+    --identity-propagation-trust-id "$TRUST_OCID" \
+    --attributes impersonationServiceUsers \
+    --output json 2>/dev/null || echo '{}')
+  # Canonical OCI rule DSL uses bare claim names, SCIM-filter style:
+  #   sub sw "repo:owner/name:"
+  # Not "${sub}" placeholders (invented form that stores fine but never
+  # matches). Verified against Oracle's json_web_token_exchange.htm and
+  # devopshouse/oci-oidc-auth-config terraform example.
+  #
+  # To detect the default GET returns "returned: request" fields including
+  # impersonation-service-users — GET it with attributes= to confirm the
+  # rule shape stored. Here we inspect the payload with attributes= below.
+  MISSING=$(jq -r '
+    [
+      (if (."client-claim-name" // .clientClaimName // "") == "" then "clientClaimName" else empty end),
+      (if ((."client-claim-values" // .clientClaimValues) | length // 0) == 0 then "clientClaimValues" else empty end),
+      (if (."subject-mapping-attribute" // .subjectMappingAttribute // "") == "" then "subjectMappingAttribute" else empty end),
+      (
+        ((."impersonation-service-users" // .impersonationServiceUsers // [])[0].rule // "")
+        | if . == "sub eq *" then empty else "rule_syntax" end
+      )
+    ] | join(",")' <<<"$TRUST_CURRENT" 2>/dev/null || echo "")
+
+  if [[ -n "$MISSING" ]]; then
+    warn "Existing trust is missing required fields: $MISSING"
+    warn "  Deleting so we can recreate with the complete payload."
+    "${OCI_CLI[@]}" identity-domains identity-propagation-trust delete "${ID_ENDPOINT[@]}" \
+      --identity-propagation-trust-id "$TRUST_OCID" --force >/dev/null
+    TRUST_OCID=""
+  else
+    say "  exists (no-op; schema looks complete)"
+  fi
+fi
+
+if [[ -z "$TRUST_OCID" ]]; then
+  say "  creating"
+  TRUST_OCID=$("${OCI_CLI[@]}" identity-domains identity-propagation-trust create "${ID_ENDPOINT[@]}" \
+    --from-json "$TRUST_PAYLOAD" \
+    --output json | jq -r '.data.id')
+fi
+say "  trust:   $TRUST_OCID"
+
+# =========================================================================
+# 7. EMIT GH SECRET COMMANDS
+# =========================================================================
+say ""
+say "=========================================================="
+say "OCI workload identity federation ready for profile [$PROFILE]."
+say ""
+
+cat <<EOF
+Tofu oci_accounts.<key> (key must equal OCI_PROFILE_${SUFFIX}):
+
+  key              = $GH_PROFILE
+  tenancy_ocid     = $TENANCY_OCID
+  compartment_ocid = $COMPARTMENT_OCID
+  region           = $REGION
+
+Impersonation rule:
+  sub sw "$SUB_PATTERN"  →  user $SERVICE_USER_NAME ($USER_OCID)
+                         →  group $GROUP_NAME ($GROUP_OCID)
+                         →  policy $POLICY_NAME ($POLICY_OCID)
+
+EOF
+
+# Emit the gh-cli commands needed to install / refresh these secrets in the
+# target repo. Copy-paste the whole block. `gh secret set --body <value>`
+# takes the value inline — no pipes, no stdin, no shell quoting surprises.
+# Single-quoted values pass through verbatim.
+#
+# CLIENT_SECRET is only available on fresh app creation. On re-runs against
+# an existing app the line is commented out and you must regenerate it in
+# the OCI console.
+CLIENT_SECRET_LINE="gh secret set OIDC_CLIENT_IDENTIFIER_${SUFFIX} -R ${GH_REPO} --body '${CLIENT_ID}:${CLIENT_SECRET}'"
+if [[ -z "$CLIENT_SECRET" ]]; then
+  CLIENT_SECRET_LINE="# CLIENT_SECRET unavailable on re-run — regenerate it in the OCI console, then:
+# gh secret set OIDC_CLIENT_IDENTIFIER_${SUFFIX} -R ${GH_REPO} --body '${CLIENT_ID}:<PASTE_CLIENT_SECRET>'"
+fi
+
+cat <<EOF
+Run these to install the GitHub Actions secrets (slot ${SUFFIX}, repo ${GH_REPO}):
+
+gh secret set OCI_PROFILE_${SUFFIX}         -R ${GH_REPO} --body '${GH_PROFILE}'
+gh secret set OCI_DOMAIN_BASE_URL_${SUFFIX} -R ${GH_REPO} --body '${DOMAIN_BASE_URL}'
+gh secret set OCI_TENANCY_${SUFFIX}         -R ${GH_REPO} --body '${TENANCY_OCID}'
+gh secret set OCI_REGION_${SUFFIX}          -R ${GH_REPO} --body '${REGION}'
+${CLIENT_SECRET_LINE}
+EOF

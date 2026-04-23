@@ -10,7 +10,22 @@ variable "memory_gb" { type = number }
 variable "subnet_id" { type = string }
 variable "image_id" { type = string }
 variable "compartment_ocid" { type = string }
+variable "assign_ipv6" {
+  type        = bool
+  default     = true
+  description = "Assign an IPv6 address from the subnet to the primary worker VNIC."
+}
 variable "availability_domain" { type = string }
+variable "labels" {
+  type        = map(string)
+  default     = {}
+  description = "Additional Kubernetes node labels for this OCI worker."
+}
+variable "annotations" {
+  type        = map(string)
+  default     = {}
+  description = "Additional Kubernetes node annotations for this OCI worker."
+}
 variable "user_data" {
   type        = string
   sensitive   = true

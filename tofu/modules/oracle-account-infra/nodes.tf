@@ -13,13 +13,33 @@ data "talos_machine_configuration" "worker" {
     file("${var.shared_patches_dir}/storage.yaml"),
     file("${var.shared_patches_dir}/resolvers.yaml"),
     file("${var.shared_patches_dir}/timesync.yaml"),
+    <<-EOT
+    ---
+    apiVersion: v1alpha1
+    kind: HostnameConfig
+    hostname: ${var.account_key}-${each.key}
+    auto: off
+    EOT
+    ,
     yamlencode({
       machine = {
-        nodeLabels = {
-          "topology.kubernetes.io/region" = var.region
-          "node.antinvestor.io/provider"  = "oracle"
-          "node.antinvestor.io/account"   = var.account_key
-        }
+        nodeLabels = merge(
+          var.labels,
+          each.value.labels,
+          {
+            "topology.kubernetes.io/region" = var.region
+            "node.antinvestor.io/provider"  = "oracle"
+            "node.antinvestor.io/account"   = var.account_key
+          }
+        )
+        nodeAnnotations = merge(
+          var.annotations,
+          each.value.annotations,
+          {
+            "node.antinvestor.io/shape"               = each.value.shape
+            "node.antinvestor.io/availability-domain" = local.ad_0
+          }
+        )
       }
     }),
   ]
@@ -37,12 +57,14 @@ module "node" {
   subnet_id           = oci_core_subnet.private.id
   image_id            = oci_core_image.talos.id
   compartment_ocid    = var.compartment_ocid
+  assign_ipv6         = var.enable_ipv6
   availability_domain = local.ad_0
+  labels              = merge(var.labels, each.value.labels)
+  annotations         = merge(var.annotations, each.value.annotations)
   user_data           = base64encode(data.talos_machine_configuration.worker[each.key].machine_configuration)
   bastion_id          = oci_bastion_bastion.this.id
   account_key         = var.account_key
   region              = var.region
-
 
   providers = { oci = oci }
 }

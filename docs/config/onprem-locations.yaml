@@ -1,0 +1,19 @@
+# Example R2 object: s3://cluster-tofu-state/production/config/onprem-locations.yaml
+#
+# On-prem worker IPs are optional. Treat addresses as last-known hints only;
+# node identity comes from the stable location/node keys below.
+locations:
+  kampala-hq:
+    description: Kampala headquarters
+    region: UG
+    site_ipv4_cidrs:
+      - 192.0.2.0/24
+    site_ipv6_cidrs:
+      - 2001:db8:10::/64
+    nodes:
+      rack-1:
+        labels:
+          node.antinvestor.io/hardware-class: mini-pc
+      rack-2:
+        annotations:
+          node.antinvestor.io/operator-note: dhcp-address-changes

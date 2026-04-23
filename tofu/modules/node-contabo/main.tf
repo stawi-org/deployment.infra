@@ -90,11 +90,18 @@ locals {
   ipv4 = contabo_instance.this.ip_config[0].v4[0].ip
   ipv6 = try(contabo_instance.this.ip_config[0].v6[0].ip, null)
 
-  derived_labels = {
-    "topology.kubernetes.io/region" = var.region
-    "node.antinvestor.io/provider"  = "contabo"
-  }
-  derived_annotations = {
-    "node.antinvestor.io/product-id" = var.product_id
-  }
+  derived_labels = merge(
+    var.labels,
+    {
+      "topology.kubernetes.io/region" = var.region
+      "node.antinvestor.io/provider"  = "contabo"
+      "node.antinvestor.io/account"   = var.account_key
+    }
+  )
+  derived_annotations = merge(
+    var.annotations,
+    {
+      "node.antinvestor.io/product-id" = var.product_id
+    }
+  )
 }

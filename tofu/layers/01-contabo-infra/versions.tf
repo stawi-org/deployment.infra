@@ -18,10 +18,12 @@ terraform {
 }
 
 provider "contabo" {
-  oauth2_client_id     = var.contabo_client_id
-  oauth2_client_secret = var.contabo_client_secret
-  oauth2_user          = var.contabo_api_user
-  oauth2_pass          = var.contabo_api_password
+  for_each             = local.contabo_accounts_effective
+  alias                = "account"
+  oauth2_client_id     = each.value.auth.oauth2_client_id
+  oauth2_client_secret = each.value.auth.oauth2_client_secret
+  oauth2_user          = each.value.auth.oauth2_user
+  oauth2_pass          = each.value.auth.oauth2_pass
 }
 
 provider "cloudflare" {

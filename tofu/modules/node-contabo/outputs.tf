@@ -18,7 +18,7 @@ output "node" {
     derived_annotations = local.derived_annotations
     instance_id         = contabo_instance.this.id
     bastion_id          = null
-    account_key         = null
+    account_key         = var.account_key
     config_apply_source = "ci"
     # Bumps ONLY on events that actually wipe the disk:
     #   - new instance (contabo_instance.this.id changes)

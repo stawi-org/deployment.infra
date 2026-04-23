@@ -60,6 +60,15 @@ locals {
     file("${path.module}/../../shared/patches/timesync.yaml"),
     file("${path.module}/../../shared/patches/cluster-network.yaml"),
   ]
+  worker_hostname_patches = {
+    for k, _ in local.worker_nodes : k => <<-EOT
+    ---
+    apiVersion: v1alpha1
+    kind: HostnameConfig
+    hostname: ${k}
+    auto: off
+    EOT
+  }
 }
 
 data "talos_machine_configuration" "cp" {
@@ -100,6 +109,7 @@ data "talos_machine_configuration" "worker" {
   config_patches = concat(
     local.shared_worker_patches,
     [
+      local.worker_hostname_patches[each.key],
       yamlencode({
         machine = {
           nodeLabels      = each.value.derived_labels

@@ -1,15 +1,16 @@
 name: publish-talos-configs
 # Bundles the rendered Talos machine configs from layer 03's R2 state and
-# uploads them as an unencrypted workflow artifact. Use to onboard a
-# non-cloud machine (laptop, on-prem box, home lab) as a cluster worker —
-# Talos joins via outbound KubeSpan, no public IP needed.
+# uploads them as an encrypted workflow artifact. Machine configs and
+# talosconfig contain cluster trust material, so the tarball is encrypted to
+# the dispatching user's public SSH keys before upload.
 #
 # Triggered automatically after a successful tofu-apply, or manually via:
 #   gh workflow run publish-talos-configs.yml --ref main
 #
 # Retrieve locally:
-#   ./scripts/get-talos-configs.sh
-# (or `gh run download -n talos-configs -D /tmp/talos`).
+#   gh run download <run-id> -n talos-configs -D /tmp/talos
+#   age -d -i ~/.ssh/id_ed25519 /tmp/talos/talos-configs.tar.gz.age > /tmp/talos/talos-configs.tar.gz
+#   tar -xzf /tmp/talos/talos-configs.tar.gz -C /tmp/talos
 
 on:
   workflow_call: {}
@@ -23,6 +24,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install age
+        run: |
+          set -euo pipefail
+          AGE_VER="v1.2.1"
+          curl -fsSL -o /tmp/age.tgz "https://github.com/FiloSottile/age/releases/download/${AGE_VER}/age-${AGE_VER}-linux-amd64.tar.gz"
+          tar -xzf /tmp/age.tgz -C /tmp
+          sudo install -m 0755 /tmp/age/age /usr/local/bin/age
+
+      - name: Fetch dispatcher's SSH public keys from GitHub
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/${ACTOR}.keys" \
+            | grep -E '^(ssh-ed25519|ssh-rsa)[[:space:]]' \
+            > /tmp/recipients.keys || true
+
+          if [[ ! -s /tmp/recipients.keys ]]; then
+            echo "::error::${ACTOR} has no ssh-ed25519 or ssh-rsa public keys on GitHub."
+            echo "::error::Add one at https://github.com/settings/keys so this workflow can encrypt the Talos config bundle to you."
+            exit 1
+          fi
+
+          echo "Will encrypt to $(wc -l < /tmp/recipients.keys) public key(s) belonging to ${ACTOR}"
 
       - name: Fetch layer-03 state from R2
         env:
@@ -54,7 +80,8 @@ jobs:
               > "$OUT/controlplane/${NAME}.yaml"
           done
 
-          # Cloud-worker configs — same shape.
+          # Per-worker configs — same shape. Declared on-prem workers use
+          # these files for stable hostnames and inventory labels.
           for NAME in $(jq -r '.outputs.worker_machine_configs.value | keys[]' /tmp/03.tfstate) ; do
             jq -r --arg k "$NAME" '.outputs.worker_machine_configs.value[$k]' /tmp/03.tfstate \
               > "$OUT/worker/${NAME}.yaml"
@@ -74,9 +101,11 @@ jobs:
           Contents:
           - `talosconfig` — root client config for `talosctl` (cluster-admin).
           - `controlplane/<node>.yaml` — per-controlplane machine config.
-          - `worker/<node>.yaml` — per-worker machine config (cloud workers).
+          - `worker/<node>.yaml` — per-worker machine config for OCI and
+             declared on-prem inventory nodes. Prefer this for named on-prem
+             workers so hostnames and labels stay stable when IPs change.
           - `generic-worker.yaml` — platform-neutral worker config. Use
-             this for a non-cloud machine (laptop, on-prem, home lab).
+             this for an unregistered non-cloud machine.
              No LinkConfig, no platform metadata assumed — the host
              machine sets up its own network (DHCP/SLAAC); the worker
              joins the cluster via outbound KubeSpan WireGuard.
@@ -112,10 +141,16 @@ jobs:
           WireGuard mesh regardless of the host network's stack.
           README
 
-          ls -laR "$OUT" | head -40
+          tar -C /tmp -czf /tmp/talos-configs.tar.gz talos-configs
+          age -R /tmp/recipients.keys -o /tmp/talos-configs.tar.gz.age /tmp/talos-configs.tar.gz
+          shred -u /tmp/talos-configs.tar.gz
+          find "$OUT" -type f -exec shred -u {} +
+          rm -rf "$OUT"
+
+          ls -lh /tmp/talos-configs.tar.gz.age
 
       - uses: actions/upload-artifact@v4
         with:
           name: talos-configs
-          path: /tmp/talos-configs
-          retention-days: 7
+          path: /tmp/talos-configs.tar.gz.age
+          retention-days: 1

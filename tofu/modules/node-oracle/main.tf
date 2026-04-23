@@ -23,6 +23,7 @@ resource "oci_core_instance" "this" {
   create_vnic_details {
     subnet_id              = var.subnet_id
     assign_public_ip       = false
+    assign_ipv6ip          = var.assign_ipv6
     hostname_label         = var.name
     skip_source_dest_check = true
   }
@@ -37,17 +38,33 @@ resource "oci_core_instance" "this" {
   }
 }
 
+data "oci_core_vnic_attachments" "this" {
+  compartment_id = var.compartment_ocid
+  instance_id    = oci_core_instance.this.id
+}
+
+data "oci_core_vnic" "primary" {
+  vnic_id = data.oci_core_vnic_attachments.this.vnic_attachments[0].vnic_id
+}
+
 locals {
   private_ip = oci_core_instance.this.private_ip
+  ipv6       = try(data.oci_core_vnic.primary.ipv6addresses[0], null)
 
-  derived_labels = {
-    "topology.kubernetes.io/region" = var.region
-    "topology.kubernetes.io/zone"   = lower(replace(var.availability_domain, ":", "-"))
-    "node.antinvestor.io/provider"  = "oracle"
-    "node.antinvestor.io/account"   = var.account_key
-  }
-  derived_annotations = {
-    "node.antinvestor.io/shape"               = var.shape
-    "node.antinvestor.io/availability-domain" = var.availability_domain
-  }
+  derived_labels = merge(
+    var.labels,
+    {
+      "topology.kubernetes.io/region" = var.region
+      "topology.kubernetes.io/zone"   = lower(replace(var.availability_domain, ":", "-"))
+      "node.antinvestor.io/provider"  = "oracle"
+      "node.antinvestor.io/account"   = var.account_key
+    }
+  )
+  derived_annotations = merge(
+    var.annotations,
+    {
+      "node.antinvestor.io/shape"               = var.shape
+      "node.antinvestor.io/availability-domain" = var.availability_domain
+    }
+  )
 }

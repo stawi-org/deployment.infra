@@ -14,7 +14,7 @@ data "talos_client_configuration" "this" {
   cluster_name         = var.cluster_name
   client_configuration = data.terraform_remote_state.secrets.outputs.client_configuration
   endpoints            = [for n in local.controlplane_nodes : n.ipv4]
-  nodes                = [for n in local.all_nodes : n.ipv4]
+  nodes                = local.all_node_addresses
 }
 
 # Structured kubeconfig — downstream layers consume this directly rather than
@@ -67,7 +67,7 @@ output "cp_machine_configs" {
 }
 
 output "worker_machine_configs" {
-  description = "Map of cloud-worker name → rendered machine config."
+  description = "Map of worker node name → rendered machine config, including OCI and declared on-prem workers."
   value       = { for k, c in data.talos_machine_configuration.worker : k => c.machine_configuration }
   sensitive   = true
 }

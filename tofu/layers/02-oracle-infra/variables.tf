@@ -29,24 +29,25 @@ variable "cluster_endpoint" {
 
 variable "oci_accounts" {
   type = map(object({
-    tenancy_ocid     = string
-    compartment_ocid = string
-    region           = string
-    vcn_cidr         = string
+    tenancy_ocid                         = string
+    compartment_ocid                     = string
+    region                               = string
+    vcn_cidr                             = string
+    enable_ipv6                          = optional(bool, true)
+    bastion_client_cidr_block_allow_list = optional(list(string), ["0.0.0.0/0"])
+    labels                               = optional(map(string), {})
+    annotations                          = optional(map(string), {})
     workers = map(object({
-      shape     = string
-      ocpus     = number
-      memory_gb = number
+      shape       = string
+      ocpus       = number
+      memory_gb   = number
+      labels      = optional(map(string), {})
+      annotations = optional(map(string), {})
     }))
   }))
   description = "One entry per OCI tenancy/account."
-  # Heuristic non-overlap check: flags identical network addresses AND cases where
-  # one CIDR's network address falls within another CIDR. Does NOT catch every
-  # pathological overlap (e.g. 10.0.0.0/8 vs 10.1.0.0/16 where neither's network
-  # address is within the other at index 0) — but in practice, assigning
-  # systematic /16 blocks (10.200.0.0/16, 10.201.0.0/16, ...) sidesteps this.
-  # For full-coverage overlap detection, run `scripts/check-cidr-overlap.py` as a
-  # CI pre-check (not yet implemented — follow-up).
+  # Fast in-HCL guard for identical CIDRs. The workflow also runs
+  # scripts/check-cidr-overlap.py for exhaustive cross-account overlap checks.
   validation {
     condition = length([
       for pair in setproduct(keys(var.oci_accounts), keys(var.oci_accounts)) :
@@ -57,6 +58,54 @@ variable "oci_accounts" {
         && cidrhost(var.oci_accounts[pair[0]].vcn_cidr, 0) == cidrhost(var.oci_accounts[pair[1]].vcn_cidr, 0)
       )
     ]) == 0
-    error_message = "All oci_accounts must have non-overlapping vcn_cidr values (heuristic check — see scripts/check-cidr-overlap.py for exhaustive)."
+    error_message = "All oci_accounts must have distinct vcn_cidr values; CI also runs scripts/check-cidr-overlap.py for exhaustive overlap detection."
+  }
+
+  validation {
+    condition = alltrue(flatten([
+      for account_key, account in var.oci_accounts : [
+        for worker_key, _ in account.workers :
+        length("${account_key}-${worker_key}") <= 63
+        && can(regex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "${account_key}-${worker_key}"))
+      ]
+    ]))
+    error_message = "OCI account and worker keys must combine into valid RFC 1123 node names, for example stawi-a-wk-1."
+  }
+}
+
+variable "retained_oci_accounts" {
+  type = map(object({
+    tenancy_ocid                         = string
+    compartment_ocid                     = string
+    region                               = string
+    vcn_cidr                             = string
+    enable_ipv6                          = optional(bool, true)
+    bastion_client_cidr_block_allow_list = optional(list(string), ["0.0.0.0/0"])
+    labels                               = optional(map(string), {})
+    annotations                          = optional(map(string), {})
+    workers = map(object({
+      shape       = string
+      ocpus       = number
+      memory_gb   = number
+      labels      = optional(map(string), {})
+      annotations = optional(map(string), {})
+    }))
+  }))
+  default     = {}
+  description = <<-EOT
+    OCI accounts whose provider profiles must remain configured for one extra
+    apply after removing them from oci_accounts. This lets OpenTofu destroy
+    resources before the matching provider instance disappears.
+  EOT
+
+  validation {
+    condition = alltrue(flatten([
+      for account_key, account in var.retained_oci_accounts : [
+        for worker_key, _ in account.workers :
+        length("${account_key}-${worker_key}") <= 63
+        && can(regex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "${account_key}-${worker_key}"))
+      ]
+    ]))
+    error_message = "Retained OCI account and worker keys must combine into valid RFC 1123 node names, for example stawi-a-wk-1."
   }
 }

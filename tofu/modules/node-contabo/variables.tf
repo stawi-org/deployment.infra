@@ -18,6 +18,11 @@ variable "product_id" {
   description = "Contabo product ID (e.g. V94)."
 }
 
+variable "account_key" {
+  type        = string
+  description = "Contabo account key from inventory."
+}
+
 variable "region" {
   type    = string
   default = "EU"
@@ -26,6 +31,18 @@ variable "region" {
 variable "image_id" {
   type        = string
   description = "Contabo custom image ID (Talos image)."
+}
+
+variable "labels" {
+  type        = map(string)
+  default     = {}
+  description = "Additional Kubernetes node labels for this Contabo node."
+}
+
+variable "annotations" {
+  type        = map(string)
+  default     = {}
+  description = "Additional Kubernetes node annotations for this Contabo node."
 }
 
 # Contabo API credentials — used by null_resource.ensure_image to call

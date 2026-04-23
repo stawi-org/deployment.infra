@@ -31,11 +31,16 @@ jobs:
     with: { layer: 02-oracle-infra, mode: plan }
     secrets: inherit
     needs: secrets
+  onprem-infra:
+    uses: ./.github/workflows/tofu-layer.yml
+    with: { layer: 02-onprem-infra, mode: plan }
+    secrets: inherit
+    needs: secrets
   talos:
     uses: ./.github/workflows/tofu-layer.yml
     with: { layer: 03-talos, mode: plan }
     secrets: inherit
-    needs: [contabo-infra, oracle-infra]
+    needs: [contabo-infra, oracle-infra, onprem-infra]
   flux:
     uses: ./.github/workflows/tofu-layer.yml
     with: { layer: 04-flux, mode: plan }

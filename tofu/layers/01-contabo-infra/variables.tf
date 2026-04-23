@@ -11,24 +11,48 @@ variable "flux_version" {
   type = string
 }
 
-variable "contabo_client_id" {
-  type      = string
-  sensitive = true
-}
+variable "contabo_accounts" {
+  type = map(object({
+    auth = object({
+      oauth2_client_id     = string
+      oauth2_client_secret = string
+      oauth2_user          = string
+      oauth2_pass          = string
+    })
+    labels      = optional(map(string), {})
+    annotations = optional(map(string), {})
+    nodes = map(object({
+      role        = optional(string, "controlplane")
+      product_id  = string
+      region      = optional(string, "EU")
+      labels      = optional(map(string), {})
+      annotations = optional(map(string), {})
+    }))
+  }))
+  default     = {}
+  description = <<-EOT
+    Contabo account inventory. Each account supplies its own credentials and
+    node inventory. Node keys must remain globally unique across all accounts
+    because they become Terraform resource keys and Talos node names.
+  EOT
 
-variable "contabo_client_secret" {
-  type      = string
-  sensitive = true
-}
-
-variable "contabo_api_user" {
-  type      = string
-  sensitive = true
-}
-
-variable "contabo_api_password" {
-  type      = string
-  sensitive = true
+  validation {
+    condition = length(flatten([
+      for account_key, account in var.contabo_accounts : [
+        for node_key, node in account.nodes :
+        "${account_key}/${node_key}" if(
+          node.role == "controlplane"
+          && length(node_key) <= 63
+          && can(regex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", node_key))
+        )
+      ]
+      ])) == length(toset(flatten([
+        for account_key, account in var.contabo_accounts : [
+          for node_key, _ in account.nodes : node_key
+        ]
+    ])))
+    error_message = "Contabo node keys must be valid RFC 1123 labels, unique across accounts, and currently must have role = \"controlplane\"."
+  }
 }
 
 variable "controlplane_nodes" {
@@ -36,7 +60,43 @@ variable "controlplane_nodes" {
     product_id = string
     region     = string
   }))
-  description = "Control plane node definitions; each key becomes the node name."
+  default     = {}
+  description = <<-EOT
+    Legacy flat control-plane inventory. Kept for bootstrap compatibility.
+    Prefer contabo_accounts in the R2 inventory file.
+  EOT
+
+  validation {
+    condition = length([
+      for node_key, _ in var.controlplane_nodes :
+      node_key if length(node_key) <= 63 && can(regex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", node_key))
+    ]) == length(var.controlplane_nodes)
+    error_message = "Legacy controlplane node keys must be valid RFC 1123 labels."
+  }
+}
+
+variable "contabo_client_id" {
+  type      = string
+  sensitive = true
+  default   = null
+}
+
+variable "contabo_client_secret" {
+  type      = string
+  sensitive = true
+  default   = null
+}
+
+variable "contabo_api_user" {
+  type      = string
+  sensitive = true
+  default   = null
+}
+
+variable "contabo_api_password" {
+  type      = string
+  sensitive = true
+  default   = null
 }
 
 variable "force_reinstall_generation" {
