@@ -1,4 +1,11 @@
 # tofu/modules/node-contabo/outputs.tf
+output "instance_id" { value = contabo_instance.this.id }
+output "product_id" { value = contabo_instance.this.product_id }
+output "region" { value = contabo_instance.this.region }
+output "ipv4" { value = local.ipv4 }
+output "ipv6" { value = local.ipv6 }
+output "account_key" { value = var.account_key }
+
 output "node" {
   description = "Node contract consumed by layer 03. Schema identical to modules/node-oracle."
   # depends_on ties this output (and therefore every downstream
