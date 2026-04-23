@@ -109,42 +109,27 @@ data "sops_file" "machine_configs" {
 
 # --- decoded outputs -------------------------------------------------------
 #
-# Both branches of each conditional call yamldecode() to avoid OpenTofu's
-# "inconsistent conditional result types" error — yamldecode returns a
-# dynamic type, so unifying the true/false branches is trivial when both
-# go through it. The empty-file branch decodes a minimal literal string
-# that produces the expected shape ({} or {nodes: {}}).
+# We use try() rather than a ternary so the expression has a dynamic
+# (unknown) type. OpenTofu's type inference would otherwise unify the
+# branches of a ternary and the two yamldecode(...) calls on different
+# literal strings produce different exact object types (e.g.
+# object({nodes = object({})}) vs the full decoded schema), causing
+# "inconsistent conditional result types". try() returns `any` and
+# sidesteps the check. The has_* predicates gate the data sources, so
+# try() mostly never exercises its fallback in practice; it also catches
+# malformed YAML, which for our controlled writers is vanishingly rare.
 
 locals {
   auth_decoded = (
     local.is_encrypted_auth
-    ? (local.has_auth ? yamldecode(data.sops_file.auth[0].raw) : yamldecode("{}"))
-    : (local.has_auth ? yamldecode(data.aws_s3_object.auth_raw_plain[0].body) : yamldecode("{}"))
+    ? try(yamldecode(data.sops_file.auth[0].raw), null)
+    : try(yamldecode(data.aws_s3_object.auth_raw_plain[0].body), null)
   )
 
-  nodes_decoded = (
-    local.has_nodes
-    ? yamldecode(data.aws_s3_object.nodes[0].body)
-    : yamldecode("nodes: {}")
-  )
-
-  state_decoded = (
-    local.has_state
-    ? yamldecode(data.aws_s3_object.state[0].body)
-    : yamldecode("nodes: {}")
-  )
-
-  talos_state_decoded = (
-    local.has_talos_state
-    ? yamldecode(data.aws_s3_object.talos_state[0].body)
-    : yamldecode("nodes: {}")
-  )
-
-  machine_configs_decoded = (
-    local.has_machine_configs
-    ? yamldecode(data.sops_file.machine_configs[0].raw)
-    : yamldecode("nodes: {}")
-  )
+  nodes_decoded           = try(yamldecode(data.aws_s3_object.nodes[0].body), { nodes = {} })
+  state_decoded           = try(yamldecode(data.aws_s3_object.state[0].body), { nodes = {} })
+  talos_state_decoded     = try(yamldecode(data.aws_s3_object.talos_state[0].body), { nodes = {} })
+  machine_configs_decoded = try(yamldecode(data.sops_file.machine_configs[0].raw), { nodes = {} })
 }
 
 # --- writers ---------------------------------------------------------------
