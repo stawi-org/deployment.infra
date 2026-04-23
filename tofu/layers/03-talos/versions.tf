@@ -13,5 +13,13 @@ terraform {
     null = {
       source = "hashicorp/null"
     }
+    sops = {
+      source  = "carlpett/sops"
+      version = "~> 1.1"
+    }
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.70"
+    }
   }
 }
