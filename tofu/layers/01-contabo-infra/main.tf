@@ -1,5 +1,12 @@
 locals {
-  contabo_accounts_effective = var.contabo_accounts
+  contabo_accounts_effective = {
+    for acct_key in local.contabo_account_keys_from_state : acct_key => {
+      auth        = local.contabo_auth_from_module[acct_key]
+      labels      = try(module.contabo_account_state[acct_key].nodes.labels, {})
+      annotations = try(module.contabo_account_state[acct_key].nodes.annotations, {})
+      nodes       = local.contabo_nodes_from_module[acct_key]
+    }
+  }
 
   contabo_nodes = length(local.contabo_accounts_effective) > 0 ? merge([
     for account_key, account in local.contabo_accounts_effective : {

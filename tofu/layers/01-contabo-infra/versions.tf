@@ -26,12 +26,12 @@ terraform {
 }
 
 provider "contabo" {
-  for_each             = local.contabo_accounts_effective
+  for_each             = toset(local.contabo_account_keys_from_state)
   alias                = "account"
-  oauth2_client_id     = each.value.auth.oauth2_client_id
-  oauth2_client_secret = each.value.auth.oauth2_client_secret
-  oauth2_user          = each.value.auth.oauth2_user
-  oauth2_pass          = each.value.auth.oauth2_pass
+  oauth2_client_id     = local.contabo_auth_from_module[each.key].oauth2_client_id
+  oauth2_client_secret = local.contabo_auth_from_module[each.key].oauth2_client_secret
+  oauth2_user          = local.contabo_auth_from_module[each.key].oauth2_user
+  oauth2_pass          = local.contabo_auth_from_module[each.key].oauth2_pass
 }
 
 provider "cloudflare" {
