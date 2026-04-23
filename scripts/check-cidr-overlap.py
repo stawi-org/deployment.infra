@@ -41,11 +41,16 @@ def parse_network(name: str, cidr: str) -> tuple[str, ipaddress._BaseNetwork]:
         raise ValueError(f"{name} has invalid CIDR {cidr!r}: {exc}") from exc
 
 
+def unwrap_accounts(data: dict[str, Any], context: str) -> dict[str, Any]:
+    accounts = data.get("accounts", data)
+    if not isinstance(accounts, dict):
+        raise ValueError(f"{context} must be an object")
+    return accounts
+
+
 def collect_oci(path: Path) -> list[tuple[str, ipaddress._BaseNetwork]]:
     data = read_config(path)
-    if "accounts" not in data:
-        raise ValueError("oci.accounts is required")
-    data = data["accounts"]
+    data = unwrap_accounts(data, "oci accounts")
     networks: list[tuple[str, ipaddress._BaseNetwork]] = []
     for account, cfg in data.items():
         cidr = cfg.get("vcn_cidr")
@@ -56,9 +61,7 @@ def collect_oci(path: Path) -> list[tuple[str, ipaddress._BaseNetwork]]:
 
 def collect_onprem(path: Path) -> list[tuple[str, ipaddress._BaseNetwork]]:
     data = read_config(path)
-    if "accounts" not in data:
-        raise ValueError("onprem.accounts is required")
-    data = data["accounts"]
+    data = unwrap_accounts(data, "onprem accounts")
     networks: list[tuple[str, ipaddress._BaseNetwork]] = []
     for location, cfg in data.items():
         for field in ("site_ipv4_cidrs", "site_ipv6_cidrs"):
