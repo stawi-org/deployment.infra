@@ -1,21 +1,26 @@
-#ENC[AES256_GCM,data:PMnC1Ov+d5UuDF8bV3p+shyMJBH5D/xO03RLq+ocEPnywFDU3JNs/lrtlE4Tog==,iv:WuMbsYxLIXTvfEOE3nsToLOtCpqaAEXQ++yiZLgkQUc=,tag:WEWwb/fnxYvfW8hLTNBVbw==,type:comment]
-#ENC[AES256_GCM,data:FNS8Fq0DXis5IZWN5zMNmNCOl8D8sNiqF3VV+aq1gXNMRoCaXHBotoPR9WKz/qtiEtWX0aOTilghFkrGV6m4/EGAnS2O,iv:AOuPq96PbqESpN7Q9XT3O34Z9voKzWpMBOv1IIXXk3U=,tag:mA3UdN32clGOTEC3EVKuYw==,type:comment]
-#ENC[AES256_GCM,data:iXd6UwWoems0Tf6mxLFUw/l1CGXKmvyxPIkudTaaGTTIH4jpe8MJU+PhNF9JcEh5YKOqHB1vT+F9rjz6C4RxnLD7Hx8m6n+PpRqN,iv:2E71nhZEe5ExfULNf+6vY8SI10TUfm/nyO0zkdA4YbM=,tag:jGDNge2Dtt1nuNk+LM04fQ==,type:comment]
-#ENC[AES256_GCM,data:QD5pJXyu7LTZqPoIbmcAWNlJSx7+TQmFs5Ltr9KmsC7AswewnoJPS0E64rXsg59Ol5o+JAk3wV2wGlXOS+EVN6408RicV6J2mg==,iv:NxfzaejL2/MbygLL7d1XFy3zpOaRc+3vBLz1FXwyoPc=,tag:JTosQaAJTyDWjDKlQgnANA==,type:comment]
-#ENC[AES256_GCM,data:zBoOihrVHmwsManQL6K2EmJi1rr4/tW1zAvV7285+r4yQx8JYn1yiCeHXxm1Lx8HUVyPlrf1Srk6oLiPP4w=,iv:EWnaCdgcNQ0dT6FKTuVHclV+6w4VtcOzc566/70/des=,tag:NpDIb2hWmFjRRtCqZPyOpA==,type:comment]
-canary: ENC[AES256_GCM,data:RTgjg4+N9Q==,iv:iqfWWZbu7p3JWt+9crGSXx0WQ49Ej2ShaWRjZLXLZVE=,tag:NU1Bs2JRDFmB9va9odufUQ==,type:str]
+# Plan-time SOPS provider health check fixture.
+# If sops-fixture.age.yaml cannot be decrypted during `tofu plan`, the
+# `sops_provider_healthy` check in each layer fails and the apply is blocked
+# before any destructive action.
+#
+# To rotate (after adding/removing an age recipient):
+#   SOPS_AGE_RECIPIENTS="$(tr '\n' ',' < tofu/shared/age-recipients.txt | sed 's/,$//')" \
+#     sops -e --input-type yaml --output-type yaml --encrypted-regex '^canary$' \
+#     tofu/shared/sops-fixture.plain.yaml > tofu/shared/sops-fixture.age.yaml
+#   git add tofu/shared/sops-fixture.*.yaml
+canary: ENC[AES256_GCM,data:q8j03owv6A==,iv:2z+jaXXN/ix7pmdhl8VS0qcnTbWvwbFk6B8UBNZ/cD4=,tag:L+260T9JxOP5GCjQvKIjCA==,type:str]
 sops:
     age:
         - recipient: age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
           enc: |
             -----BEGIN AGE ENCRYPTED FILE-----
-            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBRYllhZVNIaDZHbDVGelc4
-            VkNFSDFSS2s2cXBVYWxqMUJ3YVJMY3hDOWpnClZXZ3lJcXA3bk16ZVBVRjJMZ3Bp
-            MlR3SFZKa3NuTmpDOTVjSW9kM3VmSEUKLS0tIEkrMzdyeFNJR1hVS0JzSkgzTVpq
-            ZTJnNEIrVGljd0RzcURFY3NQQmNTMUEKTz7G4WiZ2fhAgcPShuljcXkd5puYVu8z
-            aWlrFvNdPxoLUDnUtcFPYQnJeVD/n8fjrByaaWtz6NWvDJX8oykquQ==
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBScmFpNTJSbmR6S1Y5S3lj
+            T0s2WFhxNGgvTGZrdDBDbUNWaDFMUkZPbFVvCllSQ3c0N1ZOcXRWWVdSd0Y1aHZO
+            dkc2OE11ZmY1N2laR0duaUtCcjZ6MzQKLS0tIFB3c0ZqdGV0Vm9wYmhQTzZoTnBq
+            SW5rMVRNd0VPYVFaTWJrMyszS3BwbmMK7OkByGcSIM3vxsvwQePMgF6xpzomU3Fi
+            hk0LBqtWC3JZ20SqZbhQXzEbmW3mZSsbkeusXOrrJq/EVj9FKzkFpA==
             -----END AGE ENCRYPTED FILE-----
-    lastmodified: "2026-04-23T21:27:32Z"
-    mac: ENC[AES256_GCM,data:Hm03QU0qqY5PoCrMgew9zcpyZBPLIMNvvsO7U056/0JuAajvycjhdMYFBBT66PXxYfWastSA6IO1/YyIVklxg6XEBN3KadFDZqg5nAHs2pBTpm+8xI3WpuQ5Lx3veUMTE4VmjEWfmoLQMyNH4FPYdiaSCz/hczPZBJdkm9RXAOQ=,iv:keo/TRWma8D6SGitweDjqkJvyDKYpAg2y/jAAYKCvKI=,tag:A3KqpkSl4n9uivWFbIxOLA==,type:str]
-    unencrypted_suffix: _unencrypted
+    lastmodified: "2026-04-23T21:30:31Z"
+    mac: ENC[AES256_GCM,data:S3jcgCQMwLMoxu7M+W8Go2HMYvvLyIIo/F5M1e1LE0KNwGoLZyodz3/toyvL5zWVkOLltB2cYOwFjIIkJIkkvDtNzbR2CliVqKdwiNrRF3bN9vllG7zWUVW88HwGZ2ILxJpaTxFNkoWENIKtgQSFXU3OTY/SRt3lJFR8YjBWu54=,iv:OJUrdUvJbirq37Hxh361z9TLddKiMZrEj5ijGYW4LkI=,tag:HiE1nUUJ0gkssYggt6xrmw==,type:str]
+    encrypted_regex: ^canary$
     version: 3.11.0

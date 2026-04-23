@@ -1,6 +1,11 @@
 # Plan-time SOPS provider health check fixture.
 # If sops-fixture.age.yaml cannot be decrypted during `tofu plan`, the
 # `sops_provider_healthy` check in each layer fails and the apply is blocked
-# before any destructive action. Rotating age recipients requires updating
-# this fixture (re-encrypt from this file) and committing both.
+# before any destructive action.
+#
+# To rotate (after adding/removing an age recipient):
+#   SOPS_AGE_RECIPIENTS="$(tr '\n' ',' < tofu/shared/age-recipients.txt | sed 's/,$//')" \
+#     sops -e --input-type yaml --output-type yaml --encrypted-regex '^canary$' \
+#     tofu/shared/sops-fixture.plain.yaml > tofu/shared/sops-fixture.age.yaml
+#   git add tofu/shared/sops-fixture.*.yaml
 canary: healthy
