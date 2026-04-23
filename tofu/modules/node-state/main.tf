@@ -108,36 +108,42 @@ data "sops_file" "machine_configs" {
 }
 
 # --- decoded outputs -------------------------------------------------------
+#
+# Both branches of each conditional call yamldecode() to avoid OpenTofu's
+# "inconsistent conditional result types" error — yamldecode returns a
+# dynamic type, so unifying the true/false branches is trivial when both
+# go through it. The empty-file branch decodes a minimal literal string
+# that produces the expected shape ({} or {nodes: {}}).
 
 locals {
   auth_decoded = (
     local.is_encrypted_auth
-    ? (local.has_auth ? yamldecode(data.sops_file.auth[0].raw) : null)
-    : (local.has_auth ? yamldecode(data.aws_s3_object.auth_raw_plain[0].body) : null)
+    ? (local.has_auth ? yamldecode(data.sops_file.auth[0].raw) : yamldecode("{}"))
+    : (local.has_auth ? yamldecode(data.aws_s3_object.auth_raw_plain[0].body) : yamldecode("{}"))
   )
 
   nodes_decoded = (
     local.has_nodes
     ? yamldecode(data.aws_s3_object.nodes[0].body)
-    : { nodes = {} }
+    : yamldecode("nodes: {}")
   )
 
   state_decoded = (
     local.has_state
     ? yamldecode(data.aws_s3_object.state[0].body)
-    : { nodes = {} }
+    : yamldecode("nodes: {}")
   )
 
   talos_state_decoded = (
     local.has_talos_state
     ? yamldecode(data.aws_s3_object.talos_state[0].body)
-    : { nodes = {} }
+    : yamldecode("nodes: {}")
   )
 
   machine_configs_decoded = (
     local.has_machine_configs
     ? yamldecode(data.sops_file.machine_configs[0].raw)
-    : { nodes = {} }
+    : yamldecode("nodes: {}")
   )
 }
 
