@@ -4,13 +4,13 @@ This repository now has three node ownership modes:
 
 1. **Contabo control plane**: layer `01-contabo-infra` provisions the Talos control-plane VPS fleet and publishes IPv4/IPv6 Cloudflare records.
 2. **OCI nodes**: layer `02-oracle-infra` provisions nodes across OCI accounts. OCI networking is dual-stack by default. Account and node sizing comes from the canonical R2 inventory file.
-3. **On-prem nodes**: layer `02-onprem-infra` declares physical site inventory and emits node contracts. Inventory uses `nodes` per location, plus labels, annotations, role, and region. Layer `03-talos` renders matching Talos node configs, but config application is manual because physical networks are not reachable from GitHub Actions by default. Location and node inventory also comes from the canonical R2 inventory file.
+3. **On-prem nodes**: layer `02-onprem-infra` declares physical site inventory and emits node contracts. Inventory uses `nodes` under `accounts`, plus labels, annotations, role, and region. Layer `03-talos` renders matching Talos node configs, but config application is manual because physical networks are not reachable from GitHub Actions by default. Account and node inventory also comes from the canonical R2 inventory file.
 
 The canonical inventory lives under `production/config/` as multiple YAML files:
 
 - `contabo/<account>.yaml`
 - `oci/<account>.yaml`
-- `onprem/<location>.yaml`
+- `onprem/<account>.yaml`
 
 Layer 03 aggregates those files by provider and account key.
 

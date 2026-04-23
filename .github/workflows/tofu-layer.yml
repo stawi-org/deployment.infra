@@ -90,7 +90,7 @@ jobs:
             --out-oci-accounts /tmp/oci_accounts.json \
             --out-retained-oci-accounts /tmp/retained_oci_accounts.json \
             --out-oci-auth-accounts /tmp/oci_auth_accounts.json \
-            --out-onprem-locations /tmp/onprem_locations.json
+            --out-onprem-accounts /tmp/onprem_accounts.json
 
       - name: Configure Contabo inventory
         if: inputs.layer == '01-contabo-infra'
@@ -133,12 +133,12 @@ jobs:
         if: inputs.layer == '02-onprem-infra'
         run: |
           set -euo pipefail
-          if [[ ! -s /tmp/onprem_locations.json ]]; then
+          if [[ ! -s /tmp/onprem_accounts.json ]]; then
             echo "::error::on-prem inventory not rendered from production/config/"
             exit 1
           fi
-          python3 scripts/check-cidr-overlap.py --onprem /tmp/onprem_locations.json
-          echo "TF_VAR_onprem_locations=$(jq -c . /tmp/onprem_locations.json)" >> "$GITHUB_ENV"
+          python3 scripts/check-cidr-overlap.py --onprem /tmp/onprem_accounts.json
+          echo "TF_VAR_onprem_accounts=$(jq -c . /tmp/onprem_accounts.json)" >> "$GITHUB_ENV"
 
       # OpenTofu S3 backend with use_lockfile=true writes `<key>.tflock` as a
       # conditional PUT. If a prior run aborted ungracefully, the lock file

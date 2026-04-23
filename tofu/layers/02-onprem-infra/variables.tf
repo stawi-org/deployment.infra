@@ -11,7 +11,7 @@ variable "flux_version" {
   type = string
 }
 
-variable "onprem_locations" {
+variable "onprem_accounts" {
   type = map(object({
     description     = optional(string, "")
     region          = string
@@ -28,7 +28,7 @@ variable "onprem_locations" {
   }))
   default     = {}
   description = <<-EOT
-    First-class on-premises location inventory. This layer does not provision
+    First-class on-premises account inventory. This layer does not provision
     physical machines; it declares stable node identity, topology labels, and
     optional last-known addresses so layer 03 can generate audited Talos
     node configs. Addresses are deliberately optional because on-prem nodes
@@ -37,7 +37,7 @@ variable "onprem_locations" {
 
   validation {
     condition = alltrue(flatten([
-      for _, loc in var.onprem_locations : [
+      for _, loc in var.onprem_accounts : [
         for _, node in loc.nodes : contains(["worker"], node.role)
       ]
     ]))
@@ -46,12 +46,12 @@ variable "onprem_locations" {
 
   validation {
     condition = alltrue(flatten([
-      for location_key, loc in var.onprem_locations : [
+      for account_key, loc in var.onprem_accounts : [
         for node_key, _ in loc.nodes :
-        length("${location_key}-${node_key}") <= 63
-        && can(regex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "${location_key}-${node_key}"))
+        length("${account_key}-${node_key}") <= 63
+        && can(regex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "${account_key}-${node_key}"))
       ]
     ]))
-    error_message = "On-prem location and node keys must combine into valid RFC 1123 node names, for example kampala-hq-rack-1."
+    error_message = "On-prem account and node keys must combine into valid RFC 1123 node names, for example kampala-hq-rack-1."
   }
 }

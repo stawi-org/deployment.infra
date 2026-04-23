@@ -24,7 +24,7 @@ render:
 		--out-oci-accounts /tmp/oci.json \
 		--out-retained-oci-accounts /tmp/oci-retained.json \
 		--out-oci-auth-accounts /tmp/oci-auth.json \
-		--out-onprem-locations /tmp/onprem.json
+		--out-onprem-accounts /tmp/onprem.json
 
 validate:
 	@set -euo pipefail; \

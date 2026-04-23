@@ -56,9 +56,9 @@ def collect_oci(path: Path) -> list[tuple[str, ipaddress._BaseNetwork]]:
 
 def collect_onprem(path: Path) -> list[tuple[str, ipaddress._BaseNetwork]]:
     data = read_config(path)
-    if "locations" not in data:
-        raise ValueError("onprem.locations is required")
-    data = data["locations"]
+    if "accounts" not in data:
+        raise ValueError("onprem.accounts is required")
+    data = data["accounts"]
     networks: list[tuple[str, ipaddress._BaseNetwork]] = []
     for location, cfg in data.items():
         for field in ("site_ipv4_cidrs", "site_ipv6_cidrs"):
@@ -70,7 +70,7 @@ def collect_onprem(path: Path) -> list[tuple[str, ipaddress._BaseNetwork]]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--oci", type=Path, help="Path to OCI accounts YAML/JSON.")
-    parser.add_argument("--onprem", type=Path, help="Path to on-prem locations YAML/JSON.")
+    parser.add_argument("--onprem", type=Path, help="Path to on-prem accounts YAML/JSON.")
     args = parser.parse_args()
 
     networks: list[tuple[str, ipaddress._BaseNetwork]] = []

@@ -5,7 +5,7 @@ output "nodes" {
     for key, item in local.flattened_nodes : key => {
       name     = key
       role     = item.node.role
-      region   = coalesce(try(item.node.region, null), item.location.region)
+      region   = coalesce(try(item.node.region, null), item.account.region)
       provider = "onprem"
       ipv4     = try(item.node.ipv4, null)
       ipv6     = try(item.node.ipv6, null)
@@ -20,9 +20,9 @@ output "nodes" {
       derived_labels = merge(
         item.node.labels,
         {
-          "topology.kubernetes.io/region"     = coalesce(try(item.node.region, null), item.location.region)
+          "topology.kubernetes.io/region"     = coalesce(try(item.node.region, null), item.account.region)
           "node.antinvestor.io/provider"      = "onprem"
-          "node.antinvestor.io/location"      = item.location_key
+          "node.antinvestor.io/account"       = item.account_key
           "node.antinvestor.io/role"          = item.node.role
           "node.antinvestor.io/apply-source"  = "manual"
           "node.antinvestor.io/managed-plane" = "inventory"
@@ -36,22 +36,22 @@ output "nodes" {
       derived_annotations = merge(
         item.node.annotations,
         {
-          "node.antinvestor.io/location-description" = item.location.description
-          "node.antinvestor.io/site-ipv4-cidrs"      = join(",", item.location.site_ipv4_cidrs)
-          "node.antinvestor.io/site-ipv6-cidrs"      = join(",", item.location.site_ipv6_cidrs)
-          "node.antinvestor.io/provider"             = "onprem"
-          "node.antinvestor.io/location"             = item.location_key
-          "node.antinvestor.io/role"                 = item.node.role
+          "node.antinvestor.io/account-description" = item.account.description
+          "node.antinvestor.io/site-ipv4-cidrs"     = join(",", item.account.site_ipv4_cidrs)
+          "node.antinvestor.io/site-ipv6-cidrs"     = join(",", item.account.site_ipv6_cidrs)
+          "node.antinvestor.io/provider"            = "onprem"
+          "node.antinvestor.io/account"             = item.account_key
+          "node.antinvestor.io/role"                = item.node.role
         },
       )
 
       instance_id         = key
       bastion_id          = null
-      account_key         = item.location_key
+      account_key         = item.account_key
       config_apply_source = "manual"
       image_apply_generation = md5(jsonencode({
-        location = item.location_key
-        node     = item.node
+        account = item.account_key
+        node    = item.node
       }))
     }
   }

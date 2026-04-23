@@ -1,5 +1,5 @@
 onprem:
-  locations:
+  accounts:
     kampala-hq:
       description: Kampala headquarters
       region: UG

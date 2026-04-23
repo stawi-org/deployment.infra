@@ -52,7 +52,7 @@ def load_inventory_source(path: Path) -> dict[str, Any]:
     merged: dict[str, Any] = {
         "contabo": {"accounts": {}},
         "oci": {"accounts": {}, "retained_accounts": {}},
-        "onprem": {"locations": {}},
+        "onprem": {"accounts": {}},
     }
 
     files = sorted(
@@ -99,10 +99,10 @@ def load_inventory_source(path: Path) -> dict[str, Any]:
             onprem = data["onprem"] or {}
             if not isinstance(onprem, dict):
                 raise ValueError(f"{file}: onprem must be an object")
-            locations = onprem.get("locations")
-            if locations is None:
-                raise ValueError(f"{file}: onprem.locations is required")
-            merge_section("onprem", "locations", locations, file)
+            accounts = onprem.get("accounts")
+            if accounts is None:
+                raise ValueError(f"{file}: onprem.accounts is required")
+            merge_section("onprem", "accounts", accounts, file)
 
     return merged
 
@@ -354,32 +354,32 @@ def render_oci(args: argparse.Namespace) -> int:
 
 
 def onprem_from_map(data: dict[str, Any]) -> dict[str, Any]:
-    locations = data.get("locations")
-    if locations is None:
-        raise ValueError("onprem.locations is required")
-    if not isinstance(locations, dict):
-        raise ValueError("locations must be an object")
+    accounts = data.get("accounts")
+    if accounts is None:
+        raise ValueError("onprem.accounts is required")
+    if not isinstance(accounts, dict):
+        raise ValueError("accounts must be an object")
     normalized: dict[str, Any] = {}
-    for location_name, raw in locations.items():
+    for account_name, raw in accounts.items():
         if not isinstance(raw, dict):
-            raise ValueError(f"On-prem location {location_name}: location value must be an object")
-        location_region = raw.get("region")
+            raise ValueError(f"On-prem account {account_name}: account value must be an object")
+        account_region = raw.get("region")
         nodes = raw.get("nodes")
         if nodes is None:
-            raise ValueError(f"On-prem location {location_name}: nodes is required")
+            raise ValueError(f"On-prem account {account_name}: nodes is required")
         if not isinstance(nodes, dict):
-            raise ValueError(f"On-prem location {location_name}: nodes must be an object")
+            raise ValueError(f"On-prem account {account_name}: nodes must be an object")
         normalized_nodes: dict[str, Any] = {}
         for node_name, node_raw in nodes.items():
             if not isinstance(node_raw, dict):
-                raise ValueError(f"On-prem node {location_name}/{node_name}: node value must be an object")
+                raise ValueError(f"On-prem node {account_name}/{node_name}: node value must be an object")
             node = dict(node_raw)
-            node["region"] = node.get("region", location_region)
+            node["region"] = node.get("region", account_region)
             node["role"] = node.get("role", "worker")
-            node["labels"] = ensure_map(node.get("labels"), f"On-prem node {location_name}/{node_name}: labels")
-            node["annotations"] = ensure_map(node.get("annotations"), f"On-prem node {location_name}/{node_name}: annotations")
+            node["labels"] = ensure_map(node.get("labels"), f"On-prem node {account_name}/{node_name}: labels")
+            node["annotations"] = ensure_map(node.get("annotations"), f"On-prem node {account_name}/{node_name}: annotations")
             normalized_nodes[node_name] = node
-        normalized[location_name] = {**raw, "nodes": normalized_nodes}
+        normalized[account_name] = {**raw, "nodes": normalized_nodes}
     return normalized
 
 
@@ -392,12 +392,12 @@ def render_onprem(args: argparse.Namespace) -> int:
         print(f"On-prem config error: {exc}", file=sys.stderr)
         return 2
     try:
-        locations = onprem_from_map(data)
+        accounts = onprem_from_map(data)
     except ValueError as exc:
         print(f"On-prem config error: {exc}", file=sys.stderr)
         return 2
-    dump(args.out, locations)
-    print(f"Rendered on-prem config: locations={len(locations)}")
+    dump(args.out, accounts)
+    print(f"Rendered on-prem config: accounts={len(accounts)}")
     return 0
 
 
@@ -428,7 +428,7 @@ def render_cluster(args: argparse.Namespace) -> int:
     oci_active: dict[str, Any] = {}
     oci_retained: dict[str, Any] = {}
     oci_auth: list[dict[str, str]] = []
-    onprem_locations: dict[str, Any] = {}
+    onprem_accounts: dict[str, Any] = {}
 
     for part in rendered_parts:
         for account_name, account in part["contabo"].items():
@@ -447,23 +447,23 @@ def render_cluster(args: argparse.Namespace) -> int:
                 return 2
             oci_retained[account_name] = account
         oci_auth.extend(part["oci_auth"])
-        for location_name, location in part["onprem"].items():
-            if location_name in onprem_locations:
-                print(f"Cluster config error: duplicate on-prem location {location_name}", file=sys.stderr)
+        for account_name, account in part["onprem"].items():
+            if account_name in onprem_accounts:
+                print(f"Cluster config error: duplicate on-prem account {account_name}", file=sys.stderr)
                 return 2
-            onprem_locations[location_name] = location
+            onprem_accounts[account_name] = account
 
     dump(args.out_contabo_accounts, contabo_accounts)
     dump(args.out_oci_accounts, oci_active)
     dump(args.out_retained_oci_accounts, oci_retained)
     dump(args.out_oci_auth_accounts, oci_auth)
-    dump(args.out_onprem_locations, onprem_locations)
+    dump(args.out_onprem_accounts, onprem_accounts)
     print(
         "Rendered cluster config: "
         f"contabo_accounts={len(contabo_accounts)} "
         f"oci_accounts={len(oci_active)} "
         f"oci_retained={len(oci_retained)} "
-        f"onprem_locations={len(onprem_locations)}"
+        f"onprem_accounts={len(onprem_accounts)}"
     )
     return 0
 
@@ -508,7 +508,7 @@ def main() -> int:
     cluster.add_argument("--out-oci-accounts", type=Path, required=True)
     cluster.add_argument("--out-retained-oci-accounts", type=Path, required=True)
     cluster.add_argument("--out-oci-auth-accounts", type=Path, required=True)
-    cluster.add_argument("--out-onprem-locations", type=Path, required=True)
+    cluster.add_argument("--out-onprem-accounts", type=Path, required=True)
 
     args = parser.parse_args()
     if args.command == "oci":
