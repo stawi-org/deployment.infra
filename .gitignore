@@ -18,3 +18,31 @@ tofu/layers/**/override.auto.tfvars
 # Claude session state
 .claude/
 WORK_STATE.md
+
+credentials/
+providers/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments (highly recommended)
+venv/
+env/
+.env/
+ENV/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Unit test / coverage reports
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Sensitive environment variables
+.env
+.venv
