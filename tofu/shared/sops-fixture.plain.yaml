@@ -1,0 +1,6 @@
+# Plan-time SOPS provider health check fixture.
+# If sops-fixture.age.yaml cannot be decrypted during `tofu plan`, the
+# `sops_provider_healthy` check in each layer fails and the apply is blocked
+# before any destructive action. Rotating age recipients requires updating
+# this fixture (re-encrypt from this file) and committing both.
+canary: healthy
