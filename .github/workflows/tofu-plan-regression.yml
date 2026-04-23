@@ -1,0 +1,35 @@
+# Catches layers that propose unexpected changes on a steady-state plan.
+# Runs after every tofu-plan on main/PR; fails if any layer has a non-zero
+# resource diff.
+name: tofu-plan-regression
+on:
+  workflow_run:
+    workflows: [tofu-plan]
+    types: [completed]
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        layer: [01-contabo-infra, 02-oracle-infra, 02-onprem-infra, 03-talos]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tfplan-${{ matrix.layer }}
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Assert zero resource diffs
+        run: |
+          tofu show -json "tfplan-${{ matrix.layer }}/tfplan" > plan.json
+          n=$(jq '[.resource_changes[] | select(.change.actions != ["no-op"] and .change.actions != ["read"])] | length' plan.json)
+          echo "::notice::layer=${{ matrix.layer }} non-noop-diffs=$n"
+          if [ "$n" -ne 0 ]; then
+            jq '.resource_changes[] | select(.change.actions != ["no-op"] and .change.actions != ["read"]) | {address,actions:.change.actions}' plan.json
+            echo "::error::layer ${{ matrix.layer }} proposes $n changes on a steady-state plan"
+            exit 1
+          fi
