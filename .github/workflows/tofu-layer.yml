@@ -179,10 +179,6 @@ jobs:
           AWS_ACCESS_KEY_ID:           ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY:       ${{ secrets.R2_SECRET_ACCESS_KEY }}
           TF_VAR_r2_account_id:        ${{ secrets.R2_ACCOUNT_ID }}
-          TF_VAR_contabo_client_id:    ${{ secrets.CONTABO_CLIENT_ID }}
-          TF_VAR_contabo_client_secret: ${{ secrets.CONTABO_CLIENT_SECRET }}
-          TF_VAR_contabo_api_user:     ${{ secrets.CONTABO_API_USER }}
-          TF_VAR_contabo_api_password: ${{ secrets.CONTABO_API_PASSWORD }}
           TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           TF_VAR_github_app_id:              ${{ secrets.FLUX_GITHUB_APP_ID }}
           TF_VAR_github_app_installation_id: ${{ secrets.FLUX_GITHUB_APP_INSTALLATION_ID }}

@@ -2,8 +2,7 @@
 # Inventory is injected from the canonical R2 object at production/config/cluster-inventory.yaml.
 contabo_accounts = {}
 
-# ssh_public_key is injected via env var TF_VAR_ssh_public_key (from GitHub secrets or operator env);
-# contabo_* variables are injected via env vars TF_VAR_contabo_client_id etc.
+# ssh_public_key is injected via env var TF_VAR_ssh_public_key (from GitHub secrets or operator env).
 
 
 # Cloudflare zones for CP DNS. zone_id values come from the Cloudflare

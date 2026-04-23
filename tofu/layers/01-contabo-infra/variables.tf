@@ -55,30 +55,6 @@ variable "contabo_accounts" {
   }
 }
 
-variable "contabo_client_id" {
-  type      = string
-  sensitive = true
-  default   = null
-}
-
-variable "contabo_client_secret" {
-  type      = string
-  sensitive = true
-  default   = null
-}
-
-variable "contabo_api_user" {
-  type      = string
-  sensitive = true
-  default   = null
-}
-
-variable "contabo_api_password" {
-  type      = string
-  sensitive = true
-  default   = null
-}
-
 variable "force_reinstall_generation" {
   type        = number
   default     = 0
