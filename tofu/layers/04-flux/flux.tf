@@ -121,7 +121,7 @@ resource "kubectl_manifest" "flux_instance" {
     kubernetes_secret.ghapp,
     kubernetes_secret.sops_age_keys,
   ]
-  yaml_body = file("${path.module}/../../../manifests/flux-system/fluxcd-setup.yaml")
+  yaml_body = file("${path.module}/fluxcd-setup.yaml")
   # Don't block on FluxInstance reaching Ready — the controller is
   # eventually-consistent and tofu apply needs to return. Reconcile status
   # can be checked out-of-band via `kubectl get fluxinstance -A`.
