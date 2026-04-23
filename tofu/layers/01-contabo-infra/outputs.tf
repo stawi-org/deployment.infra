@@ -45,14 +45,18 @@ output "debug_inventory_keys_found" {
   }
 }
 output "debug_auth_structure" {
-  sensitive = true
+  # Diagnostic-only. Values are either booleans, key lists, or length ints
+  # — all derived from sensitive data but not themselves sensitive.
+  # nonsensitive() strips the transitive sensitive marking for inspection.
   value = {
     for k, m in module.contabo_account_state : k => {
-      auth_top_null  = m.auth == null
-      has_auth_key   = try(m.auth.auth, null) != null
-      auth_keys      = try(keys(m.auth.auth), [])
-      client_id      = try(m.auth.auth.oauth2_client_id, "<null>")
-      client_sec_len = length(try(m.auth.auth.oauth2_client_secret, ""))
+      auth_top_null   = nonsensitive(m.auth == null)
+      has_auth_key    = nonsensitive(try(m.auth.auth, null) != null)
+      auth_keys       = nonsensitive(try(sort(keys(m.auth.auth)), []))
+      client_id_first = nonsensitive(try(substr(m.auth.auth.oauth2_client_id, 0, 4), "<null>"))
+      client_sec_len  = nonsensitive(length(try(m.auth.auth.oauth2_client_secret, "")))
+      user_first      = nonsensitive(try(substr(m.auth.auth.oauth2_user, 0, 3), "<null>"))
+      pass_len        = nonsensitive(length(try(m.auth.auth.oauth2_pass, "")))
     }
   }
 }
