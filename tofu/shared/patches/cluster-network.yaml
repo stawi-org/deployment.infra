@@ -1,0 +1,20 @@
+---
+# tofu/shared/patches/cluster-network.yaml
+#
+# Cluster-wide dual-stack network, IPv6-first. Matches Ansible's
+# talos_pod_subnets / talos_service_subnets so the same Contabo-backed
+# cluster identity + PKI continues to work.
+#
+# /112 is the max service CIDR size for IPv6 in Kubernetes.
+
+cluster:
+  # Allow workloads on control-plane nodes. Cluster is small (3 CPs, few
+  # workers), so spreading pods across CPs saves capacity.
+  allowSchedulingOnControlPlanes: true
+  network:
+    podSubnets:
+      - fd00:10:244::/48
+      - 10.244.0.0/16
+    serviceSubnets:
+      - fd00:10:96::/112
+      - 10.96.0.0/12

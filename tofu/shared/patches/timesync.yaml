@@ -1,0 +1,9 @@
+---
+# NTP Time Synchronization Configuration for Talos v1.12+
+
+apiVersion: v1alpha1
+kind: TimeSyncConfig
+ntp:
+  servers:
+    - pool.ntp.org
+    - time.cloudflare.com

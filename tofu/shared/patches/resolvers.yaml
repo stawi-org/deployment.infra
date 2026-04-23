@@ -1,0 +1,18 @@
+---
+# DNS Resolver Configuration for Talos v1.13+
+# Nameservers extracted from roles/talos_configuration/defaults/main.yml:talos_nameservers.
+# IPv6-first to align with the cluster's IPv6-first Pod/Service subnet design.
+# Schema note: Talos v1.13 requires each entry to be a {address: "..."} object,
+# not a bare string (v1.12 accepted either; bare strings removed in v1.13).
+
+apiVersion: v1alpha1
+kind: ResolverConfig
+nameservers:
+  - address: 2a02:c207::1:53        # Contabo IPv6
+  - address: 2606:4700:4700::1111   # Cloudflare IPv6
+  - address: 2606:4700:4700::1001   # Cloudflare IPv6
+  - address: 2001:4860:4860::8888   # Google IPv6
+  - address: 213.136.95.10          # Contabo IPv4
+  - address: 213.136.95.11          # Contabo IPv4
+  - address: 1.1.1.1                # Cloudflare IPv4 fallback
+  - address: 8.8.8.8                # Google IPv4 fallback

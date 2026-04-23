@@ -1,0 +1,106 @@
+
+---
+
+apiVersion: v1alpha1
+kind: NetworkDefaultActionConfig
+ingress: block
+
+---
+
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: apid-ingress
+portSelector:
+  ports:
+    - 50000
+  protocol: tcp
+ingress:
+  - subnet: 0.0.0.0/0    # Allow talosctl access (IPv4)
+  - subnet: ::/0         # Allow talosctl access (IPv6)
+
+---
+
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: kubelet-ingress
+portSelector:
+  ports:
+    - 10250
+  protocol: tcp
+ingress:
+  - subnet: 10.244.0.0/16      # Pod subnet IPv4 (for metrics/logs)
+  - subnet: fd00:10:244::/48   # Pod subnet IPv6
+
+---
+
+# Allow Kubernetes API access
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: kubernetes-api-ingress
+portSelector:
+  ports:
+    - 6443
+  protocol: tcp
+ingress:
+  - subnet: 0.0.0.0/0    # Allow kubectl access (IPv4)
+  - subnet: ::/0         # Allow kubectl access (IPv6)
+
+---
+
+# Allow trustd for cluster trust
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: trustd-ingress
+portSelector:
+  ports:
+    - 50001
+  protocol: tcp
+ingress:
+  - subnet: 10.244.0.0/16      # Pod subnet IPv4
+  - subnet: fd00:10:244::/48   # Pod subnet IPv6
+
+---
+
+# Allow etcd communication
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: etcd-ingress
+portSelector:
+  ports:
+    - 2379
+    - 2380
+  protocol: tcp
+ingress:
+  - subnet: 10.244.0.0/16      # Pod subnet IPv4
+  - subnet: fd00:10:244::/48   # Pod subnet IPv6
+  - subnet: 10.96.0.0/12       # Service subnet IPv4
+  - subnet: fd00:10:96::/112   # Service subnet IPv6
+
+---
+
+# Allow KubeSpan WireGuard mesh traffic between nodes
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: kubespan-ingress
+portSelector:
+  ports:
+    - 51820
+  protocol: udp
+ingress:
+  - subnet: 0.0.0.0/0
+  - subnet: ::/0
+
+---
+
+# Allow Flannel VXLAN overlay traffic between nodes
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: cni-vxlan
+portSelector:
+  ports:
+    - 4789
+  protocol: udp
+ingress:
+  - subnet: 0.0.0.0/0
+  - subnet: ::/0
+

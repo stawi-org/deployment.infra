@@ -1,0 +1,35 @@
+---
+# Per-Contabo-CP patch — mirrors the Ansible-generated config in
+# talos_config/v1.12.6/patch/*.yaml which was validated to work.
+# Key detail: the Contabo VPS primary NIC is `ens18` (verified from
+# the Ansible-era working cluster), NOT `eth0`. Earlier iterations
+# targeting eth0 configured nothing and left the node unreachable on
+# port 50000 post-reboot.
+
+machine:
+  kubelet:
+    nodeIP:
+      validSubnets:
+        - ${ipv6_subnet}
+        - ${ipv4}/32
+
+---
+# Physical link configuration with static IPv4 + static IPv6.
+# Contabo doesn't provide DHCPv6 so both families are declared
+# explicitly. Netmask /24 on v4 + /64 on v6 match Contabo's allocation.
+apiVersion: v1alpha1
+kind: LinkConfig
+name: ens18
+addresses:
+  - address: ${ipv4}/24
+  - address: ${ipv6}/64
+routes:
+  - gateway: ${ipv4_gateway}
+  - gateway: ${ipv6_gateway}
+
+---
+
+apiVersion: v1alpha1
+kind: HostnameConfig
+hostname: ${hostname}
+auto: off

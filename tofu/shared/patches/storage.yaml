@@ -1,0 +1,33 @@
+
+
+---
+
+apiVersion: v1alpha1
+kind: VolumeConfig
+name: EPHEMERAL
+provisioning:
+  diskSelector:
+    match: system_disk
+  minSize: 15GB
+  maxSize: 20GB
+
+---
+
+apiVersion: v1alpha1
+kind: SwapVolumeConfig
+name: swap-vol
+provisioning:
+  diskSelector:
+    match: system_disk
+  minSize: 3GiB
+  maxSize: 4GiB
+---
+
+apiVersion: v1alpha1
+kind: UserVolumeConfig
+name: local-path-provisioner
+provisioning:
+  diskSelector:
+    match: system_disk
+  minSize: 50GB
+  grow: true
