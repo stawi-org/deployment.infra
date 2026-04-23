@@ -41,12 +41,29 @@ jobs:
         with:
           tofu_version: "1.10.0"
 
-      - name: Install YAML parser
+      - name: Install seed-step deps (PyYAML, jq, uuidgen, sops, oci-cli)
         if: inputs.layer == '01-contabo-infra' || inputs.layer == '02-oracle-infra' || inputs.layer == '02-onprem-infra'
         run: |
-          python3 - <<'PY' || python3 -m pip install --user PyYAML
-          import yaml
-          PY
+          set -euo pipefail
+          python3 -m pip install --user PyYAML >/dev/null
+          if ! command -v jq >/dev/null;      then sudo apt-get install -y jq;            fi
+          if ! command -v uuidgen >/dev/null; then sudo apt-get install -y uuid-runtime;  fi
+          if ! command -v sops >/dev/null; then
+            SOPS_VERSION="v3.11.0"
+            curl -fsSL -o /tmp/sops "https://github.com/getsops/sops/releases/download/${SOPS_VERSION}/sops-${SOPS_VERSION}.linux.amd64"
+            sudo install -m 0755 /tmp/sops /usr/local/bin/sops
+            rm /tmp/sops
+          fi
+          sops --version --disable-version-check
+
+      - name: Install oci-cli (for OCI discovery during seed)
+        if: inputs.layer == '02-oracle-infra'
+        run: |
+          set -euo pipefail
+          if ! command -v oci >/dev/null; then
+            python3 -m pip install --user oci-cli >/dev/null
+          fi
+          oci --version
 
       - name: Seed R2 inventory (one-time bootstrap)
         if: inputs.layer == '01-contabo-infra' || inputs.layer == '02-oracle-infra' || inputs.layer == '02-onprem-infra'
@@ -56,10 +73,6 @@ jobs:
           AWS_EC2_METADATA_DISABLED: "true"
           R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
           R2_ENDPOINT_URL:       https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
-          CONTABO_CLIENT_ID:     ${{ secrets.CONTABO_CLIENT_ID }}
-          CONTABO_CLIENT_SECRET: ${{ secrets.CONTABO_CLIENT_SECRET }}
-          CONTABO_API_USER:      ${{ secrets.CONTABO_API_USER }}
-          CONTABO_API_PASSWORD:  ${{ secrets.CONTABO_API_PASSWORD }}
           SOPS_AGE_KEY:          ${{ secrets.SOPS_AGE_KEY }}
           SOPS_AGE_RECIPIENTS:   ${{ vars.SOPS_AGE_RECIPIENTS }}
         run: |
@@ -70,7 +83,6 @@ jobs:
             echo "::notice::inventory/ already present — skipping seed"
             exit 0
           fi
-          pip3 install --user pyyaml
           python3 scripts/seed-orchestrator.py
 
       # Only layer 03 needs talosctl for the null_resource.reboot_cp provisioner.
