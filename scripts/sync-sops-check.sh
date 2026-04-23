@@ -3,7 +3,8 @@
 # Run via pre-commit; also safe to run manually.
 set -euo pipefail
 
-SRC="$(git rev-parse --show-toplevel)/tofu/shared/sops-check.tf.tmpl"
+ROOT="$(git rev-parse --show-toplevel)"
+SRC="$ROOT/tofu/shared/sops-check.tf.tmpl"
 LAYERS=(
   tofu/layers/00-talos-secrets
   tofu/layers/01-contabo-infra
@@ -12,7 +13,6 @@ LAYERS=(
   tofu/layers/03-talos
 )
 
-root="$(git rev-parse --show-toplevel)"
 for layer in "${LAYERS[@]}"; do
-  cp "$SRC" "$root/$layer/sops-check.tf"
+  cp "$SRC" "$ROOT/$layer/sops-check.tf"
 done
