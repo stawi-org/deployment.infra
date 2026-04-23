@@ -16,44 +16,72 @@ data "terraform_remote_state" "secrets" {
 }
 
 locals {
-  oci_provider_accounts = merge(var.retained_oci_accounts, var.oci_accounts)
-}
-
-locals {
   accounts_manifest = yamldecode(file("${path.module}/../../shared/accounts.yaml"))
 }
 
-# Each oci_accounts entry gets its own provider alias that reads a matching
-# named profile from ~/.oci/config. The workflow's OCI workload-identity
-# federation step writes one profile per account (profile name == map key,
-# e.g. "stawi", "acctB"), each holding that tenancy's session-token-based auth.
-#
-# For local dev without WIF, each profile in ~/.oci/config uses API key auth
-# (auth = "ApiKey"); the provider picks whichever credential type the profile
-# holds via SecurityToken autodetection.
+# node-state: R2-backed inventory read. Populated initially by
+# scripts/seed-inventory.sh; kept in sync by this layer's writers.
+module "oracle_account_state" {
+  for_each       = toset(local.accounts_manifest.oracle)
+  source         = "../../modules/node-state"
+  provider_name  = "oracle"
+  account        = each.key
+  age_recipients = split(",", var.age_recipients)
+}
+
+locals {
+  oracle_account_keys = local.accounts_manifest.oracle
+
+  oracle_auth_from_module = {
+    for k, mod in module.oracle_account_state : k => try(mod.auth.auth, null)
+  }
+  oracle_nodes_from_module = {
+    for k, mod in module.oracle_account_state : k => try(mod.nodes.nodes, {})
+  }
+  oracle_state_from_module = {
+    for k, mod in module.oracle_account_state : k => try(mod.state.nodes, {})
+  }
+
+  oci_accounts_effective = {
+    for k in local.oracle_account_keys : k => merge(
+      try(local.oracle_auth_from_module[k], {}),
+      { nodes = local.oracle_nodes_from_module[k] }
+    )
+  }
+}
+
+# Each oracle account gets its own provider alias. The for_each key set is
+# statically computable from accounts.yaml (a file read, not a computed value).
+# Auth fields are sourced from the decrypted auth.yaml read via node-state.
+locals {
+  oci_provider_accounts = toset(local.oracle_account_keys)
+}
+
+# Each oci_accounts entry gets its own provider alias that reads auth from R2.
+# For local dev without WIF, the config_file_profile fallback is used.
 provider "oci" {
   for_each            = local.oci_provider_accounts
   alias               = "account"
-  tenancy_ocid        = each.value.tenancy_ocid
-  region              = each.value.region
-  config_file_profile = each.key
-  auth                = "SecurityToken"
+  tenancy_ocid        = try(local.oracle_auth_from_module[each.key].tenancy_ocid, null)
+  region              = try(local.oracle_auth_from_module[each.key].region, null)
+  config_file_profile = try(local.oracle_auth_from_module[each.key].config_file_profile, each.key)
+  auth                = try(local.oracle_auth_from_module[each.key].auth_method, "SecurityToken")
 }
 
 module "oracle_account" {
-  for_each  = var.oci_accounts
+  for_each  = local.oci_accounts_effective
   source    = "../../modules/oracle-account-infra"
   providers = { oci = oci.account[each.key] }
 
   account_key                          = each.key
-  compartment_ocid                     = each.value.compartment_ocid
-  region                               = each.value.region
-  vcn_cidr                             = each.value.vcn_cidr
-  enable_ipv6                          = each.value.enable_ipv6
-  nodes                                = each.value.nodes
-  labels                               = each.value.labels
-  annotations                          = each.value.annotations
-  bastion_client_cidr_block_allow_list = each.value.bastion_client_cidr_block_allow_list
+  compartment_ocid                     = try(each.value.compartment_ocid, "")
+  region                               = try(each.value.region, "")
+  vcn_cidr                             = try(each.value.vcn_cidr, "10.0.0.0/16")
+  enable_ipv6                          = try(each.value.enable_ipv6, true)
+  nodes                                = try(each.value.nodes, {})
+  labels                               = try(each.value.labels, {})
+  annotations                          = try(each.value.annotations, {})
+  bastion_client_cidr_block_allow_list = try(each.value.bastion_client_cidr_block_allow_list, ["0.0.0.0/0"])
   cluster_name                         = var.cluster_name
   cluster_endpoint                     = var.cluster_endpoint
   talos_version                        = var.talos_version

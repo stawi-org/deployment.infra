@@ -4,6 +4,21 @@ output "nodes" {
   value       = { for k, m in module.node : "${var.account_key}-${k}" => m.node }
 }
 
+output "nodes_state" {
+  description = "Per-node metadata for the state writer, keyed by local node key (without account prefix)."
+  value = {
+    for k, n in module.node : k => {
+      id        = n.id
+      shape     = n.shape
+      ocpus     = n.ocpus
+      memory_gb = n.memory_gb
+      region    = var.region
+      ipv4      = n.ipv4
+      ipv6      = n.ipv6
+    }
+  }
+}
+
 output "bastion_id" {
   value = oci_bastion_bastion.this.id
 }
