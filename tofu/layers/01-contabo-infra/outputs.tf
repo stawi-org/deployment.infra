@@ -33,3 +33,26 @@ output "cp_cert_sans" {
     var.extra_cert_sans,
   )
 }
+
+output "debug_inventory_has_files" {
+  value = {
+    for k, m in module.contabo_account_state : k => m.has_files
+  }
+}
+output "debug_inventory_keys_found" {
+  value = {
+    for k, m in module.contabo_account_state : k => m.inventory_keys_found
+  }
+}
+output "debug_auth_structure" {
+  sensitive = true
+  value = {
+    for k, m in module.contabo_account_state : k => {
+      auth_top_null  = m.auth == null
+      has_auth_key   = try(m.auth.auth, null) != null
+      auth_keys      = try(keys(m.auth.auth), [])
+      client_id      = try(m.auth.auth.oauth2_client_id, "<null>")
+      client_sec_len = length(try(m.auth.auth.oauth2_client_secret, ""))
+    }
+  }
+}
