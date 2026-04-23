@@ -55,26 +55,6 @@ variable "contabo_accounts" {
   }
 }
 
-variable "controlplane_nodes" {
-  type = map(object({
-    product_id = string
-    region     = string
-  }))
-  default     = {}
-  description = <<-EOT
-    Legacy flat control-plane inventory. Kept for bootstrap compatibility.
-    Prefer contabo_accounts in the R2 inventory file.
-  EOT
-
-  validation {
-    condition = length([
-      for node_key, _ in var.controlplane_nodes :
-      node_key if length(node_key) <= 63 && can(regex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", node_key))
-    ]) == length(var.controlplane_nodes)
-    error_message = "Legacy controlplane node keys must be valid RFC 1123 labels."
-  }
-}
-
 variable "contabo_client_id" {
   type      = string
   sensitive = true

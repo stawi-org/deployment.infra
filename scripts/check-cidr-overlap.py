@@ -43,7 +43,9 @@ def parse_network(name: str, cidr: str) -> tuple[str, ipaddress._BaseNetwork]:
 
 def collect_oci(path: Path) -> list[tuple[str, ipaddress._BaseNetwork]]:
     data = read_config(path)
-    data = data.get("accounts") or data.get("oci_accounts") or data
+    if "accounts" not in data:
+        raise ValueError("oci.accounts is required")
+    data = data["accounts"]
     networks: list[tuple[str, ipaddress._BaseNetwork]] = []
     for account, cfg in data.items():
         cidr = cfg.get("vcn_cidr")
@@ -54,7 +56,9 @@ def collect_oci(path: Path) -> list[tuple[str, ipaddress._BaseNetwork]]:
 
 def collect_onprem(path: Path) -> list[tuple[str, ipaddress._BaseNetwork]]:
     data = read_config(path)
-    data = data.get("locations") or data.get("onprem_locations") or data
+    if "locations" not in data:
+        raise ValueError("onprem.locations is required")
+    data = data["locations"]
     networks: list[tuple[str, ipaddress._BaseNetwork]] = []
     for location, cfg in data.items():
         for field in ("site_ipv4_cidrs", "site_ipv6_cidrs"):

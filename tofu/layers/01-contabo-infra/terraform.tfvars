@@ -1,11 +1,6 @@
 # tofu/layers/01-contabo-infra/terraform.tfvars
-# Legacy fallback inventory for local use. Production should prefer the
-# canonical R2 inventory object at production/config/cluster-inventory.yaml.
-controlplane_nodes = {
-  "kubernetes-controlplane-api-1" = { product_id = "V94", region = "EU" }
-  "kubernetes-controlplane-api-2" = { product_id = "V94", region = "EU" }
-  "kubernetes-controlplane-api-3" = { product_id = "V94", region = "EU" }
-}
+# Inventory is injected from the canonical R2 object at production/config/cluster-inventory.yaml.
+contabo_accounts = {}
 
 # ssh_public_key is injected via env var TF_VAR_ssh_public_key (from GitHub secrets or operator env);
 # contabo_* variables are injected via env vars TF_VAR_contabo_client_id etc.

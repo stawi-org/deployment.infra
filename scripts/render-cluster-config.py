@@ -16,7 +16,6 @@ except ImportError:  # pragma: no cover - CI images should provide PyYAML or ins
 
 
 DEFAULT_VCN_CIDR = "10.200.0.0/16"
-DEFAULT_NODES = {"wk-1": {"shape": "VM.Standard.A1.Flex", "ocpus": 4, "memory_gb": 24}}
 
 
 def ensure_map(value: Any, context: str) -> dict[str, Any]:
@@ -81,21 +80,29 @@ def load_inventory_source(path: Path) -> dict[str, Any]:
             contabo = data["contabo"] or {}
             if not isinstance(contabo, dict):
                 raise ValueError(f"{file}: contabo must be an object")
-            accounts = contabo.get("accounts") or contabo.get("contabo_accounts") or {}
+            accounts = contabo.get("accounts")
+            if accounts is None:
+                raise ValueError(f"{file}: contabo.accounts is required")
             merge_section("contabo", "accounts", accounts, file)
         if "oci" in data:
             oci = data["oci"] or {}
             if not isinstance(oci, dict):
                 raise ValueError(f"{file}: oci must be an object")
-            accounts = oci.get("accounts") or oci.get("oci_accounts") or {}
-            retained = oci.get("retained_accounts") or oci.get("retained_oci_accounts") or {}
+            accounts = oci.get("accounts")
+            retained = oci.get("retained_accounts")
+            if accounts is None:
+                raise ValueError(f"{file}: oci.accounts is required")
+            if retained is None:
+                raise ValueError(f"{file}: oci.retained_accounts is required")
             merge_section("oci", "accounts", accounts, file)
             merge_section("oci", "retained_accounts", retained, file)
         if "onprem" in data:
             onprem = data["onprem"] or {}
             if not isinstance(onprem, dict):
                 raise ValueError(f"{file}: onprem must be an object")
-            locations = onprem.get("locations") or onprem.get("onprem_locations") or {}
+            locations = onprem.get("locations")
+            if locations is None:
+                raise ValueError(f"{file}: onprem.locations is required")
             merge_section("onprem", "locations", locations, file)
 
     return merged
@@ -112,8 +119,6 @@ def normalize_oci_account(name: str, raw: dict[str, Any]) -> tuple[dict[str, Any
     region = raw.get("region")
     vcn_cidr = raw.get("vcn_cidr", DEFAULT_VCN_CIDR)
     nodes = raw.get("nodes")
-    if nodes is None:
-        nodes = raw.get("workers", DEFAULT_NODES)
     domain = auth.get("domain_base_url") or raw.get("domain_base_url") or raw.get("oci_domain_base_url")
     client = auth.get("oidc_client_identifier") or raw.get("oidc_client_identifier")
 
@@ -194,10 +199,8 @@ def contabo_from_config(path: Path) -> dict[str, Any]:
     contabo = data.get("contabo") or {}
     if "accounts" in contabo:
         accounts = contabo["accounts"]
-    elif "contabo_accounts" in contabo:
-        accounts = contabo["contabo_accounts"]
     else:
-        accounts = contabo
+        raise ValueError("Contabo config must contain a contabo.accounts map")
     if not isinstance(accounts, dict):
         raise ValueError("Contabo config must contain an accounts map")
 
@@ -224,7 +227,9 @@ def contabo_from_config(path: Path) -> dict[str, Any]:
         if missing:
             raise ValueError(f"Contabo account {account_name}: missing required field(s): {', '.join(missing)}")
 
-        nodes = raw.get("nodes") or raw.get("controlplane_nodes") or {}
+        nodes = raw.get("nodes")
+        if nodes is None:
+            raise ValueError(f"Contabo account {account_name}: nodes is required")
         if not isinstance(nodes, dict):
             raise ValueError(f"Contabo account {account_name}: nodes must be an object")
 
@@ -248,17 +253,10 @@ def contabo_from_config(path: Path) -> dict[str, Any]:
 
 
 def oci_from_map(data: dict[str, Any], retained_profiles: set[str]) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, str]]]:
-    if "accounts" in data:
-        accounts = data["accounts"]
-    elif "oci_accounts" in data:
-        accounts = data["oci_accounts"]
-    else:
-        accounts = {
-            key: value
-            for key, value in data.items()
-            if key not in {"retained_accounts", "retained_oci_accounts"}
-        }
-    retained_accounts = data.get("retained_accounts") or data.get("retained_oci_accounts") or {}
+    if "accounts" not in data or "retained_accounts" not in data:
+        raise ValueError("OCI config must contain accounts and retained_accounts maps")
+    accounts = data["accounts"]
+    retained_accounts = data["retained_accounts"]
 
     if not isinstance(accounts, dict) or not isinstance(retained_accounts, dict):
         raise ValueError("OCI config must contain account maps")
@@ -314,7 +312,9 @@ def render_oci(args: argparse.Namespace) -> int:
 
 
 def onprem_from_map(data: dict[str, Any]) -> dict[str, Any]:
-    locations = data.get("locations") or data.get("onprem_locations") or data
+    locations = data.get("locations")
+    if locations is None:
+        raise ValueError("onprem.locations is required")
     if not isinstance(locations, dict):
         raise ValueError("locations must be an object")
     normalized: dict[str, Any] = {}
@@ -324,7 +324,7 @@ def onprem_from_map(data: dict[str, Any]) -> dict[str, Any]:
         location_region = raw.get("region")
         nodes = raw.get("nodes")
         if nodes is None:
-            nodes = raw.get("workers", {})
+            raise ValueError(f"On-prem location {location_name}: nodes is required")
         if not isinstance(nodes, dict):
             raise ValueError(f"On-prem location {location_name}: nodes must be an object")
         normalized_nodes: dict[str, Any] = {}
@@ -337,11 +337,7 @@ def onprem_from_map(data: dict[str, Any]) -> dict[str, Any]:
             node["labels"] = ensure_map(node.get("labels"), f"On-prem node {location_name}/{node_name}: labels")
             node["annotations"] = ensure_map(node.get("annotations"), f"On-prem node {location_name}/{node_name}: annotations")
             normalized_nodes[node_name] = node
-        normalized[location_name] = {
-            **raw,
-            "nodes": normalized_nodes,
-        }
-        normalized[location_name].pop("workers", None)
+        normalized[location_name] = {**raw, "nodes": normalized_nodes}
     return normalized
 
 
@@ -372,18 +368,18 @@ def render_cluster(args: argparse.Namespace) -> int:
         print(f"Cluster config error: {exc}", file=sys.stderr)
         return 2
 
-    contabo_data = data.get("contabo") or {}
-    oci_data = data.get("oci") or {}
-    onprem_data = data.get("onprem") or {}
+    if "contabo" not in data or "oci" not in data or "onprem" not in data:
+        print("Cluster config error: contabo, oci, and onprem sections are required", file=sys.stderr)
+        return 2
 
     try:
-        contabo_accounts = contabo_from_config(args.input) if contabo_data else {}
-        oci_active, oci_retained, oci_auth = oci_from_map(oci_data, {
+        contabo_accounts = contabo_from_config(args.input)
+        oci_active, oci_retained, oci_auth = oci_from_map(data["oci"], {
             item.strip()
             for item in (args.retained_profiles or "").split(",")
             if item.strip()
-        }) if oci_data else ({}, {}, [])
-        onprem_locations = onprem_from_map(onprem_data) if onprem_data else {}
+        })
+        onprem_locations = onprem_from_map(data["onprem"])
     except ValueError as exc:
         print(f"Cluster config error: {exc}", file=sys.stderr)
         return 2
