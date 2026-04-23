@@ -36,7 +36,7 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: opentofu/setup-opentofu@v2
         with:
           tofu_version: "1.10.0"
@@ -213,7 +213,7 @@ jobs:
             exit $rc
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: inputs.mode == 'plan' || inputs.mode == 'apply'
         with:
           name: tfplan-${{ inputs.layer }}

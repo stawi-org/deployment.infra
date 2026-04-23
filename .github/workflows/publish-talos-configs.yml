@@ -24,7 +24,7 @@ jobs:
   bundle:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install age
         run: |
@@ -165,7 +165,7 @@ jobs:
             --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" --region us-east-1
           echo "Uploaded audit bundle to s3://cluster-tofu-state/${AUDIT_KEY}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: talos-configs
           path: /tmp/talos-configs.tar.gz.age
