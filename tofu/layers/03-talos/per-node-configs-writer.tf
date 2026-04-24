@@ -10,15 +10,18 @@
 
 locals {
   # Pick the right data source for each node's role: cp[] for
-  # controlplane, worker[] for worker. Decode the YAML-string output
-  # back into a map so yamlencode in the writer emits it cleanly
+  # controlplane, worker[] for worker. contains(keys(...)) is more
+  # reliable than try() across index failures — the index operation
+  # errors BEFORE try can catch it. Decode the YAML-string output back
+  # into a map so yamlencode in the writer emits it cleanly
   # (avoids double-escaping).
   per_node_configs = {
     for node_key, node in local.all_nodes_from_state :
-    node_key => yamldecode(try(
-      data.talos_machine_configuration.cp[node_key].machine_configuration,
-      data.talos_machine_configuration.worker[node_key].machine_configuration,
-    ))
+    node_key => yamldecode(
+      contains(keys(data.talos_machine_configuration.cp), node_key)
+      ? data.talos_machine_configuration.cp[node_key].machine_configuration
+      : data.talos_machine_configuration.worker[node_key].machine_configuration
+    )
   }
 
   # Enumerate every (provider, account) pair that has at least one
