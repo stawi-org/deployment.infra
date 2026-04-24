@@ -118,9 +118,14 @@ resource "oci_core_image" "talos" {
   # CreateInstance either hung (EMULATED) or Talos saw no disk at
   # all (the default ISCSI bootVolumeType).
   image_source_details {
-    source_type       = "objectStorageUri"
-    source_uri        = local.image_source_uri
-    source_image_type = "QCOW2"
+    source_type = "objectStorageUri"
+    source_uri  = local.image_source_uri
+    # source_image_type intentionally omitted. Setting it to "QCOW2"
+    # tells OCI to treat the object as a raw qcow2 and ignore any
+    # wrapping tarball, which prevents CreateImage from reading our
+    # `.oci` archive's image_metadata.json. With no source_image_type
+    # OCI auto-detects archive vs. raw and pulls launch_options from
+    # the embedded metadata when it finds one.
   }
 
   # Must wait for the staged object to be uploaded before CreateImage
