@@ -33,7 +33,7 @@ resource "terraform_data" "cp_config_hash" {
 }
 
 resource "talos_machine_configuration_apply" "cp" {
-  for_each                    = local.controlplane_nodes
+  for_each                    = local.direct_controlplane_nodes
   client_configuration        = data.terraform_remote_state.secrets.outputs.client_configuration
   machine_configuration_input = data.talos_machine_configuration.cp[each.key].machine_configuration
   node                        = each.value.ipv4
