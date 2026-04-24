@@ -1,0 +1,130 @@
+# One-shot: force tofu to destroy+create a specific resource instance.
+#
+# Some resources (e.g. oci_core_instance) can't be updated in-place for
+# certain attribute changes, but the provider doesn't mark the attribute
+# ForceNew, so tofu plans "update in-place" and OCI then 400s. This
+# workflow passes `-replace=<address>` to `tofu plan` so the next apply
+# does a clean recreate.
+#
+# Input is an opaque resource address; validated shape only
+# (alphanumeric, dots, brackets, quotes, slashes, hyphens) before it
+# reaches any command.
+name: tofu-replace
+on:
+  workflow_dispatch:
+    inputs:
+      layer:
+        description: Tofu layer directory (e.g. 02-oracle-infra)
+        required: true
+        type: string
+      resource_address:
+        description: Full resource address to -replace (e.g. 'module.foo["x"].resource.bar')
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: tofu-apply-production
+  cancel-in-progress: false
+
+jobs:
+  replace:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      AWS_ACCESS_KEY_ID:        ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY:    ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID:            ${{ secrets.R2_ACCOUNT_ID }}
+      SOPS_AGE_KEY:             ${{ secrets.SOPS_AGE_KEY }}
+      LAYER:                    ${{ inputs.layer }}
+      RESOURCE_ADDRESS:         ${{ inputs.resource_address }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: opentofu/setup-opentofu@v2
+        with:
+          tofu_version: "1.10.0"
+
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          case "$LAYER" in
+            01-contabo-infra|02-oracle-infra|02-onprem-infra|03-talos|04-flux) ;;
+            *) echo "::error::unsupported layer: $LAYER"; exit 1 ;;
+          esac
+          if [[ ! "$RESOURCE_ADDRESS" =~ ^[A-Za-z0-9_./\[\]\"\-]+$ ]]; then
+            echo "::error::resource_address contains unexpected characters"
+            exit 1
+          fi
+
+      - name: Sync R2 inventory
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/inventory
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/" /tmp/inventory/ \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --region us-east-1 --delete
+
+      - name: OCI workload-identity federation
+        if: inputs.layer == '02-oracle-infra'
+        run: |
+          set -euo pipefail
+          ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          TMPDIR_AUTH=$(mktemp -d)
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/oracle/" "${TMPDIR_AUTH}/" \
+            --endpoint-url "$ENDPOINT" --region us-east-1 \
+            --exclude "*" --include "*/auth.yaml" || true
+          AUTH_JSON=$(python3 scripts/build-oci-auth-json.py "${TMPDIR_AUTH}")
+          if [[ "$AUTH_JSON" == "[]" ]]; then
+            echo "::error::no OCI auth profiles"
+            exit 1
+          fi
+          echo "$AUTH_JSON" > /tmp/oci_auth_accounts.json
+          scripts/configure-oci-wif.sh /tmp/oci_auth_accounts.json
+
+      - name: Download Talos QCOW2 for OCI image staging
+        if: inputs.layer == '02-oracle-infra'
+        run: |
+          set -euo pipefail
+          TALOS_VERSION=$(awk -F'"' '/^talos_version[[:space:]]*=/ {print $2; exit}' tofu/shared/versions.auto.tfvars)
+          SCHEMATIC_ID=$(curl -fsSL -X POST https://factory.talos.dev/schematics \
+            -H "Content-Type: application/yaml" \
+            --data-binary @tofu/shared/schematic.yaml | jq -r '.id')
+          mkdir -p /tmp/talos-qcow2
+          QCOW="/tmp/talos-qcow2/${TALOS_VERSION}-${SCHEMATIC_ID}-oracle-arm64.qcow2"
+          if [[ ! -s "$QCOW" ]]; then
+            curl -fsSL -o "$QCOW" \
+              "https://factory.talos.dev/image/${SCHEMATIC_ID}/${TALOS_VERSION}/oracle-arm64.qcow2"
+          fi
+          echo "TF_VAR_talos_qcow2_local_path=$QCOW" >> "$GITHUB_ENV"
+
+      - name: Init
+        working-directory: tofu/layers/${{ inputs.layer }}
+        run: tofu init -input=false -no-color
+
+      - name: Plan with -replace
+        working-directory: tofu/layers/${{ inputs.layer }}
+        env:
+          TF_VAR_cloudflare_api_token:             ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_contabo_client_id:                ${{ secrets.CONTABO_CLIENT_ID }}
+          TF_VAR_contabo_client_secret:            ${{ secrets.CONTABO_CLIENT_SECRET }}
+          TF_VAR_contabo_api_user:                 ${{ secrets.CONTABO_API_USER }}
+          TF_VAR_contabo_api_password:             ${{ secrets.CONTABO_API_PASSWORD }}
+          TF_VAR_r2_account_id:                    ${{ secrets.R2_ACCOUNT_ID }}
+          TF_VAR_age_recipients:                   ${{ vars.SOPS_AGE_RECIPIENTS }}
+        run: tofu plan -out=tfplan -input=false -replace="$RESOURCE_ADDRESS"
+
+      - name: Apply
+        working-directory: tofu/layers/${{ inputs.layer }}
+        env:
+          TF_VAR_cloudflare_api_token:             ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_contabo_client_id:                ${{ secrets.CONTABO_CLIENT_ID }}
+          TF_VAR_contabo_client_secret:            ${{ secrets.CONTABO_CLIENT_SECRET }}
+          TF_VAR_contabo_api_user:                 ${{ secrets.CONTABO_API_USER }}
+          TF_VAR_contabo_api_password:             ${{ secrets.CONTABO_API_PASSWORD }}
+          TF_VAR_r2_account_id:                    ${{ secrets.R2_ACCOUNT_ID }}
+          TF_VAR_age_recipients:                   ${{ vars.SOPS_AGE_RECIPIENTS }}
+        run: tofu apply -input=false -auto-approve tfplan
