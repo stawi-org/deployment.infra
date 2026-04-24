@@ -91,26 +91,6 @@ jobs:
             scripts/configure-oci-wif.sh /tmp/oci_auth_accounts.json
           fi
 
-      - name: Install OCI CLI
-        # Used by scripts/oci-image-create-or-find.sh (driven from the
-        # oracle-account-infra module) to run CreateImage with explicit
-        # launch_options — the tofu oci_core_image resource can't set
-        # them (launch_options is Computed-only in provider 8.x).
-        if: inputs.layer == '02-oracle-infra'
-        run: |
-          set -euo pipefail
-          if ! command -v oci >/dev/null 2>&1; then
-            curl -fsSL https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh \
-              -o /tmp/install-oci-cli.sh
-            # --accept-all-defaults is non-interactive; installs to
-            # ~/bin which is already on PATH for the runner.
-            bash /tmp/install-oci-cli.sh --accept-all-defaults >/dev/null
-            # Symlink into a global location so sub-shells started by
-            # tofu's external data source also find it.
-            sudo ln -sf "$HOME/bin/oci" /usr/local/bin/oci
-          fi
-          oci --version
-
       - name: Download Talos QCOW2 for OCI image staging
         if: inputs.layer == '02-oracle-infra'
         # OCI's CreateImage API rejects external HTTPS source URIs — only
