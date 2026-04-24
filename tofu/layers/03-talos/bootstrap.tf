@@ -13,9 +13,29 @@
 # cluster rebuild, matching the initial-install / disaster-recovery
 # workflows. Revisit when we add rolling-upgrade support.
 resource "terraform_data" "bootstrap_trigger" {
+  # Hash over SORTED VALUES ONLY — not the { key => value } map — so a
+  # node-key rename (e.g. kubernetes-controlplane-api-1 →
+  # contabo-stawi-contabo-node-1) leaves the hash untouched and doesn't
+  # force replace_triggered_by on talos_machine_bootstrap. A real disk
+  # wipe still bumps at least one image_apply_generation → sorted set
+  # changes → re-bootstrap fires.
   input = {
-    gens = { for k, v in local.controlplane_nodes : k => v.image_apply_generation }
+    gens_hash = sha256(jsonencode(sort([
+      for v in values(local.controlplane_nodes) : v.image_apply_generation
+    ])))
   }
+}
+
+# Import block: adopts the existing bootstrap into tofu state without
+# contacting Talos. Required because commit 13b5abf's OCI rename
+# changed bootstrap_trigger.input keys, which fired replace_triggered_by
+# and destroyed talos_machine_bootstrap.this from state. The cluster is
+# still bootstrapped (etcd data present on api-1) — this just puts
+# tofu's tracking record back. After the first apply following this
+# commit, the block is a no-op.
+import {
+  to = talos_machine_bootstrap.this
+  id = "machine_bootstrap"
 }
 
 resource "talos_machine_bootstrap" "this" {
