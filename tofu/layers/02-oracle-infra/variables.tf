@@ -47,5 +47,11 @@ variable "local_inventory_dir" {
 variable "talos_image_source_uris" {
   type        = map(string)
   default     = {}
-  description = "Per-account (account_key → public HTTPS URL) pre-staged Talos QCOW2 URLs. The workflow uploads the factory image into each account's OCI Object Storage bucket and sets the map via TF_VAR_talos_image_source_uris. OCI's CreateImage rejects external HTTPS source URIs — it only accepts OCI Object Storage URLs. Unset entries fall back to the live factory URL (which will 400 on CreateImage)."
+  description = "Per-account (account_key → public HTTPS URL) pre-staged Talos QCOW2 URLs. Operator-pinned URLs — e.g. a shared community bucket — that skip the upload machinery entirely. Takes precedence over talos_qcow2_local_path for the account."
+}
+
+variable "talos_qcow2_local_path" {
+  type        = string
+  default     = null
+  description = "Local filesystem path to a pre-downloaded Talos oracle-arm64 QCOW2. When set, each oracle account (for which talos_image_source_uris has no entry) creates a per-account public-read Object Storage bucket and uploads the file. CI populates this from tofu-layer.yml's download step; shared across all OCI accounts since the schematic+version is global."
 }

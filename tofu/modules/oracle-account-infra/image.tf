@@ -3,10 +3,19 @@
 # Reuse-or-create for the OCI custom Talos image. The image is identified
 # by display_name = "Talos <version> arm64 gen<gen>". On every apply we
 # look it up; if it already exists, we use it. If not, we create it from
-# either var.talos_image_source_uri (operator-supplied public URL — e.g.
-# a pre-uploaded QCOW2 in OCI Object Storage with a PAR or public bucket
-# policy) or, falling back, the live talos.factory.dev URL for the
-# pinned schematic.
+# an OCI Object Storage URL — OCI's CreateImage refuses external HTTPS.
+# The workflow downloads the factory QCOW2 once to a local path
+# (var.talos_qcow2_local_path) and tofu uploads it into a per-account
+# public-read bucket managed by this module.
+#
+# Precedence for the CreateImage source URI:
+#   1. var.talos_image_source_uri — operator-pinned URL (e.g. a pre-existing
+#      community bucket). Skips the upload machinery entirely.
+#   2. Staged upload from var.talos_qcow2_local_path — the normal path
+#      when running in CI with the factory QCOW2 just downloaded.
+#   3. Live factory URL — only works for non-OCI platforms; included as a
+#      last-ditch fallback so local dev without either var set still has
+#      a chance, even though OCI will 400 on it.
 #
 # Bumping var.force_image_generation forces a new image (next apply
 # creates instead of reusing).
@@ -26,17 +35,60 @@ data "talos_image_factory_urls" "this" {
   architecture  = "arm64"
 }
 
+data "oci_objectstorage_namespace" "this" {
+  compartment_id = var.compartment_ocid
+}
+
 locals {
   image_display_name = "Talos ${var.talos_version} arm64 gen${var.force_image_generation}"
 
-  # Operator-supplied public URL takes precedence; falls back to the live
-  # Talos image-factory URL. Allows hosting a single QCOW2 in a public OCI
-  # Object Storage bucket and reusing it across resets/regions.
+  # Only stage (create bucket + upload) when the workflow pre-downloaded
+  # the QCOW2 AND no operator-supplied URL pre-empts it.
+  stage_local_upload = (
+    (var.talos_image_source_uri == null || var.talos_image_source_uri == "")
+    && var.talos_qcow2_local_path != null
+    && var.talos_qcow2_local_path != ""
+  )
+
+  image_bucket_name = "talos-images-${var.account_key}"
+  image_object_name = "talos-${var.talos_version}-${talos_image_factory_schematic.this.id}-oracle-arm64.qcow2"
+
+  staged_image_uri = local.stage_local_upload ? format(
+    "https://objectstorage.%s.oraclecloud.com/n/%s/b/%s/o/%s",
+    var.region,
+    data.oci_objectstorage_namespace.this.namespace,
+    local.image_bucket_name,
+    local.image_object_name,
+  ) : ""
+
   image_source_uri = (
     var.talos_image_source_uri != null && var.talos_image_source_uri != ""
     ? var.talos_image_source_uri
-    : data.talos_image_factory_urls.this.urls.disk_image
+    : (
+      local.stage_local_upload
+      ? local.staged_image_uri
+      : data.talos_image_factory_urls.this.urls.disk_image
+    )
   )
+}
+
+resource "oci_objectstorage_bucket" "talos_images" {
+  count          = local.stage_local_upload ? 1 : 0
+  compartment_id = var.compartment_ocid
+  namespace      = data.oci_objectstorage_namespace.this.namespace
+  name           = local.image_bucket_name
+  # ObjectRead = anonymous ObjectGet (list disabled) — exactly what OCI
+  # CreateImage needs when reading sourceUri.
+  access_type = "ObjectRead"
+}
+
+resource "oci_objectstorage_object" "talos_qcow2" {
+  count        = local.stage_local_upload ? 1 : 0
+  bucket       = oci_objectstorage_bucket.talos_images[0].name
+  namespace    = data.oci_objectstorage_namespace.this.namespace
+  object       = local.image_object_name
+  source       = var.talos_qcow2_local_path
+  content_type = "application/octet-stream"
 }
 
 # Probe: list AVAILABLE images in the compartment matching the
@@ -66,6 +118,11 @@ resource "oci_core_image" "talos" {
     source_uri        = local.image_source_uri
     source_image_type = "QCOW2"
   }
+
+  # Must wait for the staged object to be uploaded before CreateImage
+  # attempts to fetch from the bucket URL. Harmless when stage_local_upload
+  # is false — the list is empty and depends_on is a no-op.
+  depends_on = [oci_objectstorage_object.talos_qcow2]
 
   lifecycle {
     replace_triggered_by = [terraform_data.image_generation]

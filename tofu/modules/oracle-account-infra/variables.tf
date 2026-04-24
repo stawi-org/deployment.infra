@@ -62,5 +62,11 @@ variable "bastion_client_cidr_block_allow_list" {
 variable "talos_image_source_uri" {
   type        = string
   default     = null
-  description = "Optional public HTTPS URL of a pre-staged Talos QCOW2 (e.g. an OCI Object Storage PAR or public bucket). When set, OCI imports from this URL instead of the live talos.factory.dev URL — letting operators host one stable image and reuse it across resets/regions. When null, falls back to data.talos_image_factory_urls.this.urls.disk_image."
+  description = "Optional public HTTPS URL of a pre-staged Talos QCOW2 (e.g. an OCI Object Storage PAR or public bucket). When set, OCI imports from this URL — letting operators host one stable image and reuse it across resets/regions. Takes precedence over talos_qcow2_local_path (no upload happens). When null AND talos_qcow2_local_path is null, falls back to data.talos_image_factory_urls.this.urls.disk_image (which OCI CreateImage will 400 — external URLs are not supported)."
+}
+
+variable "talos_qcow2_local_path" {
+  type        = string
+  default     = null
+  description = "Local filesystem path to a pre-downloaded Talos oracle-arm64 QCOW2. When set (and talos_image_source_uri is empty), the module creates a per-account public-read Object Storage bucket and uploads the file, then points CreateImage at the resulting objectstorage.<region>.oraclecloud.com URL. The workflow populates this by downloading from factory.talos.dev once per plan."
 }
