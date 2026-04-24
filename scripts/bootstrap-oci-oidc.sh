@@ -224,24 +224,51 @@ say "Ensuring service user '$SERVICE_USER_NAME'"
 #   {"error":"unauthorized_client",
 #    "error_description":"User requesting is not a service user."}
 USER_EXT_SCHEMA="urn:ietf:params:scim:schemas:oracle:idcs:extension:user:User"
-# Use raw-request to bypass OCI CLI's JSON normalisation. The CLI converts
-# camelCase keys to kebab-case AND lower-cases the trailing "User" in the
-# extension URN, so neither `.serviceUser` nor `.service-user` reliably
-# matches the post-create payload. The raw API response keeps the exact
-# SCIM keys we set, so JQ paths line up.
+# Look up the existing user by name. List-filter via SCIM is reliable for
+# discovery; flag detection is done in two passes (see below) so we never
+# delete a user just because we couldn't parse its serviceUser flag.
 USER_QUERY=$(printf '%s' "userName eq \"$SERVICE_USER_NAME\"" | jq -sRr @uri)
-USER_RAW=$("${OCI_CLI[@]}" raw-request \
-  --target-uri "${DOMAIN_URL}/admin/v1/Users?filter=${USER_QUERY}&attributes=id,userName,${USER_EXT_SCHEMA}:serviceUser" \
+USER_LIST_RAW=$("${OCI_CLI[@]}" raw-request \
+  --target-uri "${DOMAIN_URL}/admin/v1/Users?filter=${USER_QUERY}" \
   --http-method GET --output json 2>/dev/null || echo '{"data":{"Resources":[]}}')
-# SCIM list response: data.Resources[]. Fall back to data.resources[] in case
-# the body wrapper changes case.
-USER_OCID=$(jq -r '(.data.Resources // .data.resources // [])[0].id // empty' <<<"$USER_RAW")
-IS_SVC=$(jq -r --arg s "$USER_EXT_SCHEMA" '
-  ((.data.Resources // .data.resources // [])[0] // {})
-  | (.[$s] // {}) | (.serviceUser // false) | tostring' <<<"$USER_RAW")
+USER_OCID=$(jq -r '(.data.Resources // .data.resources // [])[0].id // empty' <<<"$USER_LIST_RAW")
+
+# Default-SAFE: assume the existing user is OK unless we have positive
+# proof otherwise. Only flip to "definitely-not-svc" when JSON parsing
+# clearly returns serviceUser=false.  Ambiguous / missing key = leave it.
+USER_NEEDS_RECREATE="false"
+if [[ -n "$USER_OCID" ]]; then
+  # GET the specific user by OCID. Searching by ID returns the full record
+  # without SCIM `attributes=` filtering — every field the API stores comes
+  # back, so we can probe several possible key paths defensively.
+  USER_GET_RAW=$("${OCI_CLI[@]}" raw-request \
+    --target-uri "${DOMAIN_URL}/admin/v1/Users/${USER_OCID}" \
+    --http-method GET --output json 2>/dev/null || echo '{"data":{}}')
+  # Probe every plausible JQ path for the serviceUser flag. OCI CLI
+  # normalises some response keys (camelCase->kebab, trailing-segment
+  # lowercase) but not always — try the SCIM canonical first, then the
+  # known kebab-cased fallbacks. Anything matching "true" wins.
+  IS_SVC=$(jq -r --arg s "$USER_EXT_SCHEMA" --arg sl "${USER_EXT_SCHEMA%U*}user" '
+    [
+      .data[$s].serviceUser,
+      .data[$s]."service-user",
+      .data[$sl].serviceUser,
+      .data[$sl]."service-user",
+      .data."service-user",
+      .data.serviceUser
+    ] | map(select(. != null)) | .[0] // "unknown" | tostring' <<<"$USER_GET_RAW")
+
+  if [[ "$IS_SVC" == "false" ]]; then
+    USER_NEEDS_RECREATE="true"
+  elif [[ "$IS_SVC" == "true" ]]; then
+    say "  user is already a service user — keeping"
+  else
+    say "  serviceUser flag indeterminate from API response — assuming OK (no destructive action)"
+  fi
+fi
 
 USER_RECREATED="false"
-if [[ -n "$USER_OCID" && "$IS_SVC" != "true" ]]; then
+if [[ "$USER_NEEDS_RECREATE" == "true" ]]; then
   warn "  existing user '$SERVICE_USER_NAME' is NOT a service user (serviceUser=$IS_SVC)"
   warn "  Deleting and recreating — serviceUser flag is immutable."
 
