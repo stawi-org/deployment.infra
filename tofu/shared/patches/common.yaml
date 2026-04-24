@@ -6,15 +6,22 @@ machine:
     wipe: true # Indicates if the installation disk should be wiped at installation time.
     disk: /dev/sda
   network:
-    # KubeSpan disabled — when enabled, Talos installs a WireGuard interface
-    # `kubespan` and a default route via it with metric 1 (HIGHER priority
-    # than the physical-link default route at metric 1024). Until peers
-    # establish the tunnel, OPER STATE stays "unknown" and ALL outbound
-    # traffic gets routed into the dead tunnel → "network is unreachable"
-    # for DNS, NTP, image pulls. Re-enable per-cluster only after peer
-    # discovery is verified or KubeSpan's default route is metric-bumped.
+    # KubeSpan gives us "low-ops networking" across mixed-provider clusters:
+    # Contabo (public IPv4/IPv6), OCI (private VCN IPs only), and on-prem
+    # nodes behind NAT can all reach each other over a WireGuard mesh that
+    # auto-discovers peers via the cluster discovery service. Pods and
+    # services get routed across the mesh without any per-provider VPN
+    # wiring. Node-to-node Talos/kubelet/etcd traffic stays on each node's
+    # native interface via the CIDR routing rules Talos installs.
+    #
+    # Past gotcha (documented for future debugging): if kubespan is the
+    # only declared interface on a fresh node with no reachable peers yet,
+    # the mesh interface can come up before discovery lands — mostly
+    # harmless now that cluster.discovery.registries.service is configured
+    # (Sidero's discovery.talos.dev), but worth watching if image pulls
+    # or NTP fail immediately post-boot.
     kubespan:
-      enabled: false
+      enabled: true
     # Note: DNS nameservers are configured via ResolverConfig (resolvers.yaml)
     # Note: NTP servers are configured via TimeSyncConfig (timesync.yaml)
   kernel:
