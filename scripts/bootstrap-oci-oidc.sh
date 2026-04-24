@@ -578,38 +578,48 @@ if [[ -n "$TRUST_OCID" ]]; then
   # If we find a broken trust, delete + recreate so re-runs self-heal.
   # impersonationServiceUsers has SCIM "returned: request" so default GETs
   # omit it — must pass --attributes to inspect the stored rule.
-  TRUST_CURRENT=$("${OCI_CLI[@]}" identity-domains identity-propagation-trust get "${ID_ENDPOINT[@]}" \
-    --identity-propagation-trust-id "$TRUST_OCID" \
-    --attributes impersonationServiceUsers \
-    --output json 2>/dev/null || echo '{}')
-  # Canonical OCI rule DSL uses bare claim names, SCIM-filter style:
-  #   sub sw "repo:owner/name:"
-  # Not "${sub}" placeholders (invented form that stores fine but never
-  # matches). Verified against Oracle's json_web_token_exchange.htm and
-  # devopshouse/oci-oidc-auth-config terraform example.
-  #
-  # To detect the default GET returns "returned: request" fields including
-  # impersonation-service-users — GET it with attributes= to confirm the
-  # rule shape stored. Here we inspect the payload with attributes= below.
-  MISSING=$(jq -r '
-    [
-      (if (."client-claim-name" // .clientClaimName // "") == "" then "clientClaimName" else empty end),
-      (if ((."client-claim-values" // .clientClaimValues) | length // 0) == 0 then "clientClaimValues" else empty end),
-      (if (."subject-mapping-attribute" // .subjectMappingAttribute // "") == "" then "subjectMappingAttribute" else empty end),
-      (
-        ((."impersonation-service-users" // .impersonationServiceUsers // [])[0].rule // "")
-        | if . == "sub eq *" then empty else "rule_syntax" end
-      )
-    ] | join(",")' <<<"$TRUST_CURRENT" 2>/dev/null || echo "")
+  # Default-SAFE: never delete a trust just because we couldn't parse its
+  # fields (OCI CLI normalises keys inconsistently). Walk the entire
+  # response tree to find each required field by case-insensitive name.
+  # Fall back to "keep" on any ambiguity.
+  TRUST_RAW=$("${OCI_CLI[@]}" raw-request \
+    --target-uri "${DOMAIN_URL}/admin/v1/IdentityPropagationTrusts/${TRUST_OCID}" \
+    --http-method GET --output json 2>/dev/null || echo '{"data":{}}')
 
-  if [[ -n "$MISSING" ]]; then
-    warn "Existing trust is missing required fields: $MISSING"
+  has_field() {
+    # Walk the JSON tree for any key whose lowercased+dash-stripped form
+    # matches the target. Returns "true" if any non-empty value found.
+    local target="$1"
+    jq -r --arg t "$target" '
+      [
+        .. | objects | to_entries[]?
+        | select(.key | ascii_downcase | gsub("[^a-z]"; "") == $t)
+        | .value
+      ] | map(select(. != null and . != "" and . != [] and . != {})) | length > 0
+    ' <<<"$TRUST_RAW" 2>/dev/null || echo "false"
+  }
+
+  has_client_claim=$(has_field "clientclaimname")
+  has_client_values=$(has_field "clientclaimvalues")
+  has_subject_map=$(has_field "subjectmappingattribute")
+  rule_value=$(jq -r '
+    [.. | objects | to_entries[]?
+      | select(.key | ascii_downcase | gsub("[^a-z]"; "") == "rule")
+      | .value] | first // ""
+  ' <<<"$TRUST_RAW" 2>/dev/null || echo "")
+
+  if [[ "$has_client_claim" = "true" && "$has_client_values" = "true" \
+        && "$has_subject_map" = "true" && "$rule_value" = "sub eq *" ]]; then
+    say "  trust schema looks complete — keeping"
+  elif [[ "$has_client_claim" != "true" || "$has_client_values" != "true" \
+          || "$has_subject_map" != "true" ]]; then
+    warn "  Existing trust is missing required fields (client_claim=$has_client_claim values=$has_client_values subj_map=$has_subject_map rule='$rule_value')"
     warn "  Deleting so we can recreate with the complete payload."
     "${OCI_CLI[@]}" identity-domains identity-propagation-trust delete "${ID_ENDPOINT[@]}" \
       --identity-propagation-trust-id "$TRUST_OCID" --force >/dev/null
     TRUST_OCID=""
   else
-    say "  exists (no-op; schema looks complete)"
+    say "  trust fields all present, rule='$rule_value' (expected 'sub eq *') — keeping; re-create manually if rule needs updating"
   fi
 fi
 
@@ -646,8 +656,8 @@ oci:
       annotations:
         node.antinvestor.io/account-owner: platform
       nodes:
-        oci-${GH_PROFILE}-node-1:
-          role: worker
+        oci-${GH_PROFILE}-cp-1:
+          role: controlplane
           shape: VM.Standard.A1.Flex
           ocpus: 4
           memory_gb: 24
@@ -672,14 +682,23 @@ printf '%s\n' "$inventory_yaml"
 # so cost rolls up only from cluster resources, not the whole tenancy.
 say ""
 say "Ensuring budget '$BUDGET_NAME' (USD ${BUDGET_AMOUNT}/month, target compartment $COMPARTMENT_OCID)"
+# Tolerate non-JSON failure modes — some tenancies/regions don't have
+# the budgets API enabled and return text errors instead of {"data":[]}.
+# Validate JSON before parsing; treat parse failure as "no budget".
 BUDGET_LIST=$("${OCI_CLI[@]}" budgets budget list \
   --compartment-id "$TENANCY_OCID" --display-name "$BUDGET_NAME" \
   --output json 2>/dev/null || echo '{"data":[]}')
+if ! printf '%s' "$BUDGET_LIST" | jq empty 2>/dev/null; then
+  warn "  budget list returned non-JSON (api disabled in region?); treating as empty"
+  BUDGET_LIST='{"data":[]}'
+fi
 BUDGET_OCID=$(jq -r '.data[0].id // empty' <<<"$BUDGET_LIST")
 
 if [[ -z "$BUDGET_OCID" ]]; then
   say "  creating"
-  BUDGET_OCID=$("${OCI_CLI[@]}" budgets budget create \
+  # Capture stdout + stderr separately so we can validate JSON and
+  # surface a useful error if creation fails.
+  budget_create_out=$("${OCI_CLI[@]}" budgets budget create \
     --compartment-id "$TENANCY_OCID" \
     --display-name "$BUDGET_NAME" \
     --description "Cluster cost guardrail; tracks $COMPARTMENT_OCID" \
@@ -687,10 +706,15 @@ if [[ -z "$BUDGET_OCID" ]]; then
     --reset-period MONTHLY \
     --target-type COMPARTMENT \
     --targets "[\"$COMPARTMENT_OCID\"]" \
-    --output json 2>&1 | jq -r '.data.id // empty')
+    --output json 2>&1) || true
+  if printf '%s' "$budget_create_out" | jq empty 2>/dev/null; then
+    BUDGET_OCID=$(printf '%s' "$budget_create_out" | jq -r '.data.id // empty')
+  fi
   if [[ -z "$BUDGET_OCID" ]]; then
-    warn "  budget create failed (does the admin profile have manage usage-budgets in tenancy?)"
-    warn "  required policy: Allow group <admin-group> to manage usage-budgets in tenancy"
+    warn "  budget create failed; raw response:"
+    printf '%s\n' "$budget_create_out" | head -c 800 >&2
+    warn ""
+    warn "  required policy on the admin principal: Allow group <admin> to manage usage-budgets in tenancy"
   fi
 else
   say "  exists ($BUDGET_OCID); updating amount"
