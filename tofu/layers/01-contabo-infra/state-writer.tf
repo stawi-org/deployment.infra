@@ -27,6 +27,12 @@ module "contabo_account_state_writer" {
           ipv6                = node_module.ipv6
           status              = "running"
           discovered_at       = timestamp()
+          # Bumps when null_resource.ensure_image re-runs (disk wipe) —
+          # md5(instance_id : force_reinstall_generation). Layer 03 reads
+          # this from state.yaml into bootstrap_trigger so a successful
+          # reinstall forces talos_machine_bootstrap to re-run, rebuilding
+          # etcd from scratch on the freshly-wiped CPs.
+          image_apply_generation = node_module.image_apply_generation
         }
       }
       if node_module.account_key == each.key

@@ -145,11 +145,22 @@ locals {
           "node.antinvestor.io/role"     = try(v.role, "worker")
         },
       )
-      image_apply_generation = md5(jsonencode({
-        provider = v.provider
-        account  = v.account
-        node_key = k
-      }))
+      # Prefer the generation carried in state.yaml (written by each
+      # layer's state-writer — bumps on disk-wipe reinstall for Contabo
+      # and on instance-replace for OCI). Fall back to a stable hash
+      # only when upstream state.yaml doesn't carry it (older writers,
+      # on-prem manual nodes). Without this read-from-state, a
+      # force_reinstall_generation bump on Contabo or an OCI image
+      # rebuild wouldn't ripple into bootstrap_trigger, so the cluster
+      # wiped its disks but never re-bootstrapped etcd.
+      image_apply_generation = try(
+        v.image_apply_generation,
+        md5(jsonencode({
+          provider = v.provider
+          account  = v.account
+          node_key = k
+        })),
+      )
     })
   }
 

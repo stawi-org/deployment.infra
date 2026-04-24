@@ -23,6 +23,11 @@ module "oracle_account_state_writer" {
           ipv6              = node.ipv6
           status            = "running"
           discovered_at     = timestamp()
+          # Bumps when the instance is re-created. Layer 03 consumes
+          # this from state.yaml to drive bootstrap_trigger — on OCI
+          # that's oci_core_instance.this.id, which changes on any
+          # replace (image update, user_data change, force_image_generation).
+          image_apply_generation = try(module.oracle_account[each.key].nodes[node_key].image_apply_generation, node.id)
         }
       }
     }, {})
