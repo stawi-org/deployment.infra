@@ -43,23 +43,37 @@ done
 export OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING=True
 export SUPPRESS_LABEL_WARNING=True
 
-oci() { command oci --profile "$OCI_PROFILE" "$@"; }
+# Resolve the oci binary once — tofu's external data source subshell
+# doesn't always inherit ~/.local/bin. Fall back to common user-scope
+# locations so the script works under `sudo -u runner` too.
+OCI_BIN=$(command -v oci || true)
+for candidate in /usr/local/bin/oci /usr/bin/oci "$HOME/.local/bin/oci" /root/.local/bin/oci; do
+  [[ -n "$OCI_BIN" ]] && break
+  [[ -x "$candidate" ]] && OCI_BIN="$candidate"
+done
+if [[ -z "$OCI_BIN" ]]; then
+  echo "::error::oci CLI not found on PATH (PATH=$PATH)" >&2
+  exit 1
+fi
 
-ERR_LOG=$(mktemp)
-trap 'rm -f "$ERR_LOG"' EXIT
-
-dump_err() { [[ -s "$ERR_LOG" ]] && cat "$ERR_LOG" >&2; }
+oci() { "$OCI_BIN" --profile "$OCI_PROFILE" "$@"; }
 
 # --------- 1. Find existing AVAILABLE image by display_name ---------
+# Keep stderr on the parent — on auth/network failures the CLI error
+# ends up directly in the data source's error message.
 existing=$(oci compute image list \
   --compartment-id "$COMPARTMENT" \
   --display-name   "$DISPLAY_NAME" \
   --lifecycle-state AVAILABLE \
   --all \
   --query 'data[0].id' \
-  --raw-output 2>"$ERR_LOG" || true)
+  --raw-output) || {
+  echo "::error::oci compute image list failed for $DISPLAY_NAME (profile=$OCI_PROFILE)" >&2
+  exit 1
+}
 
 if [[ -n "$existing" && "$existing" != "null" ]]; then
+  echo "::notice::reusing existing OCI image $existing" >&2
   jq -nc --arg ocid "$existing" '{image_ocid: $ocid}'
   exit 0
 fi
@@ -78,6 +92,8 @@ launch_options=$(jq -nc '{
   isConsistentVolumeNamingEnabled: true
 }')
 
+# Capture stdout; let stderr flow straight to the parent so any CLI
+# error text reaches tofu's error message verbatim.
 if ! created=$(oci compute image create \
     --compartment-id        "$COMPARTMENT" \
     --display-name          "$DISPLAY_NAME" \
@@ -85,9 +101,7 @@ if ! created=$(oci compute image create \
     --image-source-details  "$source_details" \
     --launch-options        "$launch_options" \
     --wait-for-state        AVAILABLE \
-    --max-wait-seconds      900 \
-    2>"$ERR_LOG"); then
-  dump_err
+    --max-wait-seconds      900); then
   echo "::error::oci compute image create failed for $DISPLAY_NAME" >&2
   exit 1
 fi
@@ -103,10 +117,13 @@ fi
 # OCI defaults compatible_shapes to an empty list for imported images.
 # Without this, LaunchInstance 400s with
 #   "Shape <X> is not valid for image <...>"
-oci compute image-shape-compatibility-entry add \
-  --image-id   "$ocid" \
-  --shape-name "$SHAPE" \
-  >/dev/null 2>"$ERR_LOG" || { dump_err; exit 1; }
+if ! oci compute image-shape-compatibility-entry add \
+    --image-id   "$ocid" \
+    --shape-name "$SHAPE" \
+    >/dev/null; then
+  echo "::error::shape compatibility registration failed ($SHAPE on $ocid)" >&2
+  exit 1
+fi
 
 echo "::notice::created OCI image $ocid (shape compat: $SHAPE)" >&2
 jq -nc --arg ocid "$ocid" '{image_ocid: $ocid}'

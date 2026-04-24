@@ -78,11 +78,15 @@ jobs:
         # the full Talos-prescribed --launch-options at CreateImage
         # time — the tofu oci_core_image resource's launch_options
         # field is Computed-only).
+        #
+        # Install with sudo so the binary lands on /usr/local/bin —
+        # tofu spawns the external data source in a subshell whose
+        # PATH doesn't inherit ~/.local/bin reliably across runners.
         run: |
           set -euo pipefail
-          python3 -m pip install --user --upgrade pip
-          python3 -m pip install --user oci-cli
-          oci --version
+          sudo python3 -m pip install --upgrade pip
+          sudo python3 -m pip install oci-cli
+          which oci && oci --version
 
       - name: OCI workload-identity federation
         if: inputs.layer == '02-oracle-infra'
