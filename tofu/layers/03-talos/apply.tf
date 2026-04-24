@@ -1,11 +1,24 @@
 # tofu/layers/03-talos/apply.tf
 
+# CP nodes whose Talos API is reachable directly from the runner
+# (public IPv4). Oracle CP nodes have private-only IPs and are applied
+# via apply_oracle.tf through the bastion tunnel — including them here
+# would race against the bastion path and fail with i/o timeout on the
+# private 10.x.x.x address. Add filters for other private-only providers
+# as they come online.
+locals {
+  direct_controlplane_nodes = {
+    for k, v in local.controlplane_nodes : k => v
+    if try(v.provider, "") != "oracle"
+  }
+}
+
 # terraform_data tracks the rendered machine config content per node. When the
 # config changes (version bump, patch edit, label change, etc.), its output
 # changes and `replace_triggered_by` below forces the apply resource to be
 # replaced, i.e. a full re-apply with apply_mode=reboot.
 resource "terraform_data" "cp_config_hash" {
-  for_each = local.controlplane_nodes
+  for_each = local.direct_controlplane_nodes
   input = {
     config     = data.talos_machine_configuration.cp[each.key].machine_configuration
     generation = var.force_talos_reapply_generation
