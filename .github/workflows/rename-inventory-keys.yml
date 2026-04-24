@@ -1,0 +1,41 @@
+# One-shot: rewrite R2 inventory node_keys.
+#
+# Takes a JSON mapping of { "<old_key>": "<new_key>", ... } and
+# applies it to every file under production/inventory/<provider>/<account>/:
+#
+#   nodes.yaml             .nodes[<old>] → .nodes[<new>]
+#   <version>/<old>.yaml   renamed to <version>/<new>.yaml (content unchanged)
+#
+# Safe to re-run — after the first run the old keys are gone, so the
+# rename becomes a no-op.
+#
+# The JSON input is read via env var, never interpolated into run:
+# blocks — no injection risk from the workflow_dispatch input.
+name: rename-inventory-keys
+on:
+  workflow_dispatch:
+    inputs:
+      mapping_json:
+        description: 'JSON: {"old_key":"new_key", ...}'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  rename:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID:        ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY:    ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID:            ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ENDPOINT:              https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      MAPPING_JSON:             ${{ inputs.mapping_json }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install deps
+        run: python3 -m pip install --user PyYAML >/dev/null
+      - name: Rename keys in R2
+        run: scripts/rename-inventory-keys.sh
