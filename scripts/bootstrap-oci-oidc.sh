@@ -61,11 +61,9 @@ GH_BRANCH="main"
 # Budget guardrail. Tofu provisioning only uses Always-Free A1 compute (cost
 # ~ $0), but a small budget gives early warning if anything paid creeps in.
 BUDGET_AMOUNT="${BUDGET_AMOUNT:-1}"      # USD per month
-# BUDGET_EMAIL: alert recipient. If unset, defaults to `git config user.email`
-# of the operator running this script (the most common single-operator
-# convention). Override with --budget-email or env BUDGET_EMAIL=...
-# Fallback to empty (no alerts) only if neither is available.
-BUDGET_EMAIL="${BUDGET_EMAIL:-$(git config --global --get user.email 2>/dev/null || git config --get user.email 2>/dev/null || true)}"
+# BUDGET_EMAIL: alert recipient. Defaults to bills@stawi.org (the org's
+# billing address). Override with --budget-email or env BUDGET_EMAIL=...
+BUDGET_EMAIL="${BUDGET_EMAIL:-bills@stawi.org}"
 BUDGET_NAME="${BUDGET_NAME:-stawi-cluster-budget}"
 # Tofu/workflow-facing profile name. Defaults to a slugged form of the local
 # OCI CLI profile. It must match the key in the tofu oci_accounts map AND
