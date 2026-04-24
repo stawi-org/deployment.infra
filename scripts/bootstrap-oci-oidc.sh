@@ -698,9 +698,10 @@ BUDGET_OCID=$(jq -r '.data[0].id // empty' <<<"$BUDGET_LIST")
 
 if [[ -z "$BUDGET_OCID" ]]; then
   say "  creating"
-  # Capture stdout + stderr separately so we can validate JSON and
-  # surface a useful error if creation fails.
-  budget_create_out=$("${OCI_CLI[@]}" budgets budget create \
+  # OCI CLI subcommand is 'create-budget' (not 'create'); same shape for
+  # 'update-budget'. Capture stdout + stderr together so we can surface
+  # the real error if the API rejects the request.
+  budget_create_out=$("${OCI_CLI[@]}" budgets budget create-budget \
     --compartment-id "$TENANCY_OCID" \
     --display-name "$BUDGET_NAME" \
     --description "Cluster cost guardrail; tracks $COMPARTMENT_OCID" \
@@ -720,7 +721,7 @@ if [[ -z "$BUDGET_OCID" ]]; then
   fi
 else
   say "  exists ($BUDGET_OCID); updating amount"
-  "${OCI_CLI[@]}" budgets budget update --budget-id "$BUDGET_OCID" \
+  "${OCI_CLI[@]}" budgets budget update-budget --budget-id "$BUDGET_OCID" \
     --amount "$BUDGET_AMOUNT" --force >/dev/null 2>&1 || \
     warn "  budget update returned non-zero (often ok — display-name immutable)"
 fi
@@ -731,13 +732,16 @@ say "  budget:  $BUDGET_OCID"
 if [[ -n "$BUDGET_OCID" && -n "$BUDGET_EMAIL" ]]; then
   for THRESHOLD in 50 80 100; do
     ALERT_NAME="alert-${THRESHOLD}pct"
-    ALERT_LIST=$("${OCI_CLI[@]}" budgets alert-rule list \
+    ALERT_LIST=$("${OCI_CLI[@]}" budgets alert-rule list-alert-rules \
       --budget-id "$BUDGET_OCID" --display-name "$ALERT_NAME" \
       --output json 2>/dev/null || echo '{"data":[]}')
+    if ! printf '%s' "$ALERT_LIST" | jq empty 2>/dev/null; then
+      ALERT_LIST='{"data":[]}'
+    fi
     ALERT_OCID=$(jq -r '.data[0].id // empty' <<<"$ALERT_LIST")
     if [[ -z "$ALERT_OCID" ]]; then
       say "  creating alert ${ALERT_NAME} → ${BUDGET_EMAIL}"
-      "${OCI_CLI[@]}" budgets alert-rule create \
+      "${OCI_CLI[@]}" budgets alert-rule create-alert-rule \
         --budget-id "$BUDGET_OCID" \
         --display-name "$ALERT_NAME" \
         --threshold "$THRESHOLD" --threshold-type PERCENTAGE --type ACTUAL \
