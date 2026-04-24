@@ -66,10 +66,15 @@ data "sops_file" "machine_configs" {
 # rarely exercises its fallback in practice.
 
 locals {
-  auth_decoded = (
+  # auth_decoded wraps the whole conditional in a single try() — that makes
+  # the return type fully dynamic and avoids OpenTofu unifying the two
+  # yamldecode(...) branches (which can have structurally different result
+  # types when the encrypted and plaintext YAML shapes differ).
+  auth_decoded = try(
     local.is_encrypted_auth
-    ? try(yamldecode(data.sops_file.auth[0].raw), null)
-    : try(yamldecode(file(local.auth_local)), null)
+    ? yamldecode(data.sops_file.auth[0].raw)
+    : yamldecode(file(local.auth_local)),
+    null
   )
 
   nodes_decoded           = try(yamldecode(file(local.nodes_local)), { nodes = {} })
