@@ -99,13 +99,19 @@ jobs:
         # URL to tofu via TF_VAR_talos_image_source_uris. The script is
         # idempotent: bucket+object creation are skipped when already
         # present, so re-runs are cheap.
-        env:
-          TALOS_VERSION: "v1.12.6"
         run: |
           set -euo pipefail
           if ! command -v oci >/dev/null 2>&1; then
             pip install --user oci-cli >/dev/null 2>&1 || pipx install oci-cli >/dev/null 2>&1
             export PATH="$HOME/.local/bin:$PATH"
+          fi
+          # Sole source of truth: tofu/shared/versions.auto.tfvars. Read the
+          # same value tofu plan/apply will use — no workflow-side drift on
+          # version bumps.
+          TALOS_VERSION=$(awk -F'"' '/^talos_version[[:space:]]*=/ {print $2; exit}' tofu/shared/versions.auto.tfvars)
+          if [[ -z "$TALOS_VERSION" ]]; then
+            echo "::error::could not read talos_version from tofu/shared/versions.auto.tfvars"
+            exit 1
           fi
           # Resolve the Talos schematic id by POSTing the yaml to the factory;
           # the same id the tofu resource computes internally, derived from
