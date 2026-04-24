@@ -23,6 +23,13 @@ locals {
     # Likely needs ensure_image reinstall; running a reset workflow is
     # the cleanest path.
     "kubernetes-controlplane-api-3",
+    # Contabo api-2 — Talos is up (:50000 responds) but apiserver never
+    # comes up on :6443 after the reinstall. Etcd likely failing to
+    # form/join quorum; needs `talosctl etcd members` to diagnose. Skip
+    # for now so the run can complete on api-1 alone; single-CP cluster
+    # is enough to deploy Flux and prove the pipeline end-to-end. Will
+    # recover api-2 once we have kubectl access via api-1.
+    "kubernetes-controlplane-api-2",
   ]
 
   direct_controlplane_nodes = {
