@@ -31,6 +31,12 @@ variable "force_reinstall_generation" {
   EOT
 }
 
+variable "cloudflare_api_token" {
+  type        = string
+  sensitive   = true
+  description = "Cloudflare API token, Zone:DNS:Edit. Kept in this layer ONLY to destroy the legacy cp_dns records still in its state — the new publishing path lives in layer 03. Remove once layer 01's state is clean of cloudflare_dns_record resources."
+}
+
 variable "age_recipients" {
   type        = string
   description = "Comma-separated age recipient pubkeys. Used to re-encrypt on write."
