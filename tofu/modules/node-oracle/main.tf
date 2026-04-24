@@ -60,14 +60,23 @@ resource "oci_core_instance" "this" {
     boot_volume_size_in_gbs = 200
   }
 
-  # No explicit launch_options block — OCI's LaunchInstance API
-  # treats most LaunchOptions fields (BootVolumeType, Firmware) as
-  # NON-overridable: they must match whatever the image declares.
-  # Setting them here 400s with "Overriding BootVolumeType in
-  # LaunchOptions is not supported". With launch_mode = NATIVE on the
-  # image, OCI reads UEFI_64 + PARAVIRTUALIZED options from the Talos
-  # factory QCOW2's embedded image_metadata.json, and the instance
-  # just inherits them.
+  # Pin networkType to PARAVIRTUALIZED at instance launch. OCI A1.Flex
+  # defaults to VFIO (SR-IOV pass-through) for instances even when the
+  # underlying image declares networkType=PARAVIRTUALIZED in its
+  # embedded launchOptions — the image-level value applies to default
+  # launch options, but OCI still has to commit a per-instance value.
+  # Talos arm64 expects virtio-net (PARAVIRTUALIZED); landing on VFIO
+  # means no usable NIC, so the VM boots but ICMP and every TCP port
+  # time out from the public internet.
+  #
+  # Other fields (bootVolumeType, firmware) are deliberately NOT set
+  # here — OCI treats them as non-overridable when the image declares
+  # them, and setting them would 400 with "Overriding BootVolumeType
+  # in LaunchOptions is not supported".
+  launch_options {
+    network_type = "PARAVIRTUALIZED"
+  }
+
   metadata = {
     user_data = var.user_data
   }
