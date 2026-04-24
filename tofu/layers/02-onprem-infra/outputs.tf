@@ -5,7 +5,7 @@ output "nodes" {
     for key, item in local.flattened_nodes : key => {
       name     = key
       role     = item.node.role
-      region   = coalesce(try(item.node.region, null), try(item.account.region, ""))
+      region   = try(item.node.region, try(item.account.region, "unknown"))
       provider = "onprem"
       ipv4     = try(item.node.ipv4, null)
       ipv6     = try(item.node.ipv6, null)
@@ -20,7 +20,7 @@ output "nodes" {
       derived_labels = merge(
         item.node.labels,
         {
-          "topology.kubernetes.io/region"     = coalesce(try(item.node.region, null), try(item.account.region, ""))
+          "topology.kubernetes.io/region"     = try(item.node.region, try(item.account.region, "unknown"))
           "node.antinvestor.io/provider"      = "onprem"
           "node.antinvestor.io/account"       = item.account_key
           "node.antinvestor.io/role"          = item.node.role
