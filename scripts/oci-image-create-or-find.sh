@@ -43,6 +43,15 @@ done
 export OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING=True
 export SUPPRESS_LABEL_WARNING=True
 
+# The WIF-generated ~/.oci/config profile uses security_token auth
+# (configure-oci-wif.sh writes `auth = security_token` plus a
+# security_token_file pointer). The OCI Python SDK reads that `auth`
+# field, but the OCI CLI does NOT — it defaults to api_key auth and
+# complains "user: missing" unless we force the mode via OCI_CLI_AUTH
+# or --auth. Env var is cleaner than threading --auth through every
+# call.
+export OCI_CLI_AUTH=security_token
+
 # Resolve the oci binary once — tofu's external data source subshell
 # doesn't always inherit ~/.local/bin. Fall back to common user-scope
 # locations so the script works under `sudo -u runner` too.
