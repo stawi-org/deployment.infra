@@ -7,10 +7,10 @@
 #
 # Format matches the `nodes[<key>].provider_data` sub-schema of state.yaml.
 contabo:
-  stawi-contabo:
-    contabo-stawi-contabo-node-1:
+  bwire:
+    contabo-bwire-node-1:
       contabo_instance_id: "202727783"
-    contabo-stawi-contabo-node-2:
+    contabo-bwire-node-2:
       contabo_instance_id: "202727782"
-    contabo-stawi-contabo-node-3:
+    contabo-bwire-node-3:
       contabo_instance_id: "202727781"

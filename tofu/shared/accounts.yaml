@@ -2,8 +2,8 @@
 # these to know which R2 keys to read. Edit this file to onboard a new
 # account; the inventory tree is seeded separately by seed-inventory.sh.
 contabo:
-  - stawi-contabo
+  - bwire
 oracle:
-  - stawi-bwire
+  - bwire
 onprem:
-  - savannah-hq
+  - tindase

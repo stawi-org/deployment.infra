@@ -36,7 +36,7 @@ variable "per_node_force_reinstall_generation" {
   default     = {}
   description = <<-EOT
     Per-node override for force_reinstall_generation. Keyed by
-    node_key (e.g. contabo-stawi-contabo-node-2). The effective
+    node_key (e.g. contabo-bwire-node-2). The effective
     generation for a node is
       var.force_reinstall_generation + lookup(map, node_key, 0)
     so bumping an entry here fires ensure-image for just that one

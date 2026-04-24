@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       node_key:
-        description: Inventory node_key (e.g. kubernetes-controlplane-api-2, oci-stawi-bwire-node-1)
+        description: Inventory node_key (e.g. contabo-bwire-node-2, oci-bwire-node-1)
         required: true
         type: string
       action:

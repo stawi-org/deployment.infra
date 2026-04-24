@@ -28,7 +28,7 @@ force_reinstall_generation = 7
 #
 # Example:
 #   per_node_force_reinstall_generation = {
-#     "contabo-stawi-contabo-node-3" = 1  # first wipe of api-3
+#     "contabo-bwire-node-3" = 1  # first wipe of api-3
 #   }
 # Bump to 2, 3, … on each subsequent reinstall of the same node.
 per_node_force_reinstall_generation = {}

@@ -18,7 +18,7 @@ on:
         type: choice
         options: [contabo, oracle, onprem]
       account:
-        description: "Account / location key (no slashes; e.g. stawi-contabo)"
+        description: "Account / location key (no slashes; e.g. bwire)"
         required: true
         type: string
       filename:

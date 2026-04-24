@@ -9,7 +9,7 @@ variable "provider_name" {
 
 variable "account" {
   type        = string
-  description = "Account key. For on-prem this is the location key (e.g. savannah-hq)."
+  description = "Account key. For on-prem this is the location key (e.g. tindase)."
 }
 
 variable "bucket" {
