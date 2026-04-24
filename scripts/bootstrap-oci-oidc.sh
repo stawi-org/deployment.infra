@@ -656,7 +656,9 @@ oci:
       annotations:
         node.antinvestor.io/account-owner: platform
       nodes:
-        oci-${GH_PROFILE}-cp-1:
+        # Generic node naming — controlplane/worker distinction is the
+        # role: + plane label below, not the name. Avoids renames-on-promotion.
+        oci-${GH_PROFILE}-node-1:
           role: controlplane
           shape: VM.Standard.A1.Flex
           ocpus: 4
