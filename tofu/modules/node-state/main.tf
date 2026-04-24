@@ -66,14 +66,17 @@ data "sops_file" "machine_configs" {
 # rarely exercises its fallback in practice.
 
 locals {
-  # TEMPORARY DEBUGGING: removed outer try() on auth so real errors surface.
-  # Branch on is_encrypted_auth; each branch individually wrapped in try()
-  # only to avoid indexing errors when the data/file is absent.
-  auth_decoded = (
+  # Branch on is_encrypted_auth at the STRING level (both branches produce
+  # strings, which unify). Then yamldecode the resulting string once. This
+  # avoids "Inconsistent conditional result types" that would otherwise fire
+  # because the encrypted-file-on-disk has a `sops:` metadata key absent
+  # from the decrypted sops_file.auth[0].raw output.
+  auth_raw_yaml = (
     local.is_encrypted_auth
-    ? (local.has_auth ? yamldecode(data.sops_file.auth[0].raw) : null)
-    : (local.has_auth ? yamldecode(file(local.auth_local)) : null)
+    ? (local.has_auth ? data.sops_file.auth[0].raw : "")
+    : (local.has_auth ? file(local.auth_local) : "")
   )
+  auth_decoded = try(yamldecode(local.auth_raw_yaml), null)
 
   nodes_decoded           = try(yamldecode(file(local.nodes_local)), { nodes = {} })
   state_decoded           = try(yamldecode(file(local.state_local)), { nodes = {} })
