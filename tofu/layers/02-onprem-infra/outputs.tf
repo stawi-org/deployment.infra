@@ -5,7 +5,7 @@ output "nodes" {
     for key, item in local.flattened_nodes : key => {
       name     = key
       role     = item.node.role
-      region   = coalesce(try(item.node.region, null), item.account.region)
+      region   = coalesce(try(item.node.region, null), try(item.account.region, ""))
       provider = "onprem"
       ipv4     = try(item.node.ipv4, null)
       ipv6     = try(item.node.ipv6, null)
@@ -20,7 +20,7 @@ output "nodes" {
       derived_labels = merge(
         item.node.labels,
         {
-          "topology.kubernetes.io/region"     = coalesce(try(item.node.region, null), item.account.region)
+          "topology.kubernetes.io/region"     = coalesce(try(item.node.region, null), try(item.account.region, ""))
           "node.antinvestor.io/provider"      = "onprem"
           "node.antinvestor.io/account"       = item.account_key
           "node.antinvestor.io/role"          = item.node.role
@@ -36,9 +36,9 @@ output "nodes" {
       derived_annotations = merge(
         item.node.annotations,
         {
-          "node.antinvestor.io/account-description" = item.account.description
-          "node.antinvestor.io/site-ipv4-cidrs"     = join(",", item.account.site_ipv4_cidrs)
-          "node.antinvestor.io/site-ipv6-cidrs"     = join(",", item.account.site_ipv6_cidrs)
+          "node.antinvestor.io/account-description" = try(item.account.description, "")
+          "node.antinvestor.io/site-ipv4-cidrs"     = join(",", try(item.account.site_ipv4_cidrs, []))
+          "node.antinvestor.io/site-ipv6-cidrs"     = join(",", try(item.account.site_ipv6_cidrs, []))
           "node.antinvestor.io/provider"            = "onprem"
           "node.antinvestor.io/account"             = item.account_key
           "node.antinvestor.io/role"                = item.node.role

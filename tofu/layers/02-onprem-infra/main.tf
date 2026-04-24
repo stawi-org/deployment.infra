@@ -18,6 +18,12 @@ locals {
     for k, mod in module.onprem_account_state : k => try(mod.nodes.nodes, {})
   }
 
+  # Full decoded nodes.yaml per account, used for account-level metadata
+  # (description, region, labels, annotations, site_* cidrs if present).
+  onprem_account_meta = {
+    for k, mod in module.onprem_account_state : k => try(mod.nodes, {})
+  }
+
   onprem_accounts_effective = {
     for k in local.onprem_account_keys : k => {
       nodes = local.onprem_nodes_from_module[k]
@@ -30,6 +36,7 @@ locals {
         account_key = acct_key
         node_key    = node_key
         node        = node
+        account     = local.onprem_account_meta[acct_key]
       }
     }
   ]...)
