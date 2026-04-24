@@ -380,22 +380,18 @@ say "  group:   $GROUP_OCID"
 # 4. IAM POLICY
 # =========================================================================
 say "Ensuring IAM policy '$POLICY_NAME'"
-# Permissions cover the resources tofu/modules/oracle-account-infra creates
-# end-to-end: VCN + subnets + security lists + bastion (network/bastion),
-# Talos custom image upload from a URL (instance-images +
-# compute-management-family for image import jobs), running instances and
-# their boot volumes (instance-family + volume-family). Without
-# instance-images + volume-family, layer 02 fails on first apply with
-# 404-NotAuthorizedOrNotFound on CreateImage / CreateBootVolume.
+# Single 'manage all-resources' grant in the compartment — gives the
+# service account full authority over everything tofu provisions
+# (VCN, instances, images, volumes, bastion, etc.) without having to
+# enumerate resource families and chase down 404-NotAuthorizedOrNotFound
+# on each missing one. The blast radius is bounded by COMPARTMENT_OCID
+# (typically the tenancy root for this project — that is intentional;
+# the service account is the cluster's own provisioner).
+# Tenancy-scoped reads cover tagging, compartment lookup, and budget
+# observation which can't live inside a single compartment.
 POLICY_STMTS=$(cat <<EOF
 [
-  "Allow group id $GROUP_OCID to manage virtual-network-family       in compartment id $COMPARTMENT_OCID",
-  "Allow group id $GROUP_OCID to manage instance-family              in compartment id $COMPARTMENT_OCID",
-  "Allow group id $GROUP_OCID to manage instance-images              in compartment id $COMPARTMENT_OCID",
-  "Allow group id $GROUP_OCID to manage volume-family                in compartment id $COMPARTMENT_OCID",
-  "Allow group id $GROUP_OCID to manage compute-management-family    in compartment id $COMPARTMENT_OCID",
-  "Allow group id $GROUP_OCID to manage bastion-family               in compartment id $COMPARTMENT_OCID",
-  "Allow group id $GROUP_OCID to read   all-resources                in compartment id $COMPARTMENT_OCID",
+  "Allow group id $GROUP_OCID to manage all-resources                in compartment id $COMPARTMENT_OCID",
   "Allow group id $GROUP_OCID to use    tag-namespaces               in tenancy",
   "Allow group id $GROUP_OCID to read   compartments                 in tenancy",
   "Allow group id $GROUP_OCID to read   usage-budgets                in tenancy"
@@ -440,23 +436,18 @@ CURRENT_STMTS=$(printf '%s' "$POLICY_GET_JSON" | jq -r '.data.statements[]?')
 say "  policy statements now in OCI:"
 printf '%s\n' "$CURRENT_STMTS" | sed 's/^/      /'
 
-# Use jq directly against the parsed JSON for the verifier — bypasses any
-# bash/grep quirk with multi-line variable contents.
-missing=()
-for needle in instance-images volume-family compute-management-family; do
-  cnt=$(printf '%s' "$POLICY_GET_JSON" | jq -r --arg n "$needle" \
-    '[.data.statements[]? | select(contains($n))] | length' 2>/dev/null || echo 0)
-  if [[ "$cnt" = "0" ]]; then
-    missing+=("$needle")
-  fi
-done
-
-if [[ ${#missing[@]} -gt 0 ]]; then
-  warn "  policy is MISSING required statements: ${missing[*]}"
-  warn "  the update API call may have rate-limited or silently dropped them."
+# Verifier — confirm the broad grant landed. With a single 'manage
+# all-resources' statement there's nothing to enumerate; we just check
+# that the statement is present in the policy as-stored.
+all_resources_cnt=$(printf '%s' "$POLICY_GET_JSON" | jq -r \
+  '[.data.statements[]? | select(test("manage[[:space:]]+all-resources[[:space:]]+in[[:space:]]+compartment"; "i"))] | length' \
+  2>/dev/null || echo 0)
+if [[ "$all_resources_cnt" = "0" ]]; then
+  warn "  policy is MISSING the 'manage all-resources in compartment' grant."
+  warn "  the update API call may have rate-limited or silently dropped it."
   warn "  re-run the script; if it persists, inspect via OCI Console → Identity → Policies."
 else
-  say "  ✓ all required statements present"
+  say "  ✓ 'manage all-resources' grant in place"
 fi
 
 # =========================================================================
@@ -595,24 +586,16 @@ TRUST_PAYLOAD=$(cat <<JSON
 JSON
 )
 
-if [[ -n "$TRUST_OCID" && "$USER_RECREATED" == "true" ]]; then
-  say "  user was recreated → trust's impersonation value is stale, forcing recreate"
-  "${OCI_CLI[@]}" identity-domains identity-propagation-trust delete "${ID_ENDPOINT[@]}" \
-    --identity-propagation-trust-id "$TRUST_OCID" --force >/dev/null
-  TRUST_OCID=""
-fi
-
 if [[ -n "$TRUST_OCID" ]]; then
   # Validate the existing trust has all the fields the token-exchange flow
-  # requires (clientClaimName/clientClaimValues/subjectMappingAttribute).
-  # Old versions of this script created trusts without them, leading to
-  # OCI returning {"error":"unauthorized_client","error_description":
-  # "No rules matched from given token to find impersonation user."}.
-  # If we find a broken trust, delete + recreate so re-runs self-heal.
+  # requires (clientClaimName/clientClaimValues/subjectMappingAttribute) AND
+  # that its impersonationServiceUsers[0].value still points at the CURRENT
+  # service user OCID. Old runs of this script (before the user-detection
+  # fix) sometimes deleted+recreated the user, leaving the trust pinned to
+  # a stale OCID — which manifests at apply time as 404-NotAuthorizedOrNotFound.
+  # If we find a broken or stale trust, delete + recreate so re-runs self-heal.
   # impersonationServiceUsers has SCIM "returned: request" so default GETs
-  # omit it — must pass --attributes to inspect the stored rule.
-  # Request impersonationServiceUsers explicitly — SCIM marks it
-  # returned: request, so default GETs omit it.
+  # omit it — must pass --attributes to inspect the stored value.
   TRUST_RAW=$("${OCI_CLI[@]}" raw-request \
     --target-uri "${DOMAIN_URL}/admin/v1/IdentityPropagationTrusts/${TRUST_OCID}?attributes=clientClaimName,clientClaimValues,subjectMappingAttribute,impersonationServiceUsers" \
     --http-method GET --output json 2>/dev/null || echo '{"data":{}}')
@@ -631,16 +614,36 @@ if [[ -n "$TRUST_OCID" ]]; then
   has_client_claim=$(has_field "clientclaimname")
   has_client_values=$(has_field "clientclaimvalues")
   has_subject_map=$(has_field "subjectmappingattribute")
-  # Targeted: rule lives ONLY inside impersonationServiceUsers[].rule
-  # (or its kebab-case form). Any other "rule" in the doc is unrelated.
+  # Targeted: rule + value live ONLY inside impersonationServiceUsers[].
+  # Any other "rule" / "value" in the doc is unrelated.
   rule_value=$(jq -r '
     (.data."impersonation-service-users" // .data.impersonationServiceUsers // [])
     | (.[0] // {}).rule // ""
   ' <<<"$TRUST_RAW" 2>/dev/null || echo "")
+  trust_user_value=$(jq -r '
+    (.data."impersonation-service-users" // .data.impersonationServiceUsers // [])
+    | (.[0] // {}).value // ""
+  ' <<<"$TRUST_RAW" 2>/dev/null || echo "")
 
-  if [[ "$has_client_claim" = "true" && "$has_client_values" = "true" \
+  user_drifted="false"
+  if [[ -n "$trust_user_value" && "$trust_user_value" != "$USER_OCID" ]]; then
+    user_drifted="true"
+  fi
+
+  if [[ "$user_drifted" = "true" ]]; then
+    warn "  Trust impersonation user is STALE (stored=$trust_user_value, current=$USER_OCID)"
+    warn "  Deleting trust so it gets re-bound to the current service user."
+    "${OCI_CLI[@]}" identity-domains identity-propagation-trust delete "${ID_ENDPOINT[@]}" \
+      --identity-propagation-trust-id "$TRUST_OCID" --force >/dev/null
+    TRUST_OCID=""
+  elif [[ "${USER_RECREATED:-false}" = "true" ]]; then
+    say "  user was recreated this run → trust's impersonation value is stale, forcing recreate"
+    "${OCI_CLI[@]}" identity-domains identity-propagation-trust delete "${ID_ENDPOINT[@]}" \
+      --identity-propagation-trust-id "$TRUST_OCID" --force >/dev/null
+    TRUST_OCID=""
+  elif [[ "$has_client_claim" = "true" && "$has_client_values" = "true" \
         && "$has_subject_map" = "true" && "$rule_value" = "sub eq *" ]]; then
-    say "  trust schema looks complete — keeping"
+    say "  trust schema looks complete, impersonation user matches ($trust_user_value) — keeping"
   elif [[ "$has_client_claim" != "true" || "$has_client_values" != "true" \
           || "$has_subject_map" != "true" || -z "$rule_value" ]]; then
     warn "  Trust missing required fields (client_claim=$has_client_claim values=$has_client_values subj_map=$has_subject_map rule='$rule_value')"
