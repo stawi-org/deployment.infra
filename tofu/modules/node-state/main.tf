@@ -126,9 +126,11 @@ resource "aws_s3_object" "per_node_config" {
   for_each = var.write_per_node_configs ? var.per_node_configs_content : {}
   bucket   = var.bucket
   key      = "${local.base_key}/${var.talos_version}/${each.key}.yaml"
-  content  = yamlencode(each.value)
-  # yamlencode on a full Talos machine config can be MB-sized; leave
-  # content_type as generic text so R2's Content-Type header matches.
+  # Values are already multi-document YAML strings (Talos emits
+  # LinkConfig / HostnameConfig / MachineConfig as separate
+  # documents joined by `---`). Write verbatim — yamldecode +
+  # yamlencode would collapse the multi-doc boundaries.
+  content      = each.value
   content_type = "application/x-yaml"
 
   lifecycle {

@@ -65,9 +65,9 @@ variable "nodes_content" {
   description = "YAML-shaped map written to nodes.yaml when write_nodes = true. Ignored on read-only invocations."
 }
 variable "per_node_configs_content" {
-  type        = map(any)
+  type        = map(string)
   default     = {}
-  description = "Per-node Talos machine config, keyed by node_key. Each value is the YAML-shaped map written to <talos_version>/<node_key>.yaml when write_per_node_configs = true."
+  description = "Per-node Talos machine config, keyed by node_key. Each value is the RAW multi-document YAML string (as emitted by data.talos_machine_configuration.*.machine_configuration) written verbatim to <talos_version>/<node_key>.yaml when write_per_node_configs = true."
 }
 variable "talos_version" {
   type        = string

@@ -10,14 +10,15 @@
 
 locals {
   # Pick the right data source for each node's role: cp[] for
-  # controlplane, worker[] for worker. contains(keys(...)) is more
-  # reliable than try() across index failures — the index operation
-  # errors BEFORE try can catch it. Decode the YAML-string output back
-  # into a map so yamlencode in the writer emits it cleanly
-  # (avoids double-escaping).
+  # controlplane, worker[] for worker. contains(keys(...)) gates the
+  # index lookup so the index evaluation doesn't error on the wrong
+  # map. The value is the RAW multi-document YAML string that Talos
+  # emits — we write it verbatim (LinkConfig / HostnameConfig /
+  # MachineConfig documents separated by `---` would collapse if we
+  # yamldecode+yamlencode through it).
   per_node_configs = {
     for node_key, node in local.all_nodes_from_state :
-    node_key => yamldecode(
+    node_key => (
       contains(keys(data.talos_machine_configuration.cp), node_key)
       ? data.talos_machine_configuration.cp[node_key].machine_configuration
       : data.talos_machine_configuration.worker[node_key].machine_configuration
