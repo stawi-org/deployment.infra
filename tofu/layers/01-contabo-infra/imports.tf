@@ -1,23 +1,25 @@
 # tofu/layers/01-contabo-infra/imports.tf
 #
-# Import the 3 existing Contabo control-plane instances into layer 01 state.
-# After import, changing `image_id` on `contabo_instance` triggers the Contabo
-# provider's update-with-reinstall flow: instance ID and IP are preserved, storage
-# is wiped, and the instance boots into the new image (Talos v1.13.0-rc.0).
+# Dynamic imports driven by production/inventory/contabo/<acct>/state.yaml.
+# Key is set only to the subset of nodes that *already have* a resolved
+# instance ID in state.yaml — missing-state nodes plan as `create`.
 #
-# Leaving this block in place after first apply is idempotent — OpenTofu skips
-# the import when the resource is already in state.
+# After apply, state.yaml is written back by this layer (state-writer.tf),
+# so the next plan sees the full set and produces a zero-diff.
 
 locals {
-  existing_contabo_instance_ids = {
-    "kubernetes-controlplane-api-1" = "202727783"
-    "kubernetes-controlplane-api-2" = "202727782"
-    "kubernetes-controlplane-api-3" = "202727781"
-  }
+  # Flat { "<node_key>" = "<instance_id>" } across all Contabo accounts.
+  contabo_existing_instance_ids = merge([
+    for acct_key, node_map in local.contabo_state_from_module : {
+      for node_key, node in node_map :
+      node_key => try(node.provider_data.contabo_instance_id, null)
+      if try(node.provider_data.contabo_instance_id, null) != null
+    }
+  ]...)
 }
 
 import {
-  for_each = local.existing_contabo_instance_ids
+  for_each = local.contabo_existing_instance_ids
   to       = module.nodes[each.key].contabo_instance.this
   id       = each.value
 }

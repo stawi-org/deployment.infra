@@ -1,0 +1,16 @@
+# One-time bootstrap fallback for scripts/seed-inventory.sh.
+#
+# Used ONLY when seed-inventory.sh cannot resolve a Contabo node's live
+# instance ID by display_name (e.g. Contabo API transient error, multiple
+# matches per provider bug #40). Delete this file after the first successful
+# apply populates production/inventory/contabo/*/state.yaml in R2.
+#
+# Format matches the `nodes[<key>].provider_data` sub-schema of state.yaml.
+contabo:
+  stawi-contabo:
+    kubernetes-controlplane-api-1:
+      contabo_instance_id: "202727783"
+    kubernetes-controlplane-api-2:
+      contabo_instance_id: "202727782"
+    kubernetes-controlplane-api-3:
+      contabo_instance_id: "202727781"

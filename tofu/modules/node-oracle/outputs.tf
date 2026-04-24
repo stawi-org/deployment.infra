@@ -22,3 +22,13 @@ output "node" {
     image_apply_generation = oci_core_instance.this.id
   }
 }
+
+# State-writer fields — consumed by oracle-account-infra's `nodes` output
+# and ultimately written to state.yaml in R2.
+output "id" { value = oci_core_instance.this.id }
+output "shape" { value = var.shape }
+output "ocpus" { value = var.ocpus }
+output "memory_gb" { value = var.memory_gb }
+output "region" { value = var.region }
+output "ipv4" { value = local.private_ip }
+output "ipv6" { value = local.ipv6 }

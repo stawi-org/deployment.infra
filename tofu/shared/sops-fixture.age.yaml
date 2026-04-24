@@ -1,0 +1,26 @@
+# Plan-time SOPS provider health check fixture.
+# If sops-fixture.age.yaml cannot be decrypted during `tofu plan`, the
+# `sops_provider_healthy` check in each layer fails and the apply is blocked
+# before any destructive action.
+#
+# To rotate (after adding/removing an age recipient):
+#   SOPS_AGE_RECIPIENTS="$(tr '\n' ',' < tofu/shared/age-recipients.txt | sed 's/,$//')" \
+#     sops -e --input-type yaml --output-type yaml --encrypted-regex '^canary$' \
+#     tofu/shared/sops-fixture.plain.yaml > tofu/shared/sops-fixture.age.yaml
+#   git add tofu/shared/sops-fixture.*.yaml
+canary: ENC[AES256_GCM,data:q8j03owv6A==,iv:2z+jaXXN/ix7pmdhl8VS0qcnTbWvwbFk6B8UBNZ/cD4=,tag:L+260T9JxOP5GCjQvKIjCA==,type:str]
+sops:
+    age:
+        - recipient: age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBScmFpNTJSbmR6S1Y5S3lj
+            T0s2WFhxNGgvTGZrdDBDbUNWaDFMUkZPbFVvCllSQ3c0N1ZOcXRWWVdSd0Y1aHZO
+            dkc2OE11ZmY1N2laR0duaUtCcjZ6MzQKLS0tIFB3c0ZqdGV0Vm9wYmhQTzZoTnBq
+            SW5rMVRNd0VPYVFaTWJrMyszS3BwbmMK7OkByGcSIM3vxsvwQePMgF6xpzomU3Fi
+            hk0LBqtWC3JZ20SqZbhQXzEbmW3mZSsbkeusXOrrJq/EVj9FKzkFpA==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-04-23T21:30:31Z"
+    mac: ENC[AES256_GCM,data:S3jcgCQMwLMoxu7M+W8Go2HMYvvLyIIo/F5M1e1LE0KNwGoLZyodz3/toyvL5zWVkOLltB2cYOwFjIIkJIkkvDtNzbR2CliVqKdwiNrRF3bN9vllG7zWUVW88HwGZ2ILxJpaTxFNkoWENIKtgQSFXU3OTY/SRt3lJFR8YjBWu54=,iv:OJUrdUvJbirq37Hxh361z9TLddKiMZrEj5ijGYW4LkI=,tag:HiE1nUUJ0gkssYggt6xrmw==,type:str]
+    encrypted_regex: ^canary$
+    version: 3.11.0

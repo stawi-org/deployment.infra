@@ -31,3 +31,20 @@ variable "force_talos_reapply_generation" {
   default     = "1"
   description = "Bump this (1 -> 2) to force all talos_machine_configuration_apply resources to be destroyed + recreated on the next apply. Use when nodes are stuck in a bad state (e.g. kubelet ImagePullBackOff) and need a reboot triggered by tofu. Feeds into terraform_data config-hash inputs and replace_triggered_by fires on change."
 }
+
+variable "age_recipients" {
+  type        = string
+  description = "Comma-separated age recipient pubkeys. Used to re-encrypt on write."
+}
+
+variable "ci_run_id" {
+  type        = string
+  default     = "local"
+  description = "Set by CI to $GITHUB_RUN_ID; used only for audit metadata in machine-configs.yaml."
+}
+
+variable "local_inventory_dir" {
+  type        = string
+  default     = "/tmp/inventory"
+  description = "Local directory where the workflow syncs R2 production/inventory/ before plan. Module reads use this; writes go directly to R2."
+}

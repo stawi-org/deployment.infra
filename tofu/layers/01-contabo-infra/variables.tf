@@ -11,49 +11,6 @@ variable "flux_version" {
   type = string
 }
 
-variable "contabo_accounts" {
-  type = map(object({
-    auth = object({
-      oauth2_client_id     = string
-      oauth2_client_secret = string
-      oauth2_user          = string
-      oauth2_pass          = string
-    })
-    labels      = optional(map(string), {})
-    annotations = optional(map(string), {})
-    nodes = map(object({
-      role        = optional(string, "controlplane")
-      product_id  = string
-      region      = optional(string, "EU")
-      labels      = optional(map(string), {})
-      annotations = optional(map(string), {})
-    }))
-  }))
-  default     = {}
-  description = <<-EOT
-    Contabo account inventory. Each account supplies its own credentials and
-    node inventory. Node keys must remain globally unique across all accounts
-    because they become Terraform resource keys and Talos node names.
-  EOT
-
-  validation {
-    condition = length(flatten([
-      for account_key, account in var.contabo_accounts : [
-        for node_key, node in account.nodes :
-        "${account_key}/${node_key}" if(
-          contains(["controlplane", "worker"], node.role)
-          && length(node_key) <= 63
-          && can(regex("^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", node_key))
-        )
-      ]
-      ])) == length(toset(flatten([
-        for account_key, account in var.contabo_accounts : [
-          for node_key, _ in account.nodes : node_key
-        ]
-    ])))
-    error_message = "Contabo node keys must be valid RFC 1123 labels, unique across accounts, and node role must be controlplane or worker."
-  }
-}
 
 variable "force_reinstall_generation" {
   type        = number
@@ -120,4 +77,21 @@ variable "extra_cert_sans" {
     For Cloudflare-managed zones, prefer extending cp_dns_zones so the
     DNS record and the cert SAN stay in sync automatically.
   EOT
+}
+
+variable "age_recipients" {
+  type        = string
+  description = "Comma-separated age recipient pubkeys. Used to re-encrypt on write."
+}
+
+variable "r2_account_id" {
+  type        = string
+  sensitive   = true
+  description = "Cloudflare R2 account ID; used for the S3-compatible AWS provider endpoint."
+}
+
+variable "local_inventory_dir" {
+  type        = string
+  default     = "/tmp/inventory"
+  description = "Local directory where the workflow syncs R2 production/inventory/ before plan. Module reads use this; writes go directly to R2."
 }

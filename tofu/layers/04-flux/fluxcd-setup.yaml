@@ -46,7 +46,7 @@ spec:
   sync:
     kind: GitRepository
     provider: github
-    url: "https://github.com/stawi-org/deployment.manifest"
+    url: "https://github.com/stawi-org/deployment.manifests"
     ref: "refs/heads/main"
     path: "manifests/flux-system"
     pullSecret: "ghapp-secret"

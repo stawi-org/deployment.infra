@@ -40,3 +40,5 @@ cp_dns_zones = [
 # the (pending) in-place talosctl upgrade path. Bumping this wipes
 # etcd and workloads on the Contabo CPs.
 force_reinstall_generation = 6
+
+age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt"

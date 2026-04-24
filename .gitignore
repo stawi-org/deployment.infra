@@ -18,6 +18,7 @@ tofu/layers/**/override.auto.tfvars
 # Claude session state
 .claude/
 WORK_STATE.md
+.worktrees/
 
 credentials/
 providers/

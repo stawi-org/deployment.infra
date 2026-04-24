@@ -86,12 +86,18 @@ print(f'{scheme}://{host}' + ('' if port in (None, 443) else f':{port}'))
   printf '%s' "$TOKEN" > "$UPST"
   chmod 0600 "$UPST"
 
+  # OCI provider's SecurityToken auth path requires `fingerprint` even
+  # though the token carries auth. Compute MD5 fingerprint of the public
+  # key in DER form (format: aa:bb:cc:...).
+  FINGERPRINT=$(openssl rsa -in "$KEY" -pubout -outform DER 2>/dev/null | openssl dgst -md5 -c 2>/dev/null | awk '{print $NF}')
+
   cat >> "$HOME/.oci/config" <<CFG
 
 [${profile}]
 auth = security_token
 security_token_file = ${UPST}
 key_file = ${KEY}
+fingerprint = ${FINGERPRINT}
 tenancy = ${tenancy}
 region = ${region}
 CFG

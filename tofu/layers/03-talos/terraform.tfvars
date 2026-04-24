@@ -5,6 +5,8 @@
 # public IPv4 on Contabo is preserved across reinstalls, so it's stable.
 cluster_endpoint = "https://cp.antinvestor.com:6443"
 
+age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt"
+
 # Bump this to force all talos_machine_configuration_apply resources to be
 # replaced (destroy + recreate) on the next apply. Used for recovery when
 # nodes are stuck in a bad state — e.g. kubelet ImagePullBackOff from a

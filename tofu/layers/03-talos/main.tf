@@ -47,38 +47,136 @@ data "terraform_remote_state" "oracle" {
   }
 }
 
-data "terraform_remote_state" "onprem" {
-  backend = "s3"
-  config = {
-    bucket                      = "cluster-tofu-state"
-    key                         = "production/02-onprem-infra.tfstate"
-    region                      = "auto"
-    endpoints                   = { s3 = "https://${var.r2_account_id}.r2.cloudflarestorage.com" }
-    use_path_style              = true
-    skip_credentials_validation = true
-    skip_metadata_api_check     = true
-    skip_region_validation      = true
-    skip_requesting_account_id  = true
-    skip_s3_checksum            = true
-  }
+
+module "contabo_state" {
+  for_each            = toset(local.accounts_manifest.contabo)
+  source              = "../../modules/node-state"
+  provider_name       = "contabo"
+  account             = each.key
+  age_recipients      = split(",", var.age_recipients)
+  local_inventory_dir = var.local_inventory_dir
+}
+
+module "oracle_state" {
+  for_each            = toset(local.accounts_manifest.oracle)
+  source              = "../../modules/node-state"
+  provider_name       = "oracle"
+  account             = each.key
+  age_recipients      = split(",", var.age_recipients)
+  local_inventory_dir = var.local_inventory_dir
+}
+
+module "onprem_state" {
+  for_each            = toset(local.accounts_manifest.onprem)
+  source              = "../../modules/node-state"
+  provider_name       = "onprem"
+  account             = each.key
+  age_recipients      = split(",", var.age_recipients)
+  local_inventory_dir = var.local_inventory_dir
 }
 
 locals {
-  all_nodes = merge(
-    data.terraform_remote_state.contabo.outputs.nodes,
-    data.terraform_remote_state.oracle.outputs.nodes,
-    data.terraform_remote_state.onprem.outputs.nodes,
+  # Raw merge across all three providers' state.yaml -> nodes.yaml ->
+  # provider_data. Then below we enrich with derived_labels /
+  # derived_annotations / image_apply_generation expected by the rest of
+  # layer 03's resources.
+  _raw_nodes = merge(flatten([
+    [
+      for acct_key, mod in module.contabo_state : {
+        for node_key, node in try(mod.state.nodes, {}) :
+        (node_key) => merge(
+          { provider = "contabo", account = acct_key, node_key = node_key },
+          try(mod.nodes.nodes[node_key], {}),
+          node.provider_data,
+        )
+      }
+    ],
+    [
+      for acct_key, mod in module.oracle_state : {
+        for node_key, node in try(mod.state.nodes, {}) :
+        "${acct_key}-${node_key}" => merge(
+          { provider = "oracle", account = acct_key, node_key = node_key },
+          try(mod.nodes.nodes[node_key], {}),
+          node.provider_data,
+        )
+      }
+    ],
+    [
+      for acct_key, mod in module.onprem_state : {
+        for node_key, node in try(mod.state.nodes, {}) :
+        "${acct_key}-${node_key}" => merge(
+          { provider = "onprem", account = acct_key, node_key = node_key },
+          try(mod.nodes.nodes[node_key], {}),
+          node.provider_data,
+        )
+      }
+    ],
+  ])...)
+
+  # Enriched per-node map. Adds the derived_labels / derived_annotations /
+  # image_apply_generation that the legacy layer 03 code expects.
+  all_nodes_from_state = {
+    for k, v in local._raw_nodes : k => merge(v, {
+      role                = try(v.role, "worker")
+      ipv4                = try(v.ipv4, null)
+      ipv6                = try(v.ipv6, null)
+      config_apply_source = try(v.config_apply_source, contains(["contabo", "oracle"], v.provider) ? "ci" : "manual")
+      bastion_id          = try(v.bastion_id, null)
+
+      derived_labels = merge(
+        try(v.labels, {}),
+        {
+          "topology.kubernetes.io/region" = try(v.region, "")
+          "node.antinvestor.io/provider"  = v.provider
+          "node.antinvestor.io/account"   = v.account
+          "node.antinvestor.io/role"      = try(v.role, "worker")
+        },
+        try(v.role, "worker") == "controlplane" ? {
+          "node-role.kubernetes.io/control-plane" = ""
+          } : {
+          "node-role.kubernetes.io/worker" = ""
+        },
+      )
+      derived_annotations = merge(
+        try(v.annotations, {}),
+        {
+          "node.antinvestor.io/provider" = v.provider
+          "node.antinvestor.io/account"  = v.account
+          "node.antinvestor.io/role"     = try(v.role, "worker")
+        },
+      )
+      image_apply_generation = md5(jsonencode({
+        provider = v.provider
+        account  = v.account
+        node_key = k
+      }))
+    })
+  }
+
+  # Flat map of upstream talos state across providers, keyed by node_key
+  # (same key used in all_nodes_from_state).
+  upstream_talos_state = merge(
+    { for acct_key, mod in module.contabo_state :
+    acct_key => try(mod.talos_state.nodes, {}) },
+    { for acct_key, mod in module.oracle_state :
+    acct_key => try(mod.talos_state.nodes, {}) },
+    { for acct_key, mod in module.onprem_state :
+    acct_key => try(mod.talos_state.nodes, {}) },
   )
 
-  controlplane_nodes   = { for k, v in local.all_nodes : k => v if v.role == "controlplane" }
-  worker_nodes         = { for k, v in local.all_nodes : k => v if v.role == "worker" }
-  contabo_worker_nodes = { for k, v in local.worker_nodes : k => v if v.provider == "contabo" }
-  ci_applied_nodes     = { for k, v in local.all_nodes : k => v if v.config_apply_source == "ci" }
-  bootstrap_node       = values(local.controlplane_nodes)[0]
+  controlplane_nodes   = { for k, v in local.all_nodes_from_state : k => v if try(v.role, "") == "controlplane" }
+  worker_nodes         = { for k, v in local.all_nodes_from_state : k => v if try(v.role, "") == "worker" }
+  contabo_worker_nodes = { for k, v in local.worker_nodes : k => v if try(v.provider, "") == "contabo" }
+  ci_applied_nodes     = { for k, v in local.all_nodes_from_state : k => v if try(v.config_apply_source, "") == "ci" }
+  bootstrap_node       = length(local.controlplane_nodes) > 0 ? values(local.controlplane_nodes)[0] : null
   all_node_addresses = compact(flatten([
-    for n in local.all_nodes : [
+    for n in local.all_nodes_from_state : [
       try(n.ipv4, null),
       try(n.ipv6, null),
     ]
   ]))
+}
+
+locals {
+  accounts_manifest = yamldecode(file("${path.module}/../../shared/accounts.yaml"))
 }
