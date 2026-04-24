@@ -603,48 +603,51 @@ if [[ -n "$TRUST_OCID" ]]; then
   # If we find a broken trust, delete + recreate so re-runs self-heal.
   # impersonationServiceUsers has SCIM "returned: request" so default GETs
   # omit it — must pass --attributes to inspect the stored rule.
-  # Default-SAFE: never delete a trust just because we couldn't parse its
-  # fields (OCI CLI normalises keys inconsistently). Walk the entire
-  # response tree to find each required field by case-insensitive name.
-  # Fall back to "keep" on any ambiguity.
+  # Request impersonationServiceUsers explicitly — SCIM marks it
+  # returned: request, so default GETs omit it.
   TRUST_RAW=$("${OCI_CLI[@]}" raw-request \
-    --target-uri "${DOMAIN_URL}/admin/v1/IdentityPropagationTrusts/${TRUST_OCID}" \
+    --target-uri "${DOMAIN_URL}/admin/v1/IdentityPropagationTrusts/${TRUST_OCID}?attributes=clientClaimName,clientClaimValues,subjectMappingAttribute,impersonationServiceUsers" \
     --http-method GET --output json 2>/dev/null || echo '{"data":{}}')
 
   has_field() {
-    # Walk the JSON tree for any key whose lowercased+dash-stripped form
-    # matches the target. Returns "true" if any non-empty value found.
+    # Top-level normalised field present + non-empty.
     local target="$1"
     jq -r --arg t "$target" '
-      [
-        .. | objects | to_entries[]?
-        | select(.key | ascii_downcase | gsub("[^a-z]"; "") == $t)
-        | .value
-      ] | map(select(. != null and . != "" and . != [] and . != {})) | length > 0
-    ' <<<"$TRUST_RAW" 2>/dev/null || echo "false"
+      .data | to_entries[]?
+      | select(.key | ascii_downcase | gsub("[^a-z]"; "") == $t)
+      | .value
+    ' <<<"$TRUST_RAW" 2>/dev/null \
+      | { read -r v && [[ -n "$v" && "$v" != "null" && "$v" != "[]" && "$v" != "{}" ]] && echo "true" || echo "false"; }
   }
 
   has_client_claim=$(has_field "clientclaimname")
   has_client_values=$(has_field "clientclaimvalues")
   has_subject_map=$(has_field "subjectmappingattribute")
+  # Targeted: rule lives ONLY inside impersonationServiceUsers[].rule
+  # (or its kebab-case form). Any other "rule" in the doc is unrelated.
   rule_value=$(jq -r '
-    [.. | objects | to_entries[]?
-      | select(.key | ascii_downcase | gsub("[^a-z]"; "") == "rule")
-      | .value] | first // ""
+    (.data."impersonation-service-users" // .data.impersonationServiceUsers // [])
+    | (.[0] // {}).rule // ""
   ' <<<"$TRUST_RAW" 2>/dev/null || echo "")
 
   if [[ "$has_client_claim" = "true" && "$has_client_values" = "true" \
         && "$has_subject_map" = "true" && "$rule_value" = "sub eq *" ]]; then
     say "  trust schema looks complete — keeping"
   elif [[ "$has_client_claim" != "true" || "$has_client_values" != "true" \
-          || "$has_subject_map" != "true" ]]; then
-    warn "  Existing trust is missing required fields (client_claim=$has_client_claim values=$has_client_values subj_map=$has_subject_map rule='$rule_value')"
+          || "$has_subject_map" != "true" || -z "$rule_value" ]]; then
+    warn "  Trust missing required fields (client_claim=$has_client_claim values=$has_client_values subj_map=$has_subject_map rule='$rule_value')"
     warn "  Deleting so we can recreate with the complete payload."
     "${OCI_CLI[@]}" identity-domains identity-propagation-trust delete "${ID_ENDPOINT[@]}" \
       --identity-propagation-trust-id "$TRUST_OCID" --force >/dev/null
     TRUST_OCID=""
   else
-    say "  trust fields all present, rule='$rule_value' (expected 'sub eq *') — keeping; re-create manually if rule needs updating"
+    say "  trust fields all present, rule='$rule_value' (expected 'sub eq *') — keeping (override RECREATE_TRUST=1 to force)"
+    if [[ "${RECREATE_TRUST:-0}" = "1" ]]; then
+      warn "  RECREATE_TRUST=1 set — forcing trust recreation"
+      "${OCI_CLI[@]}" identity-domains identity-propagation-trust delete "${ID_ENDPOINT[@]}" \
+        --identity-propagation-trust-id "$TRUST_OCID" --force >/dev/null
+      TRUST_OCID=""
+    fi
   fi
 fi
 
