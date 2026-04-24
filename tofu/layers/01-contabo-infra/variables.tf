@@ -31,6 +31,22 @@ variable "force_reinstall_generation" {
   EOT
 }
 
+variable "per_node_force_reinstall_generation" {
+  type        = map(number)
+  default     = {}
+  description = <<-EOT
+    Per-node override for force_reinstall_generation. Keyed by
+    node_key (e.g. contabo-stawi-contabo-node-2). The effective
+    generation for a node is
+      var.force_reinstall_generation + lookup(map, node_key, 0)
+    so bumping an entry here fires ensure-image for just that one
+    node, leaving the other CPs untouched. Intended for surgical
+    disaster recovery when one CP is broken but the others are
+    healthy — bumping the cluster-wide variable would wipe the
+    working CPs and take etcd below quorum.
+  EOT
+}
+
 variable "cloudflare_api_token" {
   type        = string
   sensitive   = true
