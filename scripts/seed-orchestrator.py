@@ -220,10 +220,14 @@ def seed_oracle(acct: str, cfg: dict, out: pathlib.Path) -> None:
         )
     )
 
+    # Merge original auth fields (domain_base_url, oidc_client_identifier,
+    # etc.) needed by configure-oci-wif.sh. Only non-sensitive pointers;
+    # actual session token is minted at runtime from GitHub OIDC.
+    src_auth = account_data.get("auth", {}) or {}
     auth_payload = {
         "provider": "oracle",
         "account": acct,
-        "auth": {
+        "auth": dict(src_auth) | {
             "tenancy_ocid": account_data["tenancy_ocid"],
             "compartment_ocid": account_data["compartment_ocid"],
             "region": account_data["region"],

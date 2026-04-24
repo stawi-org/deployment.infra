@@ -77,12 +77,10 @@ jobs:
           SOPS_AGE_RECIPIENTS:   ${{ vars.SOPS_AGE_RECIPIENTS }}
         run: |
           set -euo pipefail
-          if aws s3 ls "s3://cluster-tofu-state/production/inventory/" \
-               --endpoint-url "$R2_ENDPOINT_URL" --region us-east-1 \
-             | grep -q .; then
-            echo "::notice::inventory/ already present — skipping seed"
-            exit 0
-          fi
+          # Always runs; seed-orchestrator.py is idempotent — it sources
+          # from production/config/ (operator-authored) and rewrites
+          # production/inventory/ per account. Safe to re-run on every
+          # workflow invocation. Pulls in any config changes automatically.
           python3 scripts/seed-orchestrator.py
 
       - name: Sync R2 inventory to /tmp/inventory/ (node-state module reads from here)
