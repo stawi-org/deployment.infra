@@ -69,6 +69,25 @@ jobs:
           rm /tmp/talosctl
           talosctl version --client
 
+      - name: Install OCI CLI
+        if: inputs.layer == '02-oracle-infra'
+        # The tofu `external` data source in modules/oracle-account-
+        # infra/image.tf shells out to scripts/oci-image-create-or-
+        # find.sh, which calls `oci compute image create` directly
+        # (the only path that lets us declare --launch-mode CUSTOM +
+        # the full Talos-prescribed --launch-options at CreateImage
+        # time — the tofu oci_core_image resource's launch_options
+        # field is Computed-only).
+        run: |
+          set -euo pipefail
+          curl -fsSL https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh \
+            -o /tmp/oci-install.sh
+          bash /tmp/oci-install.sh --accept-all-defaults --install-dir "$HOME/lib/oracle-cli" \
+            --exec-dir "$HOME/bin" --script-dir "$HOME/bin/oci-cli-scripts" \
+            --update-path-and-enable-tab-completion false
+          sudo ln -sf "$HOME/bin/oci" /usr/local/bin/oci
+          oci --version
+
       - name: OCI workload-identity federation
         if: inputs.layer == '02-oracle-infra'
         env:
@@ -91,17 +110,15 @@ jobs:
             scripts/configure-oci-wif.sh /tmp/oci_auth_accounts.json
           fi
 
-      - name: Stage Talos .oci archive for OCI image staging
+      - name: Download Talos OCI qcow2 for staging
         if: inputs.layer == '02-oracle-infra'
-        # OCI CreateImage won't fetch external HTTPS URIs, and the raw
-        # Talos factory qcow2 carries no image_metadata.json — which
-        # means OCI falls back to defaults (ISCSI boot, BIOS firmware)
-        # that break Talos arm64 at boot. Per Talos's own OCI guide
-        # we wrap the qcow2 + a hand-built image_metadata.json into a
-        # `.oci` tarball; OCI auto-detects the archive on CreateImage
-        # and applies the embedded externalLaunchOptions (UEFI_64 +
-        # fully-paravirtualized virtio). Tofu then passes the object
-        # URI straight through — no CLI, no provider workarounds.
+        # OCI CreateImage won't fetch external HTTPS URIs, so we pull
+        # the factory qcow2 once to the runner; tofu uploads it into a
+        # per-account public-read bucket and scripts/oci-image-create-
+        # or-find.sh creates the image from that URL with the explicit
+        # --launch-mode CUSTOM + --launch-options Talos arm64 needs.
+        # No image_metadata.json wrapping — the CLI passes launch
+        # options directly at CreateImage time.
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -123,47 +140,17 @@ jobs:
             exit 1
           fi
           mkdir -p /tmp/talos-oci
-          OCI_ARCHIVE="/tmp/talos-oci/${TALOS_VERSION}-${SCHEMATIC_ID}-oracle-arm64.oci"
+          QCOW2="/tmp/talos-oci/talos-${TALOS_VERSION}-${SCHEMATIC_ID}-oracle-arm64.qcow2"
           echo "schematic_id=$SCHEMATIC_ID talos_version=$TALOS_VERSION"
-          echo "target=$OCI_ARCHIVE"
-          if [[ ! -s "$OCI_ARCHIVE" ]]; then
-            staging=$(mktemp -d)
-            curl -fsSL -o "$staging/image.qcow2" \
+          echo "target=$QCOW2"
+          if [[ ! -s "$QCOW2" ]]; then
+            curl -fsSL -o "$QCOW2" \
               "https://factory.talos.dev/image/${SCHEMATIC_ID}/${TALOS_VERSION}/oracle-arm64.qcow2"
-            # image_metadata.json format per OCI "Exported Image"
-            # spec — OCI reads externalLaunchOptions during
-            # CreateImage and pins them as the image's defaults.
-            cat > "$staging/image_metadata.json" <<META
-          {
-            "version": "1.0",
-            "operatingSystem": "Talos",
-            "operatingSystemVersion": "${TALOS_VERSION#v}",
-            "externalLaunchOptions": {
-              "firmware": "UEFI_64",
-              "networkType": "PARAVIRTUALIZED",
-              "bootVolumeType": "PARAVIRTUALIZED",
-              "remoteDataVolumeType": "PARAVIRTUALIZED",
-              "localDataVolumeType": "PARAVIRTUALIZED",
-              "pvAttachmentVersion": 2,
-              "pvEncryptionInTransitEnabled": true,
-              "consistentVolumeNamingEnabled": true
-            },
-            "imageCapabilitiesData": {
-              "compatibleShapes": ["VM.Standard.A1.Flex"],
-              "compatibleShapesWithFlexibleLaunchOptions": ["VM.Standard.A1.Flex"]
-            }
-          }
-          META
-            tar -cf "$OCI_ARCHIVE" -C "$staging" image.qcow2 image_metadata.json
-            rm -rf "$staging"
-            echo "built $(stat -c%s "$OCI_ARCHIVE") byte .oci archive"
+            echo "downloaded $(stat -c%s "$QCOW2") byte qcow2"
           else
             echo "already present, reusing"
           fi
-          # Variable name stays `talos_qcow2_local_path` for backwards
-          # compat with the module's existing variable; contents are
-          # the .oci archive now.
-          echo "TF_VAR_talos_qcow2_local_path=$OCI_ARCHIVE" >> "$GITHUB_ENV"
+          echo "TF_VAR_talos_qcow2_local_path=$QCOW2" >> "$GITHUB_ENV"
 
       - name: Clear stale state lock
         if: inputs.mode == 'plan' || inputs.mode == 'apply'

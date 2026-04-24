@@ -1,28 +1,26 @@
 # tofu/modules/oracle-account-infra/image.tf
 #
-# Reuse-or-create for the OCI custom Talos image. The image is identified
-# by display_name = "Talos <version> arm64 gen<gen>". On every apply we
-# look it up; if it already exists, we use it. If not, we create it from
-# an OCI Object Storage URL — OCI's CreateImage refuses external HTTPS.
-# The workflow downloads the factory QCOW2 once to a local path
-# (var.talos_qcow2_local_path) and tofu uploads it into a per-account
-# public-read bucket managed by this module.
+# Custom Talos image creation on OCI, driven by scripts/oci-image-
+# create-or-find.sh via a tofu `external` data source.
 #
-# Precedence for the CreateImage source URI:
-#   1. var.talos_image_source_uri — operator-pinned URL (e.g. a pre-existing
-#      community bucket). Skips the upload machinery entirely.
-#   2. Staged upload from var.talos_qcow2_local_path — the normal path
-#      when running in CI with the factory QCOW2 just downloaded.
-#   3. Live factory URL — only works for non-OCI platforms; included as a
-#      last-ditch fallback so local dev without either var set still has
-#      a chance, even though OCI will 400 on it.
+# Why not the native oci_core_image resource: its launch_options field
+# is Computed-only in provider 8.11.0. The Talos factory arm64 qcow2
+# ships without image_metadata.json, so OCI's auto-detection lands
+# wrong defaults (bootVolumeType=ISCSI, no /dev/sda visible to Talos)
+# and UpdateImage doesn't accept launch_options post-create. The only
+# place we can set the full Talos-prescribed launch_options block at
+# CreateImage time is the OCI CLI's --launch-mode CUSTOM + --launch-
+# options — hence the external script.
 #
-# Bumping var.force_image_generation forces a new image (next apply
-# creates instead of reusing).
-
-resource "terraform_data" "image_generation" {
-  triggers_replace = var.force_image_generation
-}
+# Source URI precedence:
+#   1. var.talos_image_source_uri — operator-pinned URL.
+#   2. Staged upload from var.talos_qcow2_local_path — workflow-
+#      downloaded qcow2 uploaded to a per-account public-read bucket.
+#   3. Live factory URL — last-ditch fallback; OCI 400s on external
+#      HTTPS but leaves local dev able to at least plan.
+#
+# Bumping var.force_image_generation changes the image display_name,
+# so the next apply creates instead of reusing.
 
 resource "talos_image_factory_schematic" "this" {
   schematic = file("${var.shared_patches_dir}/../schematic.yaml")
@@ -43,7 +41,7 @@ locals {
   image_display_name = "Talos ${var.talos_version} arm64 gen${var.force_image_generation}"
 
   # Only stage (create bucket + upload) when the workflow pre-downloaded
-  # the QCOW2 AND no operator-supplied URL pre-empts it.
+  # the qcow2 AND no operator-supplied URL pre-empts it.
   stage_local_upload = (
     (var.talos_image_source_uri == null || var.talos_image_source_uri == "")
     && var.talos_qcow2_local_path != null
@@ -51,11 +49,7 @@ locals {
   )
 
   image_bucket_name = "talos-images-${var.account_key}"
-  # `.oci` archive (qcow2 + image_metadata.json) built by the workflow,
-  # not a raw qcow2. The embedded externalLaunchOptions tell OCI to
-  # present the boot volume as paravirtualized virtio with UEFI_64
-  # firmware — what Talos arm64 expects.
-  image_object_name = "talos-${var.talos_version}-${talos_image_factory_schematic.this.id}-oracle-arm64.oci"
+  image_object_name = "talos-${var.talos_version}-${talos_image_factory_schematic.this.id}-oracle-arm64.qcow2"
 
   staged_image_uri = local.stage_local_upload ? format(
     "https://objectstorage.%s.oraclecloud.com/n/%s/b/%s/o/%s",
@@ -74,6 +68,11 @@ locals {
       : data.talos_image_factory_urls.this.urls.disk_image
     )
   )
+
+  # First shape in var.nodes — every node in one OCI account uses the
+  # same shape family (A1.Flex), so registering compat for the first is
+  # sufficient. The script PUTs idempotently, so reruns are cheap.
+  image_primary_shape = values(var.nodes)[0].shape
 }
 
 resource "oci_objectstorage_bucket" "talos_images" {
@@ -97,83 +96,52 @@ resource "oci_objectstorage_object" "talos_qcow2" {
   # OCI provider stores "source" in state as "<path> <mtime>" so every
   # fresh workflow run (new ephemeral runner, re-downloaded file with a
   # fresh mtime) sees a diff and forces a re-upload of ~100 MB plus a
-  # cascaded re-create of oci_core_image.talos. The content is pinned
-  # by the object name (<version>-<schematic_id>-oracle-arm64.qcow2) so
-  # a genuine content change lands as a different object — name-level
+  # cascaded re-create of the image. The content is pinned by the
+  # object name (<version>-<schematic_id>-oracle-arm64.qcow2) so a
+  # genuine content change lands as a different object — name-level
   # replacement, not source-level. Ignore source drift after create.
   lifecycle {
     ignore_changes = [source]
   }
 }
 
-resource "oci_core_image" "talos" {
-  compartment_id = var.compartment_ocid
-  display_name   = local.image_display_name
-  # launch_mode intentionally omitted. The uploaded source is a `.oci`
-  # archive (see workflow "Stage Talos .oci archive" step): qcow2 +
-  # image_metadata.json bundled together. OCI auto-detects the
-  # archive, reads externalLaunchOptions, and pins UEFI_64 +
-  # fully-paravirtualized virtio as the image's default launch
-  # options. That's what Talos arm64 on A1.Flex needs — without it
-  # CreateInstance either hung (EMULATED) or Talos saw no disk at
-  # all (the default ISCSI bootVolumeType).
-  image_source_details {
-    source_type = "objectStorageUri"
-    source_uri  = local.image_source_uri
-    # source_image_type intentionally omitted. Setting it to "QCOW2"
-    # tells OCI to treat the object as a raw qcow2 and ignore any
-    # wrapping tarball, which prevents CreateImage from reading our
-    # `.oci` archive's image_metadata.json. With no source_image_type
-    # OCI auto-detects archive vs. raw and pulls launch_options from
-    # the embedded metadata when it finds one.
+# Find-or-create the OCI custom image with the exact launch_options
+# Talos arm64 needs. The script is idempotent on display_name: if an
+# AVAILABLE image with the same display_name exists, it returns its
+# OCID; otherwise it creates a new one and registers shape compat.
+# Bumping var.force_image_generation changes display_name, forcing a
+# fresh CreateImage on the next apply.
+data "external" "talos_image" {
+  program = ["bash", "${path.module}/../../../scripts/oci-image-create-or-find.sh"]
+
+  query = {
+    compartment_ocid = var.compartment_ocid
+    display_name     = local.image_display_name
+    source_uri       = local.image_source_uri
+    oci_profile      = var.account_key
+    shape            = local.image_primary_shape
   }
 
-  # Must wait for the staged object to be uploaded before CreateImage
-  # attempts to fetch from the bucket URL. Harmless when
-  # stage_local_upload is false.
+  # Must not run until the staged object exists in Object Storage. When
+  # stage_local_upload is false the list is empty, so this is harmless.
   depends_on = [oci_objectstorage_object.talos_qcow2]
-
-  lifecycle {
-    # Recreate only on a deliberate force_image_generation bump.
-    # Ignore image_source_details drift — OCI mutates the stored URL
-    # internally after import and the provider surfaces that as a diff
-    # on every plan. Without ignore_changes that would trigger an
-    # 8-minute re-import on every apply.
-    replace_triggered_by = [terraform_data.image_generation]
-    ignore_changes       = [image_source_details]
-  }
-}
-
-# State migration: earlier versions of this module used a
-# data.oci_core_images probe + count-based conditional create. That
-# pattern broke badly — the probe refresh at plan time saw the
-# already-created image, flipped count to 0, and tofu planned to
-# destroy the in-state image. During apply the destroy ran AND the
-# instance-create referenced the now-deleted OCID, 400ing with
-# "Invalid image". Moving to an unconditional resource removes the
-# loop; tofu owns the image lifecycle directly.
-moved {
-  from = oci_core_image.talos[0]
-  to   = oci_core_image.talos
 }
 
 locals {
-  image_ocid = oci_core_image.talos.id
+  image_ocid = data.external.talos_image.result.image_ocid
 }
 
-# OCI imports custom QCOW2 images with a conservative default compatible-
-# shape list (basically none for non-Oracle images). Instances launched on
-# a shape not in this list fail with:
-#   400-InvalidParameter, Shape <X> is not valid for image <...>
-# AddImageShapeCompatibilityEntry is idempotent (PUT semantics), so we
-# can register unconditionally — reruns are cheap. Registering
-# regardless of whether the image was just created or reused is also
-# essential: a freshly-created image from a *failed prior apply* (state
-# rolled back or resource orphaned) still needs the compat entries that
-# the failed apply never got to write.
-resource "oci_core_shape_management" "talos_compat" {
-  for_each       = toset([for n in values(var.nodes) : n.shape])
-  compartment_id = var.compartment_ocid
-  image_id       = local.image_ocid
-  shape_name     = each.key
+# Legacy resources retired: the native oci_core_image and the separate
+# oci_core_shape_management calls were superseded by the CLI-driven
+# data.external above. destroy = true so tofu removes them from OCI
+# the first apply after migration — keeping them around would block
+# re-creation on a force_image_generation bump (display_name collision).
+removed {
+  from = oci_core_image.talos
+  lifecycle { destroy = true }
+}
+
+removed {
+  from = oci_core_shape_management.talos_compat
+  lifecycle { destroy = true }
 }
