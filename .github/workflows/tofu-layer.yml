@@ -99,6 +99,9 @@ jobs:
         # URL to tofu via TF_VAR_talos_image_source_uris. The script is
         # idempotent: bucket+object creation are skipped when already
         # present, so re-runs are cheap.
+        env:
+          OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING: "True"
+          SUPPRESS_LABEL_WARNING: "True"
         run: |
           set -euo pipefail
           if ! command -v oci >/dev/null 2>&1; then

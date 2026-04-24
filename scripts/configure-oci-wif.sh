@@ -91,6 +91,19 @@ print(f'{scheme}://{host}' + ('' if port in (None, 443) else f':{port}'))
   # key in DER form (format: aa:bb:cc:...).
   FINGERPRINT=$(openssl rsa -in "$KEY" -pubout -outform DER 2>/dev/null | openssl dgst -md5 -c 2>/dev/null | awk '{print $NF}')
 
+  # Tofu's OCI SDK derives the user OCID from the UPST's JWT; the OCI
+  # CLI is stricter and refuses to run any subcommand unless `user` is
+  # present in the profile. Decode the UPST payload and extract the
+  # principal OCID so both tofu and the CLI can share the same profile.
+  UPST_PAYLOAD_B64=$(printf '%s' "$TOKEN" | cut -d. -f2)
+  while [[ $((${#UPST_PAYLOAD_B64} % 4)) -ne 0 ]]; do UPST_PAYLOAD_B64+="="; done
+  UPST_CLAIMS=$(printf '%s' "$UPST_PAYLOAD_B64" | tr '_-' '/+' | base64 -d 2>/dev/null || echo '{}')
+  USER_OCID=$(jq -r '."prn-id" // .prn_ocid // .sub // empty' <<<"$UPST_CLAIMS" 2>/dev/null || echo "")
+  if [[ -z "$USER_OCID" ]]; then
+    echo "::warning::UPST for $profile did not expose a principal OCID claim; OCI CLI calls that require 'user' will fail."
+    echo "diag: UPST claim keys: $(jq -r 'keys | join(",")' <<<"$UPST_CLAIMS" 2>/dev/null || echo '(none)')"
+  fi
+
   cat >> "$HOME/.oci/config" <<CFG
 
 [${profile}]
@@ -100,7 +113,10 @@ key_file = ${KEY}
 fingerprint = ${FINGERPRINT}
 tenancy = ${tenancy}
 region = ${region}
+user = ${USER_OCID}
 CFG
+
+  chmod 0600 "$HOME/.oci/config"
 
   echo "wrote ~/.oci/config profile [$profile]"
   echo "::endgroup::"
