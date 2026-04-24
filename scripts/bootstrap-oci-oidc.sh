@@ -418,13 +418,38 @@ if [[ -z "$POLICY_OCID" ]]; then
 else
   say "  updating"
   # OCI CLI requires --version-date alongside --statements when updating.
-  # Setting version-date to today = effective from today.
-  "${OCI_CLI[@]}" iam policy update --policy-id "$POLICY_OCID" \
+  # Setting version-date to today = effective from today. Capture the
+  # full response so we can fail loudly if the update silently no-oped.
+  upd_out=$("${OCI_CLI[@]}" iam policy update --policy-id "$POLICY_OCID" \
     --statements "$POLICY_STMTS" \
     --version-date "$(date -u +%Y-%m-%d)" \
-    --force >/dev/null
+    --force --output json 2>&1) || true
+  if ! printf '%s' "$upd_out" | jq empty 2>/dev/null; then
+    warn "  policy update returned non-JSON; raw response:"
+    printf '%s\n' "$upd_out" | head -c 800 >&2
+    die "Aborting — policy update failed."
+  fi
 fi
 say "  policy:  $POLICY_OCID"
+
+# Verify the policy NOW contains every statement we intended. OCI policy
+# changes propagate within seconds for the policy itself, but the
+# UPST-bearer's effective permissions can lag a minute or two.
+CURRENT_STMTS=$("${OCI_CLI[@]}" iam policy get --policy-id "$POLICY_OCID" --output json \
+  | jq -r '.data.statements[]?')
+say "  policy statements now in OCI:"
+printf '%s\n' "$CURRENT_STMTS" | sed 's/^/      /'
+missing=()
+for needle in "instance-images" "volume-family" "compute-management-family"; do
+  printf '%s\n' "$CURRENT_STMTS" | grep -q "$needle" || missing+=("$needle")
+done
+if [[ ${#missing[@]} -gt 0 ]]; then
+  warn "  policy is MISSING required statements: ${missing[*]}"
+  warn "  the update API call may have rate-limited or silently dropped them."
+  warn "  re-run the script; if it persists, inspect via OCI Console → Identity → Policies."
+else
+  say "  ✓ all required statements present"
+fi
 
 # =========================================================================
 # 5. CONFIDENTIAL OAUTH APP
