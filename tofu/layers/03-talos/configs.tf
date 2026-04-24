@@ -72,6 +72,30 @@ locals {
     auto: off
     EOT
   }
+
+  # OCI nodes: Talos auto-detects the virtio primary NIC and DHCPs it via
+  # cloud metadata, so no LinkConfig is needed. But kubelet must be told
+  # *which* address to register the node under — without nodeIP.validSubnets,
+  # kubelet can pick an IPv6 link-local or a secondary address and the node
+  # joins with an unroutable status.IP. Pin it to the node's VCN-assigned
+  # IPv4/IPv6 /32/128 so kubelet reports what apiserver can actually dial.
+  oci_nodes_all = {
+    for k, v in local.all_nodes_from_state : k => v if try(v.provider, "") == "oracle"
+  }
+  oci_node_patches = {
+    for k, v in local.oci_nodes_all : k => yamlencode({
+      machine = {
+        kubelet = {
+          nodeIP = {
+            validSubnets = compact([
+              try(v.ipv4, null) != null ? "${v.ipv4}/32" : "",
+              try(v.ipv6, null) != null ? "${v.ipv6}/128" : "",
+            ])
+          }
+        }
+      }
+    })
+  }
 }
 
 data "talos_machine_configuration" "cp" {
@@ -86,9 +110,12 @@ data "talos_machine_configuration" "cp" {
   config_patches = concat(
     local.shared_cp_patches,
     # Per-Contabo-CP patch: static IPv6 (DHCPv6 isn't available on
-    # Contabo) + kubelet nodeIP pinning. Uses additive
+    # Contabo) + kubelet nodeIP pinning + ens18 LinkConfig. Uses additive
     # machine.network.interfaces[].dhcp=true so DHCPv4 stays on.
     try([templatefile("${path.module}/../../shared/patches/node-contabo.tftpl", local.cp_net_params[each.key])], []),
+    # Per-OCI-CP patch: pin kubelet nodeIP to the cloud-assigned IPv4/IPv6.
+    # OCI doesn't need a LinkConfig (virtio DHCP works out of the box).
+    try([local.oci_node_patches[each.key]], []),
     [
       yamlencode({
         machine = {
@@ -113,6 +140,12 @@ data "talos_machine_configuration" "worker" {
     local.shared_worker_patches,
     [
       local.worker_hostname_patches[each.key],
+    ],
+    # Per-OCI-worker patch: pin kubelet nodeIP to the cloud-assigned
+    # IPv4/IPv6. Matches the CP path — no LinkConfig needed; OCI's
+    # virtio DHCP handles the rest.
+    try([local.oci_node_patches[each.key]], []),
+    [
       yamlencode({
         machine = {
           nodeLabels      = each.value.derived_labels
