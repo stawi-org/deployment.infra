@@ -21,7 +21,6 @@ resource "talos_machine_configuration_apply" "worker_contabo" {
   endpoint                    = each.value.ipv4
   apply_mode                  = "reboot"
 
-  depends_on = [null_resource.talos_upgrade]
 
   lifecycle {
     replace_triggered_by = [terraform_data.worker_contabo_config_hash[each.key]]

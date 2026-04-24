@@ -29,6 +29,15 @@ variable "age_recipients" {
   description = "Age public keys to encrypt writes to. Reads use SOPS_AGE_KEY from env."
 }
 
+# ---- Write flags + content ----------------------------------------------
+# The agreed R2 inventory layout is only:
+#   <provider>/<account>/auth.yaml
+#   <provider>/<account>/nodes.yaml
+#   <provider>/<account>/<talos-version>/<node-name>.yaml
+# No state.yaml / talos-state.yaml / machine-configs.yaml — those were
+# transitional. Provider observed state lives in tfstate and crosses
+# layers via terraform_remote_state outputs instead.
+
 variable "write_auth" {
   type        = bool
   default     = false
@@ -39,20 +48,10 @@ variable "write_nodes" {
   default     = false
   description = "Set true to write nodes.yaml to R2. Requires nodes_content to be non-null. Plaintext (declared intent — not sensitive)."
 }
-variable "write_state" {
+variable "write_per_node_configs" {
   type        = bool
   default     = false
-  description = "Set true to write state.yaml to R2. Requires state_content to be non-null. Plaintext observed provider state (instance IDs, IPs)."
-}
-variable "write_talos_state" {
-  type        = bool
-  default     = false
-  description = "Set true to write talos-state.yaml to R2. Requires talos_state_content to be non-null. Plaintext observed Talos state (version, hash)."
-}
-variable "write_machine_configs" {
-  type        = bool
-  default     = false
-  description = "Set true to write machine-configs.yaml to R2. Requires machine_configs_content to be non-null. Age-encrypted (contains cluster PKI)."
+  description = "Set true to write <talos_version>/<node>.yaml for every entry in per_node_configs_content. Each value is a full Talos machine config rendered for that node."
 }
 
 variable "auth_content" {
@@ -65,20 +64,15 @@ variable "nodes_content" {
   default     = null
   description = "YAML-shaped map written to nodes.yaml when write_nodes = true. Ignored on read-only invocations."
 }
-variable "state_content" {
-  type        = any
-  default     = null
-  description = "YAML-shaped map written to state.yaml when write_state = true. Ignored on read-only invocations."
+variable "per_node_configs_content" {
+  type        = map(any)
+  default     = {}
+  description = "Per-node Talos machine config, keyed by node_key. Each value is the YAML-shaped map written to <talos_version>/<node_key>.yaml when write_per_node_configs = true."
 }
-variable "talos_state_content" {
-  type        = any
-  default     = null
-  description = "YAML-shaped map written to talos-state.yaml when write_talos_state = true. Ignored on read-only invocations."
-}
-variable "machine_configs_content" {
-  type        = any
-  default     = null
-  description = "YAML-shaped map written to machine-configs.yaml when write_machine_configs = true. Ignored on read-only invocations."
+variable "talos_version" {
+  type        = string
+  default     = ""
+  description = "Talos version used as the subdirectory name under <account>/ for per-node configs. Required when write_per_node_configs = true."
 }
 
 variable "local_inventory_dir" {

@@ -74,7 +74,6 @@ resource "talos_machine_configuration_apply" "cp" {
   # state but leaves broken kubelet image pulls stuck.
   apply_mode = "reboot"
 
-  depends_on = [null_resource.talos_upgrade]
 
   lifecycle {
     replace_triggered_by = [terraform_data.cp_config_hash[each.key]]

@@ -47,133 +47,43 @@ data "terraform_remote_state" "oracle" {
   }
 }
 
-
-module "contabo_state" {
-  for_each            = toset(local.accounts_manifest.contabo)
-  source              = "../../modules/node-state"
-  provider_name       = "contabo"
-  account             = each.key
-  age_recipients      = split(",", var.age_recipients)
-  local_inventory_dir = var.local_inventory_dir
+data "terraform_remote_state" "onprem" {
+  backend = "s3"
+  config = {
+    bucket                      = "cluster-tofu-state"
+    key                         = "production/02-onprem-infra.tfstate"
+    region                      = "auto"
+    endpoints                   = { s3 = "https://${var.r2_account_id}.r2.cloudflarestorage.com" }
+    use_path_style              = true
+    skip_credentials_validation = true
+    skip_metadata_api_check     = true
+    skip_region_validation      = true
+    skip_requesting_account_id  = true
+    skip_s3_checksum            = true
+  }
 }
 
-module "oracle_state" {
-  for_each            = toset(local.accounts_manifest.oracle)
-  source              = "../../modules/node-state"
-  provider_name       = "oracle"
-  account             = each.key
-  age_recipients      = split(",", var.age_recipients)
-  local_inventory_dir = var.local_inventory_dir
-}
-
-module "onprem_state" {
-  for_each            = toset(local.accounts_manifest.onprem)
-  source              = "../../modules/node-state"
-  provider_name       = "onprem"
-  account             = each.key
-  age_recipients      = split(",", var.age_recipients)
-  local_inventory_dir = var.local_inventory_dir
-}
 
 locals {
-  # Raw merge across all three providers' state.yaml -> nodes.yaml ->
-  # provider_data. Then below we enrich with derived_labels /
-  # derived_annotations / image_apply_generation expected by the rest of
-  # layer 03's resources.
-  _raw_nodes = merge(flatten([
-    [
-      for acct_key, mod in module.contabo_state : {
-        for node_key, node in try(mod.state.nodes, {}) :
-        (node_key) => merge(
-          { provider = "contabo", account = acct_key, node_key = node_key },
-          try(mod.nodes.nodes[node_key], {}),
-          node.provider_data,
-        )
-      }
-    ],
-    [
-      for acct_key, mod in module.oracle_state : {
-        for node_key, node in try(mod.state.nodes, {}) :
-        "${acct_key}-${node_key}" => merge(
-          { provider = "oracle", account = acct_key, node_key = node_key },
-          try(mod.nodes.nodes[node_key], {}),
-          node.provider_data,
-        )
-      }
-    ],
-    [
-      for acct_key, mod in module.onprem_state : {
-        for node_key, node in try(mod.state.nodes, {}) :
-        "${acct_key}-${node_key}" => merge(
-          { provider = "onprem", account = acct_key, node_key = node_key },
-          try(mod.nodes.nodes[node_key], {}),
-          node.provider_data,
-        )
-      }
-    ],
-  ])...)
+  # Upstream nodes come from each infra layer's tfstate.outputs.nodes —
+  # typed in-memory crossing, no R2 state.yaml indirection. Each layer's
+  # output already contains provider, role, ipv4, ipv6, image_apply_generation
+  # and derived labels/annotations with the cross-layer contract shape.
+  _raw_nodes = merge(
+    try(data.terraform_remote_state.contabo.outputs.nodes, {}),
+    try(data.terraform_remote_state.oracle.outputs.nodes, {}),
+    try(data.terraform_remote_state.onprem.outputs.nodes, {}),
+  )
 
-  # Enriched per-node map. Adds the derived_labels / derived_annotations /
-  # image_apply_generation that the legacy layer 03 code expects.
+  # Each layer's tfstate output already carries derived_labels,
+  # derived_annotations, image_apply_generation, and
+  # config_apply_source. Only aliasing needed: layer 03 code references
+  # v.account (the node modules emit account_key).
   all_nodes_from_state = {
     for k, v in local._raw_nodes : k => merge(v, {
-      role                = try(v.role, "worker")
-      ipv4                = try(v.ipv4, null)
-      ipv6                = try(v.ipv6, null)
-      config_apply_source = try(v.config_apply_source, contains(["contabo", "oracle"], v.provider) ? "ci" : "manual")
-      bastion_id          = try(v.bastion_id, null)
-
-      derived_labels = merge(
-        try(v.labels, {}),
-        {
-          "topology.kubernetes.io/region" = try(v.region, "")
-          "node.antinvestor.io/provider"  = v.provider
-          "node.antinvestor.io/account"   = v.account
-          "node.antinvestor.io/role"      = try(v.role, "worker")
-        },
-        try(v.role, "worker") == "controlplane" ? {
-          "node-role.kubernetes.io/control-plane" = ""
-          } : {
-          "node-role.kubernetes.io/worker" = ""
-        },
-      )
-      derived_annotations = merge(
-        try(v.annotations, {}),
-        {
-          "node.antinvestor.io/provider" = v.provider
-          "node.antinvestor.io/account"  = v.account
-          "node.antinvestor.io/role"     = try(v.role, "worker")
-        },
-      )
-      # Prefer the generation carried in state.yaml (written by each
-      # layer's state-writer — bumps on disk-wipe reinstall for Contabo
-      # and on instance-replace for OCI). Fall back to a stable hash
-      # only when upstream state.yaml doesn't carry it (older writers,
-      # on-prem manual nodes). Without this read-from-state, a
-      # force_reinstall_generation bump on Contabo or an OCI image
-      # rebuild wouldn't ripple into bootstrap_trigger, so the cluster
-      # wiped its disks but never re-bootstrapped etcd.
-      image_apply_generation = try(
-        v.image_apply_generation,
-        md5(jsonencode({
-          provider = v.provider
-          account  = v.account
-          node_key = k
-        })),
-      )
+      account = try(v.account, try(v.account_key, ""))
     })
   }
-
-  # Flat map of upstream talos state across providers, keyed by node_key
-  # (same key used in all_nodes_from_state).
-  upstream_talos_state = merge(
-    { for acct_key, mod in module.contabo_state :
-    acct_key => try(mod.talos_state.nodes, {}) },
-    { for acct_key, mod in module.oracle_state :
-    acct_key => try(mod.talos_state.nodes, {}) },
-    { for acct_key, mod in module.onprem_state :
-    acct_key => try(mod.talos_state.nodes, {}) },
-  )
 
   controlplane_nodes   = { for k, v in local.all_nodes_from_state : k => v if try(v.role, "") == "controlplane" }
   worker_nodes         = { for k, v in local.all_nodes_from_state : k => v if try(v.role, "") == "worker" }

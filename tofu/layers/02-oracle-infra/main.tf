@@ -39,9 +39,6 @@ locals {
   oracle_nodes_from_module = {
     for k, mod in module.oracle_account_state : k => try(mod.nodes.nodes, {})
   }
-  oracle_state_from_module = {
-    for k, mod in module.oracle_account_state : k => try(mod.state.nodes, {})
-  }
 
   oci_accounts_effective = {
     for k in local.oracle_account_keys : k => merge(
