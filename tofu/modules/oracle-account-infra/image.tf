@@ -102,25 +102,7 @@ resource "oci_objectstorage_object" "talos_qcow2" {
   }
 }
 
-# Probe: list AVAILABLE images in the compartment matching the
-# display_name. Excludes deleted images so a previous force-replace
-# doesn't shadow the freshly-created one.
-data "oci_core_images" "existing" {
-  compartment_id = var.compartment_ocid
-  display_name   = local.image_display_name
-  state          = "AVAILABLE"
-}
-
-locals {
-  # OCI provider returns null (not []) when no images match. Coerce to
-  # an empty list so length() and indexing behave normally.
-  existing_images = try(data.oci_core_images.existing.images, []) == null ? [] : try(data.oci_core_images.existing.images, [])
-}
-
-# Create only when no AVAILABLE image with this display_name exists. After
-# the first apply this resource is count = 0 and tofu does not touch OCI.
 resource "oci_core_image" "talos" {
-  count          = length(local.existing_images) == 0 ? 1 : 0
   compartment_id = var.compartment_ocid
   display_name   = local.image_display_name
   launch_mode    = "PARAVIRTUALIZED"
@@ -131,34 +113,36 @@ resource "oci_core_image" "talos" {
   }
 
   # Must wait for the staged object to be uploaded before CreateImage
-  # attempts to fetch from the bucket URL. Harmless when stage_local_upload
-  # is false — the list is empty and depends_on is a no-op.
+  # attempts to fetch from the bucket URL. Harmless when
+  # stage_local_upload is false.
   depends_on = [oci_objectstorage_object.talos_qcow2]
 
   lifecycle {
-    # Pin recreation to deliberate generation bumps (or the explicit
-    # force_image_generation knob). Ignore drift in image_source_details
-    # once the image is created — OCI mutates/re-resolves the stored URL
-    # internally and the provider surfaces it as a diff on every plan,
-    # which (before ignore_changes) cascaded into an 8-minute image
-    # re-import + downstream instance/shape_management replaces on
-    # every apply. The image content is identified by the object name
-    # (includes version+schematic id), so a genuine content change still
-    # triggers force_image_generation → replace_triggered_by → replace.
+    # Recreate only on a deliberate force_image_generation bump.
+    # Ignore image_source_details drift — OCI mutates the stored URL
+    # internally after import and the provider surfaces that as a diff
+    # on every plan. Without ignore_changes that would trigger an
+    # 8-minute re-import on every apply.
     replace_triggered_by = [terraform_data.image_generation]
     ignore_changes       = [image_source_details]
   }
 }
 
-# Single source-of-truth OCID consumed by nodes.tf + shape compat below.
-# Whether the image was freshly created or reused from a prior apply,
-# callers don't care.
+# State migration: earlier versions of this module used a
+# data.oci_core_images probe + count-based conditional create. That
+# pattern broke badly — the probe refresh at plan time saw the
+# already-created image, flipped count to 0, and tofu planned to
+# destroy the in-state image. During apply the destroy ran AND the
+# instance-create referenced the now-deleted OCID, 400ing with
+# "Invalid image". Moving to an unconditional resource removes the
+# loop; tofu owns the image lifecycle directly.
+moved {
+  from = oci_core_image.talos[0]
+  to   = oci_core_image.talos
+}
+
 locals {
-  image_ocid = (
-    length(local.existing_images) > 0
-    ? local.existing_images[0].id
-    : oci_core_image.talos[0].id
-  )
+  image_ocid = oci_core_image.talos.id
 }
 
 # OCI imports custom QCOW2 images with a conservative default compatible-
