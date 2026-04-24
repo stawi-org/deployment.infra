@@ -6,8 +6,15 @@ machine:
     wipe: true # Indicates if the installation disk should be wiped at installation time.
     disk: /dev/sda
   network:
+    # KubeSpan disabled — when enabled, Talos installs a WireGuard interface
+    # `kubespan` and a default route via it with metric 1 (HIGHER priority
+    # than the physical-link default route at metric 1024). Until peers
+    # establish the tunnel, OPER STATE stays "unknown" and ALL outbound
+    # traffic gets routed into the dead tunnel → "network is unreachable"
+    # for DNS, NTP, image pulls. Re-enable per-cluster only after peer
+    # discovery is verified or KubeSpan's default route is metric-bumped.
     kubespan:
-      enabled: true
+      enabled: false
     # Note: DNS nameservers are configured via ResolverConfig (resolvers.yaml)
     # Note: NTP servers are configured via TimeSyncConfig (timesync.yaml)
   kernel:
