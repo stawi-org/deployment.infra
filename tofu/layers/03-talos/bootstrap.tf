@@ -61,7 +61,11 @@ resource "null_resource" "wait_apiserver" {
       # name lets curl pick an already-warm CP while a different one
       # (which flux may dial next) is still rebooting. We need all 3 to
       # answer before downstream kubernetes-provider calls are safe.
-      CPS=(${join(" ", [for n in local.controlplane_nodes : n.ipv4])})
+      # Probe only CPs we were able to talosctl-apply (direct_controlplane_nodes
+      # skips ones known to be unreachable from the runner, e.g. OCI CP during
+      # the current bootstrap). Probing an unreachable IP keeps ALL_OK=false
+      # indefinitely and wedges the whole run.
+      CPS=(${join(" ", [for n in local.direct_controlplane_nodes : n.ipv4])})
       echo "probing apiservers on: $${CPS[*]}"
       for i in $(seq 1 90); do
         ALL_OK=true

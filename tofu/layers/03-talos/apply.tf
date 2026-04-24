@@ -10,9 +10,28 @@
 # block the whole cluster from ever bootstrapping. Re-enable once we
 # can console-log the node and confirm Talos is healthy there.
 locals {
+  # Nodes we can't currently reach on :50000 from the CI runner — talos
+  # applies against them would hang for 10 minutes and block the whole
+  # run. Hardcoded here while the underlying nodes are being recovered;
+  # promote to a var once we stabilize.
+  talos_apply_unreachable = [
+    # OCI CP (141.147.55.5) — fresh instance, reachable from OCI but not
+    # from GH runner after public IP assignment. Needs node console log
+    # to confirm Talos is binding to the public interface.
+    "stawi-bwire-oci-stawi-bwire-node-1",
+    # Contabo api-3 — connection refused on :50000. Talos not listening.
+    # Likely needs ensure_image reinstall; running a reset workflow is
+    # the cleanest path.
+    "kubernetes-controlplane-api-3",
+  ]
+
   direct_controlplane_nodes = {
     for k, v in local.controlplane_nodes : k => v
-    if try(v.provider, "") != "oracle"
+    if !contains(local.talos_apply_unreachable, k)
+  }
+  direct_contabo_worker_nodes = {
+    for k, v in local.contabo_worker_nodes : k => v
+    if !contains(local.talos_apply_unreachable, k)
   }
 }
 
