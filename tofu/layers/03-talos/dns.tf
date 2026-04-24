@@ -15,10 +15,9 @@
 locals {
   # ---- ALL CPs, ordered stably ---------------------------------------
   # Sorting by node_key makes the cp-<N> index deterministic across
-  # applies even if node ordering in state changes. Contabo's
-  # kubernetes-controlplane-api-* keys sort before OCI/on-prem keys, so
-  # cp-1 stays pointed at the same Contabo node unless that node is
-  # deleted.
+  # applies even if node ordering in state changes. Provider prefixes
+  # sort alphabetically (contabo-*, oci-*, onprem-*) so cp-1 stays
+  # pointed at the same Contabo node unless that node is deleted.
   cp_sorted_keys = sort(keys(local.controlplane_nodes))
 
   cp_all_ipv4 = compact([

@@ -56,13 +56,20 @@ locals {
 }
 
 # Each oci_accounts entry gets its own provider alias that reads auth from R2.
-# For local dev without WIF, the config_file_profile fallback is used.
+# config_file_profile = each.key because configure-oci-wif.sh names the
+# ~/.oci/config profile after the account's R2 directory (which IS the
+# account_key). Honoring a config_file_profile field from auth.yaml
+# caused a rename-trap: after renaming the R2 directory, the stale
+# profile name inside auth.yaml pointed at the pre-rename profile and
+# the provider failed to authenticate. Use each.key as the single source
+# of truth and let operators rename the R2 directory + reupload if they
+# need a different name.
 provider "oci" {
   for_each            = local.oci_provider_accounts
   alias               = "account"
   tenancy_ocid        = try(local.oracle_auth_from_module[each.key].tenancy_ocid, null)
   region              = try(local.oracle_auth_from_module[each.key].region, null)
-  config_file_profile = try(local.oracle_auth_from_module[each.key].config_file_profile, each.key)
+  config_file_profile = each.key
   auth                = try(local.oracle_auth_from_module[each.key].auth_method, "SecurityToken")
 }
 
