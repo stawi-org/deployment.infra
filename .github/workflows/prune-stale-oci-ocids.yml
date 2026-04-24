@@ -1,0 +1,26 @@
+# On-demand scrub of stale oci_instance_ocid values in R2 nodes.yaml.
+# Use when tofu plan fails with "Cannot import non-existent remote
+# object" — typically after a manual OCI instance delete or a tofu
+# destroy that skipped nodes-writer. Safe to re-run (idempotent).
+name: prune-stale-oci-ocids
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID:         ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY:     ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID:             ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ENDPOINT:               https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install PyYAML
+        run: pip install --user --break-system-packages PyYAML
+      - name: Prune stale oci_instance_ocid from every oracle nodes.yaml
+        run: scripts/prune-stale-oci-instance-ocids.sh
