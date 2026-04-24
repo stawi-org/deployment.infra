@@ -4,20 +4,11 @@ version: v1alpha1 # Indicates the schema used to decode the contents.
 machine:
   install:
     wipe: true # Indicates if the installation disk should be wiped at installation time.
-    # Match by size instead of a fixed /dev/sda path. Contabo's VPSes
-    # and OCI's A1.Flex boot volume both present a ≥100GB disk, but
-    # the kernel device name differs:
-    #   - Contabo (virtio-scsi)           → /dev/sda
-    #   - OCI NATIVE + PARAVIRTUALIZED PV → /dev/sda (what the
-    #     hardcoded value used to cover)
-    #   - OCI NATIVE with whatever the Talos factory's
-    #     image_metadata.json actually bakes in → something else
-    #     (observed via OCI console: /dev/sda missing, install
-    #     phase panics with "no such file or directory", reboot loop)
-    # diskSelector.size picks the one big disk on every provider
-    # without us having to know the device name.
-    diskSelector:
-      size: '>= 100GB'
+    # /dev/sda is what every provider here presents under a paravirt-
+    # SCSI transport: Contabo VPSes directly, OCI once the .oci
+    # archive's image_metadata.json forces bootVolumeType =
+    # PARAVIRTUALIZED (see modules/oracle-account-infra/image.tf).
+    disk: /dev/sda
   network:
     # KubeSpan: WireGuard mesh for low-ops cross-provider connectivity.
     # Contabo public, OCI public, on-prem behind NAT — all peer up via

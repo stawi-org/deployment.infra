@@ -51,7 +51,11 @@ locals {
   )
 
   image_bucket_name = "talos-images-${var.account_key}"
-  image_object_name = "talos-${var.talos_version}-${talos_image_factory_schematic.this.id}-oracle-arm64.qcow2"
+  # `.oci` archive (qcow2 + image_metadata.json) built by the workflow,
+  # not a raw qcow2. The embedded externalLaunchOptions tell OCI to
+  # present the boot volume as paravirtualized virtio with UEFI_64
+  # firmware — what Talos arm64 expects.
+  image_object_name = "talos-${var.talos_version}-${talos_image_factory_schematic.this.id}-oracle-arm64.oci"
 
   staged_image_uri = local.stage_local_upload ? format(
     "https://objectstorage.%s.oraclecloud.com/n/%s/b/%s/o/%s",
@@ -105,17 +109,14 @@ resource "oci_objectstorage_object" "talos_qcow2" {
 resource "oci_core_image" "talos" {
   compartment_id = var.compartment_ocid
   display_name   = local.image_display_name
-  # arm64 (A1.Flex) Talos needs UEFI_64 + paravirtualized virtio end-
-  # to-end. OCI provider's oci_core_image.launch_options attribute is
-  # computed-only; we can't set it directly. NATIVE mode reads the
-  # launchOptions baked into the QCOW2's image_metadata.json (Talos
-  # factory produces that correctly for oracle-arm64.qcow2); the
-  # instance side then overrides with an explicit launch_options block
-  # for the fields we care about (firmware, network_type, etc.).
-  # Prior EMULATED setting hung CreateInstance on A1.Flex;
-  # PARAVIRTUALIZED launch_mode booted the VM but left the network
-  # stack unconfigured because the firmware defaulted to BIOS.
-  launch_mode = "NATIVE"
+  # launch_mode intentionally omitted. The uploaded source is a `.oci`
+  # archive (see workflow "Stage Talos .oci archive" step): qcow2 +
+  # image_metadata.json bundled together. OCI auto-detects the
+  # archive, reads externalLaunchOptions, and pins UEFI_64 +
+  # fully-paravirtualized virtio as the image's default launch
+  # options. That's what Talos arm64 on A1.Flex needs — without it
+  # CreateInstance either hung (EMULATED) or Talos saw no disk at
+  # all (the default ISCSI bootVolumeType).
   image_source_details {
     source_type       = "objectStorageUri"
     source_uri        = local.image_source_uri
