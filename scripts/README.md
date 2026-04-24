@@ -298,7 +298,7 @@ the way of the intended use case (onboarding a new node).
 Contents of the bundle:
 
 - `talosconfig` — root `talosctl` client config.
-- `controlplane/<node>.yaml` — one per CP.
+- `control-plane/<node>.yaml` — one per CP.
 - `worker/<node>.yaml` — one per cloud worker.
 - `generic-worker.yaml` — platform-neutral worker config for off-cloud
   machines (laptops, on-prem servers, home lab). No public IP required

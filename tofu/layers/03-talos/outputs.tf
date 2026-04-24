@@ -61,7 +61,7 @@ output "generic_worker_config" {
 }
 
 output "cp_machine_configs" {
-  description = "Map of controlplane node name → rendered machine config. Useful for side-by-side diffing or manual reapplies."
+  description = "Map of control-plane node name → rendered machine config. Useful for side-by-side diffing or manual reapplies."
   value       = { for k, c in data.talos_machine_configuration.cp : k => c.machine_configuration }
   sensitive   = true
 }

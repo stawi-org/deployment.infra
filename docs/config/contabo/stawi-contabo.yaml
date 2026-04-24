@@ -18,7 +18,7 @@ contabo:
           labels:
             node.antinvestor.io/plane: control
           annotations:
-            node.antinvestor.io/operator-note: primary-controlplane
+            node.antinvestor.io/operator-note: primary-control-plane
         kubernetes-controlplane-api-2:
           role: controlplane
           product_id: V94

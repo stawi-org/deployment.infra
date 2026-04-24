@@ -1,7 +1,7 @@
 # tofu/layers/03-talos/configs.tf
 #
 # Talos machine-config generation. Produces:
-#   - `cp[<key>]`     — per-controlplane config, with platform-specific
+#   - `cp[<key>]`     — per-control-plane config, with platform-specific
 #                       static networking (LinkConfig + HostnameConfig +
 #                       kubelet.nodeIP.validSubnets) for Contabo nodes
 #                       auto-derived from layer 01's live IPs.

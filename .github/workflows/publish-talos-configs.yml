@@ -67,7 +67,7 @@ jobs:
         run: |
           set -euo pipefail
           OUT=/tmp/talos-configs
-          mkdir -p "$OUT/controlplane" "$OUT/worker"
+          mkdir -p "$OUT/control-plane" "$OUT/worker"
 
           # Extract every output we need in one pass.
           jq -r '.outputs.talosconfig.value' /tmp/03.tfstate > "$OUT/talosconfig"
@@ -78,7 +78,7 @@ jobs:
           # the YAML don't mangle a tab-delimited stream.
           for NAME in $(jq -r '.outputs.cp_machine_configs.value | keys[]' /tmp/03.tfstate) ; do
             jq -r --arg k "$NAME" '.outputs.cp_machine_configs.value[$k]' /tmp/03.tfstate \
-              > "$OUT/controlplane/${NAME}.yaml"
+              > "$OUT/control-plane/${NAME}.yaml"
           done
 
           # Per-worker configs — same shape. Declared on-prem workers use
@@ -101,7 +101,7 @@ jobs:
 
           Contents:
           - `talosconfig` — root client config for `talosctl` (cluster-admin).
-          - `controlplane/<node>.yaml` — per-controlplane machine config.
+          - `control-plane/<node>.yaml` — per-control-plane machine config.
           - `worker/<node>.yaml` — per-worker machine config for OCI and
              declared on-prem inventory nodes. Prefer this for named on-prem
              workers so hostnames and labels stay stable when IPs change.
