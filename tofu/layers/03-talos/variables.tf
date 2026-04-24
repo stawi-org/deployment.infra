@@ -88,3 +88,9 @@ variable "extra_cert_sans" {
   default     = []
   description = "Additional DNS names to add to apiserver + talosd cert SANs (resolved externally, not published by this layer)."
 }
+
+variable "admin_cidrs" {
+  type        = list(string)
+  default     = []
+  description = "Optional operator-supplied CIDRs (IPv4 or IPv6) allowed to reach Talos API (:50000) and Kubernetes API (:6443) in addition to GitHub Actions runner ranges (auto-fetched from api.github.com/meta). Leave empty to restrict admin access to CI only."
+}

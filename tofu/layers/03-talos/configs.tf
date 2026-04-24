@@ -42,10 +42,26 @@ locals {
   # Aliased here so the rest of this file can reference cp_cert_sans
   # unchanged.
 
+  # ---- Admin-access firewall rule ---------------------------------
+  # Talos API :50000 + Kubernetes API :6443 are restricted to the
+  # GitHub Actions runner egress ranges (so tofu-apply can still
+  # drive the cluster) plus var.admin_cidrs (operator IPs for direct
+  # kubectl). Everything else in network.yaml is untouched — kubelet,
+  # etcd, KubeSpan, and the CNI overlay still use their existing
+  # intra-cluster rules.
+  firewall_admin_patch = templatefile(
+    "${path.module}/../../shared/patches/firewall-admin.yaml.tftpl",
+    {
+      talos_api_cidrs = local.admin_ingress_cidrs
+      k8s_api_cidrs   = local.admin_ingress_cidrs
+    },
+  )
+
   # ---- Shared patch list (cluster-wide, provider-neutral) ----
   shared_cp_patches = [
     file("${path.module}/../../shared/patches/common.yaml"),
     file("${path.module}/../../shared/patches/network.yaml"),
+    local.firewall_admin_patch,
     file("${path.module}/../../shared/patches/storage.yaml"),
     file("${path.module}/../../shared/patches/resolvers.yaml"),
     file("${path.module}/../../shared/patches/timesync.yaml"),
@@ -59,6 +75,7 @@ locals {
   shared_worker_patches = [
     file("${path.module}/../../shared/patches/common.yaml"),
     file("${path.module}/../../shared/patches/network.yaml"),
+    local.firewall_admin_patch,
     file("${path.module}/../../shared/patches/storage.yaml"),
     file("${path.module}/../../shared/patches/resolvers.yaml"),
     file("${path.module}/../../shared/patches/timesync.yaml"),

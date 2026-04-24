@@ -1,0 +1,40 @@
+---
+# Overrides the apid-ingress (Talos API :50000) and kubernetes-api-ingress
+# (apiserver :6443) rules from network.yaml — same NetworkRuleConfig
+# names, so Talos config-merge replaces them. Ingress is scoped to:
+#   - GitHub Actions runner egress ranges (fetched from
+#     https://api.github.com/meta → .actions) so the `tofu apply`
+#     workflow can still talosctl + kubectl the cluster
+#   - var.admin_cidrs so operators with fixed IPs can kubectl directly
+#
+# Pod ↔ pod and kubelet traffic stays untouched (those rules have
+# different names — kubelet-ingress, trustd-ingress, etcd-ingress,
+# kubespan-ingress). Cross-node apiserver calls go through KubeSpan +
+# service routing, which doesn't hit node-level :6443, so tightening
+# here doesn't break intra-cluster control-plane chatter.
+
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: apid-ingress
+portSelector:
+  ports:
+    - 50000
+  protocol: tcp
+ingress:
+%{ for c in talos_api_cidrs ~}
+  - subnet: ${c}
+%{ endfor ~}
+
+---
+
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: kubernetes-api-ingress
+portSelector:
+  ports:
+    - 6443
+  protocol: tcp
+ingress:
+%{ for c in k8s_api_cidrs ~}
+  - subnet: ${c}
+%{ endfor ~}
