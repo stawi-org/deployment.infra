@@ -105,7 +105,15 @@ resource "oci_objectstorage_object" "talos_qcow2" {
 resource "oci_core_image" "talos" {
   compartment_id = var.compartment_ocid
   display_name   = local.image_display_name
-  launch_mode    = "PARAVIRTUALIZED"
+  # Talos docs prescribe launch_mode by architecture:
+  #   x86_64 → PARAVIRTUALIZED
+  #   arm64  → EMULATED  (Ampere A1.Flex)
+  # We only ship arm64 here (see factory url: oracle-arm64.qcow2), so
+  # hardcode EMULATED. A previous PARAVIRTUALIZED setting let the
+  # instance Create/Running in OCI but Talos never came up on the
+  # network — the VM booted into a non-functional state, :50000 stayed
+  # closed, and no console diagnosis was possible from the runner.
+  launch_mode = "EMULATED"
   image_source_details {
     source_type       = "objectStorageUri"
     source_uri        = local.image_source_uri
