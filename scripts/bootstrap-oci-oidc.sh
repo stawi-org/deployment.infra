@@ -58,6 +58,15 @@ REGION=""
 COMPARTMENT_OCID=""
 GH_REPO="antinvestor/deployments"
 GH_BRANCH="main"
+# Budget guardrail. Tofu provisioning only uses Always-Free A1 compute (cost
+# ~ $0), but a small budget gives early warning if anything paid creeps in.
+BUDGET_AMOUNT="${BUDGET_AMOUNT:-1}"      # USD per month
+# BUDGET_EMAIL: alert recipient. If unset, defaults to `git config user.email`
+# of the operator running this script (the most common single-operator
+# convention). Override with --budget-email or env BUDGET_EMAIL=...
+# Fallback to empty (no alerts) only if neither is available.
+BUDGET_EMAIL="${BUDGET_EMAIL:-$(git config --global --get user.email 2>/dev/null || git config --get user.email 2>/dev/null || true)}"
+BUDGET_NAME="${BUDGET_NAME:-stawi-cluster-budget}"
 # Tofu/workflow-facing profile name. Defaults to a slugged form of the local
 # OCI CLI profile. It must match the key in the tofu oci_accounts map AND
 # resolve to a valid filesystem name for the ~/.oci/config profile written
@@ -85,6 +94,9 @@ while [[ $# -gt 0 ]]; do
     --compartment)    COMPARTMENT_OCID="$2"; shift 2 ;;
     --repo)           GH_REPO="$2"; shift 2 ;;
     --branch)         GH_BRANCH="$2"; shift 2 ;;
+    --budget-amount)  BUDGET_AMOUNT="$2"; shift 2 ;;
+    --budget-email)   BUDGET_EMAIL="$2"; shift 2 ;;
+    --budget-name)    BUDGET_NAME="$2"; shift 2 ;;
     -h|--help)        usage ;;
     *)                echo "unknown arg: $1" >&2; usage ;;
   esac
@@ -323,14 +335,25 @@ say "  group:   $GROUP_OCID"
 # 4. IAM POLICY
 # =========================================================================
 say "Ensuring IAM policy '$POLICY_NAME'"
+# Permissions cover the resources tofu/modules/oracle-account-infra creates
+# end-to-end: VCN + subnets + security lists + bastion (network/bastion),
+# Talos custom image upload from a URL (instance-images +
+# compute-management-family for image import jobs), running instances and
+# their boot volumes (instance-family + volume-family). Without
+# instance-images + volume-family, layer 02 fails on first apply with
+# 404-NotAuthorizedOrNotFound on CreateImage / CreateBootVolume.
 POLICY_STMTS=$(cat <<EOF
 [
-  "Allow group id $GROUP_OCID to manage virtual-network-family in compartment id $COMPARTMENT_OCID",
-  "Allow group id $GROUP_OCID to manage instance-family in compartment id $COMPARTMENT_OCID",
-  "Allow group id $GROUP_OCID to manage bastion-family in compartment id $COMPARTMENT_OCID",
-  "Allow group id $GROUP_OCID to read all-resources in compartment id $COMPARTMENT_OCID",
-  "Allow group id $GROUP_OCID to use tag-namespaces in tenancy",
-  "Allow group id $GROUP_OCID to read compartments in tenancy"
+  "Allow group id $GROUP_OCID to manage virtual-network-family       in compartment id $COMPARTMENT_OCID",
+  "Allow group id $GROUP_OCID to manage instance-family              in compartment id $COMPARTMENT_OCID",
+  "Allow group id $GROUP_OCID to manage instance-images              in compartment id $COMPARTMENT_OCID",
+  "Allow group id $GROUP_OCID to manage volume-family                in compartment id $COMPARTMENT_OCID",
+  "Allow group id $GROUP_OCID to manage compute-management-family    in compartment id $COMPARTMENT_OCID",
+  "Allow group id $GROUP_OCID to manage bastion-family               in compartment id $COMPARTMENT_OCID",
+  "Allow group id $GROUP_OCID to read   all-resources                in compartment id $COMPARTMENT_OCID",
+  "Allow group id $GROUP_OCID to use    tag-namespaces               in tenancy",
+  "Allow group id $GROUP_OCID to read   compartments                 in tenancy",
+  "Allow group id $GROUP_OCID to read   usage-budgets                in tenancy"
 ]
 EOF
 )
@@ -595,6 +618,68 @@ EOF
 )
 say "Rendered OCI inventory stanza:"
 printf '%s\n' "$inventory_yaml"
+
+# =========================================================================
+# 8. BUDGET + ALERT (cost guardrail)
+# =========================================================================
+# Budgets MUST be created in the root tenancy compartment regardless of the
+# compartment they target. We target $COMPARTMENT_OCID (the cluster compt)
+# so cost rolls up only from cluster resources, not the whole tenancy.
+say ""
+say "Ensuring budget '$BUDGET_NAME' (USD ${BUDGET_AMOUNT}/month, target compartment $COMPARTMENT_OCID)"
+BUDGET_LIST=$("${OCI_CLI[@]}" budgets budget list \
+  --compartment-id "$TENANCY_OCID" --display-name "$BUDGET_NAME" \
+  --output json 2>/dev/null || echo '{"data":[]}')
+BUDGET_OCID=$(jq -r '.data[0].id // empty' <<<"$BUDGET_LIST")
+
+if [[ -z "$BUDGET_OCID" ]]; then
+  say "  creating"
+  BUDGET_OCID=$("${OCI_CLI[@]}" budgets budget create \
+    --compartment-id "$TENANCY_OCID" \
+    --display-name "$BUDGET_NAME" \
+    --description "Cluster cost guardrail; tracks $COMPARTMENT_OCID" \
+    --amount "$BUDGET_AMOUNT" \
+    --reset-period MONTHLY \
+    --target-type COMPARTMENT \
+    --targets "[\"$COMPARTMENT_OCID\"]" \
+    --output json 2>&1 | jq -r '.data.id // empty')
+  if [[ -z "$BUDGET_OCID" ]]; then
+    warn "  budget create failed (does the admin profile have manage usage-budgets in tenancy?)"
+    warn "  required policy: Allow group <admin-group> to manage usage-budgets in tenancy"
+  fi
+else
+  say "  exists ($BUDGET_OCID); updating amount"
+  "${OCI_CLI[@]}" budgets budget update --budget-id "$BUDGET_OCID" \
+    --amount "$BUDGET_AMOUNT" --force >/dev/null 2>&1 || \
+    warn "  budget update returned non-zero (often ok — display-name immutable)"
+fi
+say "  budget:  $BUDGET_OCID"
+
+# Alert rule: only created when an email recipient is supplied. OCI requires
+# at least one recipient (or "messaging" topic) per alert rule.
+if [[ -n "$BUDGET_OCID" && -n "$BUDGET_EMAIL" ]]; then
+  for THRESHOLD in 50 80 100; do
+    ALERT_NAME="alert-${THRESHOLD}pct"
+    ALERT_LIST=$("${OCI_CLI[@]}" budgets alert-rule list \
+      --budget-id "$BUDGET_OCID" --display-name "$ALERT_NAME" \
+      --output json 2>/dev/null || echo '{"data":[]}')
+    ALERT_OCID=$(jq -r '.data[0].id // empty' <<<"$ALERT_LIST")
+    if [[ -z "$ALERT_OCID" ]]; then
+      say "  creating alert ${ALERT_NAME} → ${BUDGET_EMAIL}"
+      "${OCI_CLI[@]}" budgets alert-rule create \
+        --budget-id "$BUDGET_OCID" \
+        --display-name "$ALERT_NAME" \
+        --threshold "$THRESHOLD" --threshold-type PERCENTAGE --type ACTUAL \
+        --recipients "$BUDGET_EMAIL" \
+        --message "Budget ${BUDGET_NAME} hit ${THRESHOLD}% of monthly cap (\$${BUDGET_AMOUNT})." \
+        >/dev/null 2>&1 || warn "    alert ${ALERT_NAME} create failed (recipient quota? mail config?)"
+    else
+      say "  alert ${ALERT_NAME} exists ($ALERT_OCID)"
+    fi
+  done
+elif [[ -n "$BUDGET_OCID" ]]; then
+  say "  alert rules skipped (no --budget-email supplied; budget tracking still active in OCI Console)"
+fi
 
 say ""
 say "Impersonation rule:"
