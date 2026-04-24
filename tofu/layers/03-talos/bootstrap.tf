@@ -1,28 +1,15 @@
 # tofu/layers/03-talos/bootstrap.tf
 
-# When any CP's image_apply_generation bumps (= layer 01's ensure_image
-# called Contabo's reinstall action), etcd data on that node was wiped.
-# In the all-CPs-together case — which is what happens on a Talos
-# version bump under the current install-flow policy — the cluster has
-# no quorum left and must be re-bootstrapped. Cascading bootstrap
-# off this hash forces that.
-#
-# Caveat: this also fires on single-CP reinstalls where we'd rather do
-# an etcd-preserving rolling upgrade. That path (talosctl upgrade with
-# drain/uncordon) isn't wired yet; for now we assume reinstall = full
-# cluster rebuild, matching the initial-install / disaster-recovery
-# workflows. Revisit when we add rolling-upgrade support.
-resource "terraform_data" "bootstrap_trigger" {
-  # Hash over SORTED VALUES ONLY — not the { key => value } map — so a
-  # node-key rename (e.g. kubernetes-controlplane-api-1 →
-  # contabo-stawi-contabo-node-1) leaves the hash untouched and doesn't
-  # force replace_triggered_by on talos_machine_bootstrap. A real disk
-  # wipe still bumps at least one image_apply_generation → sorted set
-  # changes → re-bootstrap fires.
-  input = {
-    gens_hash = sha256(jsonencode(sort([
-      for v in values(local.controlplane_nodes) : v.image_apply_generation
-    ])))
+# Drop the stale terraform_data.bootstrap_trigger from state without
+# deleting any external resource (terraform_data has none). Removed
+# because its input schema changes were cascading replace_triggered_by
+# onto talos_machine_bootstrap and re-bootstrapping an already-joined
+# cluster. See the block above talos_machine_bootstrap below for the
+# follow-up plan. One-shot — safe to delete after a successful apply.
+removed {
+  from = terraform_data.bootstrap_trigger
+  lifecycle {
+    destroy = false
   }
 }
 
@@ -38,15 +25,19 @@ import {
   id = "machine_bootstrap"
 }
 
+# The previous design used terraform_data.bootstrap_trigger +
+# replace_triggered_by so a CP disk-wipe (image_apply_generation bump)
+# would auto re-bootstrap. That mechanism is intentionally not wired
+# right now: its own input-schema updates were cascading destroy+create
+# onto the imported bootstrap, and etcd rejects "bootstrap twice"
+# (AlreadyExists — etcd data directory is not empty). For disaster
+# recovery today: use the node-recovery workflow to reset etcd, then
+# `tofu taint talos_machine_bootstrap.this` and re-apply.
 resource "talos_machine_bootstrap" "this" {
   depends_on           = [talos_machine_configuration_apply.cp]
   node                 = local.bootstrap_node.ipv4
   endpoint             = local.bootstrap_node.ipv4
   client_configuration = data.terraform_remote_state.secrets.outputs.client_configuration
-
-  lifecycle {
-    replace_triggered_by = [terraform_data.bootstrap_trigger]
-  }
 }
 
 # Wait for kube-apiserver /healthz before this layer reports success.
