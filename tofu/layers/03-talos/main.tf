@@ -76,15 +76,16 @@ module "onprem_state" {
 }
 
 locals {
-  # All nodes regardless of provider, keyed by node_key.
-  # Each value carries provider, account, role, labels, annotations, and
-  # address info sufficient for rendering and applying Talos config.
-  all_nodes_from_state = merge(flatten([
+  # Raw merge across all three providers' state.yaml -> nodes.yaml ->
+  # provider_data. Then below we enrich with derived_labels /
+  # derived_annotations / image_apply_generation expected by the rest of
+  # layer 03's resources.
+  _raw_nodes = merge(flatten([
     [
       for acct_key, mod in module.contabo_state : {
         for node_key, node in try(mod.state.nodes, {}) :
         (node_key) => merge(
-          { provider = "contabo", account = acct_key },
+          { provider = "contabo", account = acct_key, node_key = node_key },
           try(mod.nodes.nodes[node_key], {}),
           node.provider_data,
         )
@@ -94,7 +95,7 @@ locals {
       for acct_key, mod in module.oracle_state : {
         for node_key, node in try(mod.state.nodes, {}) :
         "${acct_key}-${node_key}" => merge(
-          { provider = "oracle", account = acct_key },
+          { provider = "oracle", account = acct_key, node_key = node_key },
           try(mod.nodes.nodes[node_key], {}),
           node.provider_data,
         )
@@ -104,13 +105,53 @@ locals {
       for acct_key, mod in module.onprem_state : {
         for node_key, node in try(mod.state.nodes, {}) :
         "${acct_key}-${node_key}" => merge(
-          { provider = "onprem", account = acct_key },
+          { provider = "onprem", account = acct_key, node_key = node_key },
           try(mod.nodes.nodes[node_key], {}),
           node.provider_data,
         )
       }
     ],
   ])...)
+
+  # Enriched per-node map. Adds the derived_labels / derived_annotations /
+  # image_apply_generation that the legacy layer 03 code expects.
+  all_nodes_from_state = {
+    for k, v in local._raw_nodes : k => merge(v, {
+      role                = try(v.role, "worker")
+      ipv4                = try(v.ipv4, null)
+      ipv6                = try(v.ipv6, null)
+      config_apply_source = try(v.config_apply_source, contains(["contabo", "oracle"], v.provider) ? "ci" : "manual")
+      bastion_id          = try(v.bastion_id, null)
+
+      derived_labels = merge(
+        try(v.labels, {}),
+        {
+          "topology.kubernetes.io/region" = try(v.region, "")
+          "node.antinvestor.io/provider"  = v.provider
+          "node.antinvestor.io/account"   = v.account
+          "node.antinvestor.io/role"      = try(v.role, "worker")
+        },
+        try(v.role, "worker") == "controlplane" ? {
+          "node-role.kubernetes.io/control-plane" = ""
+          } : {
+          "node-role.kubernetes.io/worker" = ""
+        },
+      )
+      derived_annotations = merge(
+        try(v.annotations, {}),
+        {
+          "node.antinvestor.io/provider" = v.provider
+          "node.antinvestor.io/account"  = v.account
+          "node.antinvestor.io/role"     = try(v.role, "worker")
+        },
+      )
+      image_apply_generation = md5(jsonencode({
+        provider = v.provider
+        account  = v.account
+        node_key = k
+      }))
+    })
+  }
 
   # Flat map of upstream talos state across providers, keyed by node_key
   # (same key used in all_nodes_from_state).
