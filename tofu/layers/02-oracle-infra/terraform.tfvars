@@ -13,4 +13,4 @@ age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
 # probe. Bumping this changes the image display_name, the existing-
 # image probe returns empty, and a fresh image is created from the
 # now-stable Object Storage object.
-force_image_generation = 1
+force_image_generation = 2
