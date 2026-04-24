@@ -3,9 +3,7 @@
 # account; the inventory tree is seeded separately by seed-inventory.sh.
 contabo:
   - stawi-contabo
-# oracle disabled until operator re-runs scripts/bootstrap-oci-oidc.sh — the
-# updated cluster-provisioners-policy (PR #8) needs to land in OCI before
-# CreateImage / CreateVcn stop returning 404-NotAuthorizedOrNotFound.
-oracle: []
+oracle:
+  - stawi-bwire
 onprem:
   - savannah-hq
