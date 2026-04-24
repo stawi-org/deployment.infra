@@ -364,14 +364,42 @@ if [[ -z "$GROUP_OCID" ]]; then
     --members "[{\"type\":\"User\",\"value\":\"$USER_OCID\"}]" \
     --output json | jq -r '.data.id')
 else
-  IS_MEMBER=$("${OCI_CLI[@]}" identity-domains group get "${ID_ENDPOINT[@]}" --group-id "$GROUP_OCID" \
-    --output json | jq -r --arg u "$USER_OCID" '.data.members // [] | map(select(.value==$u)) | length')
-  if [[ "$IS_MEMBER" == "0" ]]; then
-    say "  adding service user"
-    "${OCI_CLI[@]}" identity-domains group patch "${ID_ENDPOINT[@]}" --group-id "$GROUP_OCID" \
-      --schemas '["urn:ietf:params:scim:api:messages:2.0:PatchOp"]' \
-      --operations "[{\"op\":\"add\",\"path\":\"members\",\"value\":[{\"type\":\"User\",\"value\":\"$USER_OCID\"}]}]" \
-      >/dev/null
+  # SCIM marks Group.members as returned=request — default GETs omit it.
+  # Without --attributes members the membership check ALWAYS sees length=0
+  # and 'add' runs every time. Worse, repeated 'adds' via the high-level
+  # CLI subcommand can silently no-op against IDCS, leaving the user
+  # outside the group while the script reports success — which manifests
+  # later as 404-NotAuthorizedOrNotFound on every CreateImage / CreateVcn.
+  is_member() {
+    "${OCI_CLI[@]}" identity-domains group get "${ID_ENDPOINT[@]}" --group-id "$GROUP_OCID" \
+      --attributes "members" --output json 2>/dev/null \
+      | jq -e --arg u "$USER_OCID" '.data.members // [] | any(.value==$u)' >/dev/null
+  }
+  if ! is_member; then
+    say "  adding service user (group missing user; patching)"
+    # Use raw-request so the JSON body reaches IDCS verbatim — the high-level
+    # `group patch` subcommand has been observed to drop the operation
+    # silently against some IDCS versions.
+    PATCH_BODY=$(cat <<JSON
+{
+  "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+  "Operations": [
+    {"op":"add","path":"members","value":[{"type":"User","value":"$USER_OCID"}]}
+  ]
+}
+JSON
+)
+    PATCH_RESP=$("${OCI_CLI[@]}" raw-request \
+      --target-uri "${DOMAIN_URL}/admin/v1/Groups/${GROUP_OCID}" \
+      --http-method PATCH --request-body "$PATCH_BODY" --output json 2>&1 || true)
+    if ! is_member; then
+      warn "  PATCH did not establish membership; raw response:"
+      printf '%s\n' "$PATCH_RESP" | head -c 800 >&2
+      die "Aborting — group membership PATCH silently failed."
+    fi
+    say "  ✓ user is now a member of $GROUP_NAME"
+  else
+    say "  ✓ user already a member of $GROUP_NAME"
   fi
 fi
 say "  group:   $GROUP_OCID"
