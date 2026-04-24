@@ -61,7 +61,11 @@ locals {
   shared_cp_patches = [
     file("${path.module}/../../shared/patches/common.yaml"),
     file("${path.module}/../../shared/patches/network.yaml"),
-    local.firewall_admin_patch,
+    # firewall_admin_patch temporarily dropped during bootstrap — see
+    # configs.tf local.firewall_admin_patch for rationale. Re-add once
+    # the cluster is reachable and we've confirmed the fetched GitHub
+    # Actions CIDR list covers the specific runner ranges in use.
+    # local.firewall_admin_patch,
     file("${path.module}/../../shared/patches/storage.yaml"),
     file("${path.module}/../../shared/patches/resolvers.yaml"),
     file("${path.module}/../../shared/patches/timesync.yaml"),
@@ -75,7 +79,11 @@ locals {
   shared_worker_patches = [
     file("${path.module}/../../shared/patches/common.yaml"),
     file("${path.module}/../../shared/patches/network.yaml"),
-    local.firewall_admin_patch,
+    # firewall_admin_patch temporarily dropped during bootstrap — see
+    # configs.tf local.firewall_admin_patch for rationale. Re-add once
+    # the cluster is reachable and we've confirmed the fetched GitHub
+    # Actions CIDR list covers the specific runner ranges in use.
+    # local.firewall_admin_patch,
     file("${path.module}/../../shared/patches/storage.yaml"),
     file("${path.module}/../../shared/patches/resolvers.yaml"),
     file("${path.module}/../../shared/patches/timesync.yaml"),

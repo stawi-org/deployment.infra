@@ -21,9 +21,18 @@ portSelector:
     - 50000
   protocol: tcp
 ingress:
+%{ if length(talos_api_cidrs) > 0 ~}
 %{ for c in talos_api_cidrs ~}
   - subnet: ${c}
 %{ endfor ~}
+%{ else ~}
+  # Fail-open fallback: if api.github.com/meta is unreachable or returns
+  # an unexpected schema and no admin_cidrs override is set, we emit
+  # an anywhere allow so the cluster doesn't lock out its own operator.
+  # Narrows back to fetched ranges on the next apply.
+  - subnet: 0.0.0.0/0
+  - subnet: ::/0
+%{ endif ~}
 
 ---
 
@@ -35,6 +44,11 @@ portSelector:
     - 6443
   protocol: tcp
 ingress:
+%{ if length(k8s_api_cidrs) > 0 ~}
 %{ for c in k8s_api_cidrs ~}
   - subnet: ${c}
 %{ endfor ~}
+%{ else ~}
+  - subnet: 0.0.0.0/0
+  - subnet: ::/0
+%{ endif ~}
