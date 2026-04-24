@@ -135,14 +135,25 @@ case "$ACTION" in
   reinstall)
     case "$PROVIDER" in
       contabo)
-        echo "::notice::For Contabo, bump force_reinstall_generation in tofu/layers/01-contabo-infra/terraform.tfvars"
-        echo "          and trigger tofu-apply. That wipes the disk and re-flashes Talos."
-        echo "          (Per-node reinstall not wired yet — ensure_image runs for every node at once.)"
+        echo "::notice::Surgical per-node reinstall (Contabo):"
+        echo "  1. Edit tofu/layers/01-contabo-infra/terraform.tfvars and add/bump"
+        echo "     the entry for $NODE_KEY in per_node_force_reinstall_generation:"
+        echo
+        echo "     per_node_force_reinstall_generation = {"
+        echo "       \"$NODE_KEY\" = 1   # (bump by 1 on each reinstall)"
+        echo "     }"
+        echo
+        echo "  2. Commit and run tofu-apply. ensure-image fires for this node"
+        echo "     only — healthy CPs keep their etcd, disks, and workloads."
+        echo
+        echo "  For a full-cluster reinstall, bump the cluster-wide"
+        echo "  var.force_reinstall_generation instead (wipes ALL Contabo CPs)."
         exit 1
         ;;
       oracle)
         echo "::notice::For OCI, bump force_image_generation in tofu/layers/02-oracle-infra/terraform.tfvars"
         echo "          and trigger tofu-apply. That rebuilds the custom image and replaces the instance."
+        echo "          (The account currently hosts a single node, so account-wide == per-node.)"
         exit 1
         ;;
       *)
