@@ -131,9 +131,12 @@ removed {
 # Outputs {"image_ocid": "..."} JSON on stdout for the `external`
 # data source, which feeds the OCID to tofu.
 data "external" "talos_image" {
+  # path.module = "../../modules/oracle-account-infra" from the layer
+  # working dir, so we need "../../../scripts" to reach the repo-root
+  # scripts/ directory.
   program = [
     "bash",
-    "${path.module}/../../scripts/oci-image-create-or-find.sh",
+    "${path.module}/../../../scripts/oci-image-create-or-find.sh",
   ]
 
   query = {
