@@ -8,9 +8,9 @@
 # Format matches the `nodes[<key>].provider_data` sub-schema of state.yaml.
 contabo:
   stawi-contabo:
-    kubernetes-controlplane-api-1:
+    contabo-stawi-contabo-node-1:
       contabo_instance_id: "202727783"
-    kubernetes-controlplane-api-2:
+    contabo-stawi-contabo-node-2:
       contabo_instance_id: "202727782"
-    kubernetes-controlplane-api-3:
+    contabo-stawi-contabo-node-3:
       contabo_instance_id: "202727781"
