@@ -53,10 +53,8 @@ data "sops_file" "auth" {
   source_file = local.auth_local
 }
 
-data "sops_file" "machine_configs" {
-  count       = local.has_machine_configs ? 1 : 0
-  source_file = local.machine_configs_local
-}
+# machine_configs.yaml is stored PLAINTEXT in R2 (see writer comment).
+# No sops_file data source needed; just file() at decode time.
 
 # --- decoded outputs -------------------------------------------------------
 #
@@ -81,7 +79,7 @@ locals {
   nodes_decoded           = try(yamldecode(file(local.nodes_local)), { nodes = {} })
   state_decoded           = try(yamldecode(file(local.state_local)), { nodes = {} })
   talos_state_decoded     = try(yamldecode(file(local.talos_state_local)), { nodes = {} })
-  machine_configs_decoded = try(yamldecode(data.sops_file.machine_configs[0].raw), { nodes = {} })
+  machine_configs_decoded = try(yamldecode(file(local.machine_configs_local)), { nodes = {} })
 }
 
 # Keep a summary of which files were found for downstream diagnostics.
@@ -183,14 +181,16 @@ resource "aws_s3_object" "talos_state" {
 }
 
 resource "aws_s3_object" "machine_configs" {
-  count  = var.write_machine_configs ? 1 : 0
-  bucket = var.bucket
-  key    = local.machine_configs_key
-  content = provider::sops::encrypt(
-    yamlencode(var.machine_configs_content),
-    "yaml",
-    { age = local.recipients_joined },
-  )
+  # NOTE: stored PLAINTEXT in R2. Contains Talos cluster PKI / certs that
+  # would let an attacker talk to talosd on any node. Security boundary is
+  # R2 access (same as layer 00's tfstate which already stores
+  # machine_secrets in plaintext). The carlpett/sops provider v1.4.1 we
+  # pin lacks the provider::sops::encrypt function (added in later forks);
+  # rather than block on that, we accept R2 access control as the gate.
+  count        = var.write_machine_configs ? 1 : 0
+  bucket       = var.bucket
+  key          = local.machine_configs_key
+  content      = yamlencode(var.machine_configs_content)
   content_type = "application/x-yaml"
 
   lifecycle {
