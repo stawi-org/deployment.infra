@@ -39,12 +39,6 @@ done
 
 oci() { command oci --profile "$OCI_PROFILE" "$@"; }
 
-# Capture oci CLI stderr into a file we can dump on failure — otherwise
-# tofu's external data source wraps stderr in its own Error Message and
-# the raw OCI error gets truncated.
-ERR_LOG=$(mktemp)
-trap '[[ -s "$ERR_LOG" ]] && cat "$ERR_LOG" >&2; rm -f "$ERR_LOG"' EXIT
-
 # --------- 1. Find existing AVAILABLE image by display_name ---------
 existing=$(oci compute image list \
   --compartment-id "$COMPARTMENT" \
@@ -52,7 +46,7 @@ existing=$(oci compute image list \
   --lifecycle-state AVAILABLE \
   --all \
   --query 'data[0].id' \
-  --raw-output 2>"$ERR_LOG" || true)
+  --raw-output 2>/dev/null || true)
 
 if [[ -n "$existing" && "$existing" != "null" ]]; then
   jq -nc --arg ocid "$existing" '{image_ocid: $ocid}'
@@ -75,29 +69,18 @@ launch_options=$(jq -nc '{
   isConsistentVolumeNamingEnabled: true
 }')
 
-# Disable OCI CLI's automatic retry + suppress the noisy API-key label
-# warning; surface its own exit code directly so we can report the
-# real error instead of bash set -e masking it.
-export OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING=True
-export SUPPRESS_LABEL_WARNING=True
-
-if ! created=$(oci compute image create \
+created=$(oci compute image create \
   --compartment-id         "$COMPARTMENT" \
   --display-name           "$DISPLAY_NAME" \
   --launch-mode            CUSTOM \
   --image-source-details   "$source_details" \
   --launch-options         "$launch_options" \
   --wait-for-state         AVAILABLE \
-  --max-wait-seconds       900 \
-  2>"$ERR_LOG"); then
-  cat "$ERR_LOG" >&2
-  echo "::error::oci compute image create failed" >&2
-  exit 1
-fi
+  --max-wait-seconds       900)
 
 ocid=$(jq -r '.data.id' <<<"$created")
 if [[ -z "$ocid" || "$ocid" == "null" ]]; then
-  echo "::error::CreateImage returned no OCID. Raw response:" >&2
+  echo "::error::CreateImage returned no OCID" >&2
   echo "$created" >&2
   exit 1
 fi
