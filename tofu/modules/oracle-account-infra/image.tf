@@ -129,26 +129,30 @@ resource "oci_core_image" "talos" {
   }
 }
 
-# OCI imports custom QCOW2 images with a conservative default compatible-
-# shape list (basically none for non-Oracle images). Instances launched on
-# a shape not in this list fail with:
-#   400-InvalidParameter, Shape <X> is not valid for image <...>
-# Register every shape declared by the account's nodes so the matching
-# oci_core_instance.launch succeeds. toset() dedupes when multiple nodes
-# share a shape.
-resource "oci_core_shape_management" "talos_compat" {
-  for_each       = length(local.existing_images) == 0 ? toset([for n in values(var.nodes) : n.shape]) : toset([])
-  compartment_id = var.compartment_ocid
-  image_id       = oci_core_image.talos[0].id
-  shape_name     = each.key
-}
-
-# Single source-of-truth OCID consumed by nodes.tf. Whether reused or
-# freshly created, callers don't care.
+# Single source-of-truth OCID consumed by nodes.tf + shape compat below.
+# Whether the image was freshly created or reused from a prior apply,
+# callers don't care.
 locals {
   image_ocid = (
     length(local.existing_images) > 0
     ? local.existing_images[0].id
     : oci_core_image.talos[0].id
   )
+}
+
+# OCI imports custom QCOW2 images with a conservative default compatible-
+# shape list (basically none for non-Oracle images). Instances launched on
+# a shape not in this list fail with:
+#   400-InvalidParameter, Shape <X> is not valid for image <...>
+# AddImageShapeCompatibilityEntry is idempotent (PUT semantics), so we
+# can register unconditionally — reruns are cheap. Registering
+# regardless of whether the image was just created or reused is also
+# essential: a freshly-created image from a *failed prior apply* (state
+# rolled back or resource orphaned) still needs the compat entries that
+# the failed apply never got to write.
+resource "oci_core_shape_management" "talos_compat" {
+  for_each       = toset([for n in values(var.nodes) : n.shape])
+  compartment_id = var.compartment_ocid
+  image_id       = local.image_ocid
+  shape_name     = each.key
 }
