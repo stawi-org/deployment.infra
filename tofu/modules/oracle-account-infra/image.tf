@@ -48,10 +48,16 @@ data "oci_core_images" "existing" {
   state          = "AVAILABLE"
 }
 
+locals {
+  # OCI provider returns null (not []) when no images match. Coerce to
+  # an empty list so length() and indexing behave normally.
+  existing_images = try(data.oci_core_images.existing.images, []) == null ? [] : try(data.oci_core_images.existing.images, [])
+}
+
 # Create only when no AVAILABLE image with this display_name exists. After
 # the first apply this resource is count = 0 and tofu does not touch OCI.
 resource "oci_core_image" "talos" {
-  count          = length(data.oci_core_images.existing.images) == 0 ? 1 : 0
+  count          = length(local.existing_images) == 0 ? 1 : 0
   compartment_id = var.compartment_ocid
   display_name   = local.image_display_name
   launch_mode    = "PARAVIRTUALIZED"
@@ -70,8 +76,8 @@ resource "oci_core_image" "talos" {
 # freshly created, callers don't care.
 locals {
   image_ocid = (
-    length(data.oci_core_images.existing.images) > 0
-    ? data.oci_core_images.existing.images[0].id
+    length(local.existing_images) > 0
+    ? local.existing_images[0].id
     : oci_core_image.talos[0].id
   )
 }
