@@ -29,9 +29,9 @@ addresses:
   - address: ${ipv4}/24
   - address: ${ipv6}/64
 routes:
-  - destination: 0.0.0.0/0
+  - network: 0.0.0.0/0
     gateway: ${ipv4_gateway}
-  - destination: ::/0
+  - network: ::/0
     gateway: ${ipv6_gateway}
 
 ---
