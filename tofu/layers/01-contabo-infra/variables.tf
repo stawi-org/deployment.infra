@@ -31,54 +31,6 @@ variable "force_reinstall_generation" {
   EOT
 }
 
-variable "cloudflare_api_token" {
-  type        = string
-  sensitive   = true
-  description = <<-EOT
-    Cloudflare API token. Must have Zone:DNS:Edit on every zone listed
-    in var.cp_dns_zones. Supplied via TF_VAR_cloudflare_api_token from
-    the CLOUDFLARE_API_TOKEN GitHub Actions secret.
-  EOT
-}
-
-variable "cp_dns_zones" {
-  type = list(object({
-    zone    = string
-    zone_id = string
-    label   = string
-    indexed = bool
-  }))
-  description = <<-EOT
-    Cloudflare zones to publish CP DNS into. For each entry the module
-    creates <label>.<zone> as a round-robin across all CPs. If
-    `indexed = true`, additionally creates <label>-1.<zone>,
-    <label>-2.<zone>, ... (1-indexed, stable across node renames).
-
-    Every resulting DNS name is automatically added to the cluster
-    certSANs via the cp_cert_sans output. var.cloudflare_api_token
-    must carry Zone:DNS:Edit on every listed zone_id.
-
-    zone_id is passed directly (no API lookup) so the token can be
-    tightly scoped — no Zone:Zone:Read permission needed.
-  EOT
-}
-
-variable "extra_cert_sans" {
-  type        = list(string)
-  default     = []
-  description = <<-EOT
-    Additional DNS names to include in the apiserver + talosd certSANs
-    that this layer is NOT responsible for resolving. Use for any
-    externally-managed name that clients might address the cluster
-    through but whose zone isn't in Cloudflare (or isn't in our CF
-    account). The operator sets up resolution externally; this
-    variable only ensures the certs are valid for the name.
-
-    For Cloudflare-managed zones, prefer extending cp_dns_zones so the
-    DNS record and the cert SAN stay in sync automatically.
-  EOT
-}
-
 variable "age_recipients" {
   type        = string
   description = "Comma-separated age recipient pubkeys. Used to re-encrypt on write."

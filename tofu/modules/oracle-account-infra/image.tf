@@ -89,6 +89,17 @@ resource "oci_objectstorage_object" "talos_qcow2" {
   object       = local.image_object_name
   source       = var.talos_qcow2_local_path
   content_type = "application/octet-stream"
+
+  # OCI provider stores "source" in state as "<path> <mtime>" so every
+  # fresh workflow run (new ephemeral runner, re-downloaded file with a
+  # fresh mtime) sees a diff and forces a re-upload of ~100 MB plus a
+  # cascaded re-create of oci_core_image.talos. The content is pinned
+  # by the object name (<version>-<schematic_id>-oracle-arm64.qcow2) so
+  # a genuine content change lands as a different object — name-level
+  # replacement, not source-level. Ignore source drift after create.
+  lifecycle {
+    ignore_changes = [source]
+  }
 }
 
 # Probe: list AVAILABLE images in the compartment matching the

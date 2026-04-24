@@ -10,10 +10,6 @@ terraform {
       source  = "siderolabs/talos"
       version = "0.11.0-beta.1"
     }
-    cloudflare = {
-      source  = "cloudflare/cloudflare"
-      version = "~> 5.0"
-    }
     sops = {
       source  = "carlpett/sops"
       version = "~> 1.1"
@@ -32,8 +28,4 @@ provider "contabo" {
   oauth2_client_secret = local.contabo_auth_from_module[each.key].oauth2_client_secret
   oauth2_user          = local.contabo_auth_from_module[each.key].oauth2_user
   oauth2_pass          = local.contabo_auth_from_module[each.key].oauth2_pass
-}
-
-provider "cloudflare" {
-  api_token = var.cloudflare_api_token
 }

@@ -23,3 +23,24 @@ age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
 #                  bypasses the Talos-provider-doesn't-reboot-on-config-change
 #                  issue entirely. This is the deterministic fix.
 force_talos_reapply_generation = "4"
+
+# Cloudflare zones for cluster DNS. zone_id values come from the
+# Cloudflare dashboard (zone "Overview" page) — not from the API, so a
+# token scoped only to Zone:DNS:Edit works.
+#
+# For each zone this layer publishes:
+#   cp.<zone>         — round-robin A/AAAA across every controlplane node
+#   cp-<N>.<zone>     — per-CP A/AAAA, 1-indexed by sorted node key
+#   prod.<zone>       — round-robin across nodes carrying
+#                       node.kubernetes.io/external-load-balancer="true"
+#                       (omitted if no such nodes exist)
+cp_dns_zones = [
+  {
+    zone    = "antinvestor.com"
+    zone_id = "e5a43681579acad9c15657ac21dbd66a"
+  },
+  {
+    zone    = "stawi.org"
+    zone_id = "706bf604a333d866bb38c03bf643e79a"
+  },
+]

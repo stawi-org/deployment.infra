@@ -31,6 +31,13 @@ resource "oci_core_instance" "this" {
   source_details {
     source_type = "image"
     source_id   = var.image_id
+    # OCI A1.Flex requires boot volume ≥ 50 GB and the Talos factory
+    # QCOW2 reports 47 GB which CreateInstance rejects. Operator wants
+    # 200 GB — comfortable headroom for image cache + ephemeral
+    # container-writable-layer + etcd snapshots. OCI always-free tier
+    # covers up to 200 GB of boot volume across all instances, so no
+    # charge for this.
+    boot_volume_size_in_gbs = 200
   }
 
   metadata = {

@@ -37,9 +37,10 @@ locals {
   }
 
   # ---- certSANs ----
-  # Bring in every DNS name + IP layer 01 published to Cloudflare so any
-  # combination of kubectl / talosctl / apiserver-to-apiserver auth works.
-  cp_cert_sans = data.terraform_remote_state.contabo.outputs.cp_cert_sans
+  # Pulled from dns.tf's local.cp_cert_sans — every cp-* FQDN across
+  # every zone this layer publishes, plus operator-supplied extras.
+  # Aliased here so the rest of this file can reference cp_cert_sans
+  # unchanged.
 
   # ---- Shared patch list (cluster-wide, provider-neutral) ----
   shared_cp_patches = [
