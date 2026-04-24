@@ -41,48 +41,6 @@ jobs:
         with:
           tofu_version: "1.10.0"
 
-      - name: Install seed-step deps (PyYAML, jq, uuidgen, sops, oci-cli)
-        if: inputs.layer == '01-contabo-infra' || inputs.layer == '02-oracle-infra' || inputs.layer == '02-onprem-infra'
-        run: |
-          set -euo pipefail
-          python3 -m pip install --user PyYAML >/dev/null
-          if ! command -v jq >/dev/null;      then sudo apt-get install -y jq;            fi
-          if ! command -v uuidgen >/dev/null; then sudo apt-get install -y uuid-runtime;  fi
-          if ! command -v sops >/dev/null; then
-            SOPS_VERSION="v3.11.0"
-            curl -fsSL -o /tmp/sops "https://github.com/getsops/sops/releases/download/${SOPS_VERSION}/sops-${SOPS_VERSION}.linux.amd64"
-            sudo install -m 0755 /tmp/sops /usr/local/bin/sops
-            rm /tmp/sops
-          fi
-          sops --version --disable-version-check
-
-      - name: Install oci-cli (for OCI discovery during seed)
-        if: inputs.layer == '02-oracle-infra'
-        run: |
-          set -euo pipefail
-          if ! command -v oci >/dev/null; then
-            python3 -m pip install --user oci-cli >/dev/null
-          fi
-          oci --version
-
-      - name: Seed R2 inventory (one-time bootstrap)
-        if: inputs.layer == '01-contabo-infra' || inputs.layer == '02-oracle-infra' || inputs.layer == '02-onprem-infra'
-        env:
-          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_EC2_METADATA_DISABLED: "true"
-          R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ENDPOINT_URL:       https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
-          SOPS_AGE_KEY:          ${{ secrets.SOPS_AGE_KEY }}
-          SOPS_AGE_RECIPIENTS:   ${{ vars.SOPS_AGE_RECIPIENTS }}
-        run: |
-          set -euo pipefail
-          # Always runs; seed-orchestrator.py is idempotent — it sources
-          # from production/config/ (operator-authored) and rewrites
-          # production/inventory/ per account. Safe to re-run on every
-          # workflow invocation. Pulls in any config changes automatically.
-          python3 scripts/seed-orchestrator.py
-
       - name: Sync R2 inventory to /tmp/inventory/ (node-state module reads from here)
         if: inputs.layer == '01-contabo-infra' || inputs.layer == '02-oracle-infra' || inputs.layer == '02-onprem-infra' || inputs.layer == '03-talos'
         env:

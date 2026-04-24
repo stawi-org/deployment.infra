@@ -1,0 +1,89 @@
+# One-shot workflow: upload a single inventory file to R2 at
+# production/inventory/<provider>/<account>/<filename>.
+#
+# auth.yaml for the contabo provider is automatically encrypted in CI
+# using SOPS (recipient from vars.SOPS_AGE_RECIPIENTS). All other files
+# are uploaded verbatim. The operator passes plaintext content as
+# base64 in the content_b64 input.
+#
+# All untrusted inputs go through env vars + shell case validation
+# before reaching commands.
+name: upload-inventory
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: "Provider directory (contabo|oracle|onprem)"
+        required: true
+        type: choice
+        options: [contabo, oracle, onprem]
+      account:
+        description: "Account / location key (no slashes; e.g. stawi-contabo)"
+        required: true
+        type: string
+      filename:
+        description: "File name in the account dir"
+        required: true
+        type: choice
+        options: [auth.yaml, nodes.yaml]
+      content_b64:
+        description: "Base64-encoded plaintext YAML body (use base64 -w0)"
+        required: true
+        type: string
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      AWS_ACCESS_KEY_ID:        ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY:    ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID:            ${{ secrets.R2_ACCOUNT_ID }}
+      SOPS_AGE_KEY:             ${{ secrets.SOPS_AGE_KEY }}
+      SOPS_AGE_RECIPIENTS:      ${{ vars.SOPS_AGE_RECIPIENTS }}
+      PROVIDER:                 ${{ inputs.provider }}
+      ACCOUNT:                  ${{ inputs.account }}
+      FILENAME:                 ${{ inputs.filename }}
+      CONTENT_B64:              ${{ inputs.content_b64 }}
+    steps:
+      - name: Install sops (only needed for contabo auth)
+        if: inputs.provider == 'contabo' && inputs.filename == 'auth.yaml'
+        run: |
+          set -euo pipefail
+          if ! command -v sops >/dev/null; then
+            curl -fsSL -o /tmp/sops https://github.com/getsops/sops/releases/download/v3.11.0/sops-v3.11.0.linux.amd64
+            sudo install -m 0755 /tmp/sops /usr/local/bin/sops
+            rm /tmp/sops
+          fi
+          sops --version --disable-version-check
+
+      - name: Decode + (encrypt if needed) + upload
+        run: |
+          set -euo pipefail
+          # Strict input validation — every value used in a path is whitelisted.
+          case "$PROVIDER" in contabo|oracle|onprem) ;; *) echo "::error::bad provider"; exit 2 ;; esac
+          case "$ACCOUNT"  in *[!a-zA-Z0-9._-]*|""|.*) echo "::error::bad account"; exit 2 ;; esac
+          case "$FILENAME" in auth.yaml|nodes.yaml) ;; *) echo "::error::bad filename"; exit 2 ;; esac
+
+          tmp_plain=$(mktemp); tmp_out=$(mktemp)
+          printf '%s' "$CONTENT_B64" | base64 -d > "$tmp_plain"
+          # Validate YAML syntax before upload.
+          python3 -c "import sys,yaml; yaml.safe_load(open(sys.argv[1]))" "$tmp_plain"
+
+          if [[ "$PROVIDER" = "contabo" && "$FILENAME" = "auth.yaml" ]]; then
+            : "${SOPS_AGE_RECIPIENTS:?SOPS_AGE_RECIPIENTS var required for contabo auth}"
+            sops -e --input-type yaml --output-type yaml \
+              --encrypted-regex '.' \
+              "$tmp_plain" > "$tmp_out"
+          else
+            cp "$tmp_plain" "$tmp_out"
+          fi
+
+          KEY="production/inventory/${PROVIDER}/${ACCOUNT}/${FILENAME}"
+          aws s3 cp "$tmp_out" "s3://cluster-tofu-state/${KEY}" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --region us-east-1
+          rm -f "$tmp_plain" "$tmp_out"
+          echo "::notice::uploaded ${KEY}"
