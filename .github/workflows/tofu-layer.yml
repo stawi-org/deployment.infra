@@ -84,9 +84,16 @@ jobs:
         # PATH doesn't inherit ~/.local/bin reliably across runners.
         run: |
           set -euo pipefail
-          # --break-system-packages needed on Ubuntu 24.04 (PEP 668).
-          sudo python3 -m pip install --break-system-packages oci-cli
-          which oci && oci --version
+          # pipx puts oci-cli in its own venv — sidesteps PEP 668 and
+          # the fact that system urllib3 / pyOpenSSL are debian-
+          # managed and can't be uninstalled by pip. Symlink the
+          # resulting binary into /usr/local/bin so tofu's external
+          # data source subshell finds it via PATH.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq pipx
+          pipx install oci-cli
+          sudo ln -sf "$HOME/.local/bin/oci" /usr/local/bin/oci
+          oci --version
 
       - name: OCI workload-identity federation
         if: inputs.layer == '02-oracle-infra'
