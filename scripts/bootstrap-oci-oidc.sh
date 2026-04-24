@@ -244,19 +244,28 @@ if [[ -n "$USER_OCID" ]]; then
   USER_GET_RAW=$("${OCI_CLI[@]}" raw-request \
     --target-uri "${DOMAIN_URL}/admin/v1/Users/${USER_OCID}" \
     --http-method GET --output json 2>/dev/null || echo '{"data":{}}')
-  # Probe every plausible JQ path for the serviceUser flag. OCI CLI
-  # normalises some response keys (camelCase->kebab, trailing-segment
-  # lowercase) but not always — try the SCIM canonical first, then the
-  # known kebab-cased fallbacks. Anything matching "true" wins.
-  IS_SVC=$(jq -r --arg s "$USER_EXT_SCHEMA" --arg sl "${USER_EXT_SCHEMA%U*}user" '
-    [
-      .data[$s].serviceUser,
-      .data[$s]."service-user",
-      .data[$sl].serviceUser,
-      .data[$sl]."service-user",
-      .data."service-user",
-      .data.serviceUser
-    ] | map(select(. != null)) | .[0] // "unknown" | tostring' <<<"$USER_GET_RAW")
+  # Walk the entire response tree looking for any leaf key matching
+  # serviceUser / service-user / Service-User regardless of where OCI CLI
+  # buried it. Robust to the CLI's inconsistent key normalisation
+  # (camelCase->kebab, schema-URN flattening, etc.). The walk picks the
+  # first match anywhere in the tree.
+  IS_SVC=$(jq -r '
+    def walk(f): . as $in
+      | if type == "object" then reduce keys[] as $k ({}; . + {($k): ($in[$k] | walk(f))}) | f
+        elif type == "array" then map(walk(f)) | f
+        else f end;
+    [ .. | objects | to_entries[]?
+        | select(.key | ascii_downcase | gsub("[^a-z]"; "") == "serviceuser")
+        | .value
+    ] | first // "unknown" | tostring
+  ' <<<"$USER_GET_RAW")
+  # Diagnostic: print which JSON path holds the flag (useful to harden the
+  # JQ once we see the actual response shape from a live OCI tenancy).
+  if [[ "$IS_SVC" != "true" && "$IS_SVC" != "false" ]]; then
+    say "  serviceUser flag not found anywhere; dumping response keys for debug:"
+    jq -r '[.. | objects | to_entries[]? | .key] | unique | .[]' <<<"$USER_GET_RAW" 2>/dev/null \
+      | head -40 | sed 's/^/      key: /' >&2 || true
+  fi
 
   if [[ "$IS_SVC" == "false" ]]; then
     USER_NEEDS_RECREATE="true"
