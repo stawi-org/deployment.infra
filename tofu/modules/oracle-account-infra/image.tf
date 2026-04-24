@@ -105,15 +105,17 @@ resource "oci_objectstorage_object" "talos_qcow2" {
 resource "oci_core_image" "talos" {
   compartment_id = var.compartment_ocid
   display_name   = local.image_display_name
-  # Talos docs prescribe launch_mode by architecture:
-  #   x86_64 → PARAVIRTUALIZED
-  #   arm64  → EMULATED  (Ampere A1.Flex)
-  # We only ship arm64 here (see factory url: oracle-arm64.qcow2), so
-  # hardcode EMULATED. A previous PARAVIRTUALIZED setting let the
-  # instance Create/Running in OCI but Talos never came up on the
-  # network — the VM booted into a non-functional state, :50000 stayed
-  # closed, and no console diagnosis was possible from the runner.
-  launch_mode = "EMULATED"
+  # arm64 (A1.Flex) Talos needs UEFI_64 + paravirtualized virtio end-
+  # to-end. OCI provider's oci_core_image.launch_options attribute is
+  # computed-only; we can't set it directly. NATIVE mode reads the
+  # launchOptions baked into the QCOW2's image_metadata.json (Talos
+  # factory produces that correctly for oracle-arm64.qcow2); the
+  # instance side then overrides with an explicit launch_options block
+  # for the fields we care about (firmware, network_type, etc.).
+  # Prior EMULATED setting hung CreateInstance on A1.Flex;
+  # PARAVIRTUALIZED launch_mode booted the VM but left the network
+  # stack unconfigured because the firmware defaulted to BIOS.
+  launch_mode = "NATIVE"
   image_source_details {
     source_type       = "objectStorageUri"
     source_uri        = local.image_source_uri

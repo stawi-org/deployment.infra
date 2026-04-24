@@ -60,6 +60,21 @@ resource "oci_core_instance" "this" {
     boot_volume_size_in_gbs = 200
   }
 
+  # Mirror the image's CUSTOM launch options — OCI accepts the instance
+  # create only when these match the image-embedded launchOptions. The
+  # bootstrap-time 400 "Boot volume type in image's launchOptions is
+  # not compatible with boot volume type in instance's launchOptions"
+  # was what blocked the EMULATED migration; being explicit here means
+  # tofu doesn't rely on OCI's defaulting rules (which picked wrong).
+  launch_options {
+    boot_volume_type                    = "PARAVIRTUALIZED"
+    firmware                            = "UEFI_64"
+    is_consistent_volume_naming_enabled = true
+    is_pv_encryption_in_transit_enabled = true
+    network_type                        = "PARAVIRTUALIZED"
+    remote_data_volume_type             = "PARAVIRTUALIZED"
+  }
+
   metadata = {
     user_data = var.user_data
   }
