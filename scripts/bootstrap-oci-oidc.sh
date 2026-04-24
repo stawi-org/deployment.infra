@@ -435,14 +435,22 @@ say "  policy:  $POLICY_OCID"
 # Verify the policy NOW contains every statement we intended. OCI policy
 # changes propagate within seconds for the policy itself, but the
 # UPST-bearer's effective permissions can lag a minute or two.
-CURRENT_STMTS=$("${OCI_CLI[@]}" iam policy get --policy-id "$POLICY_OCID" --output json \
-  | jq -r '.data.statements[]?')
+POLICY_GET_JSON=$("${OCI_CLI[@]}" iam policy get --policy-id "$POLICY_OCID" --output json)
+CURRENT_STMTS=$(printf '%s' "$POLICY_GET_JSON" | jq -r '.data.statements[]?')
 say "  policy statements now in OCI:"
 printf '%s\n' "$CURRENT_STMTS" | sed 's/^/      /'
+
+# Use jq directly against the parsed JSON for the verifier — bypasses any
+# bash/grep quirk with multi-line variable contents.
 missing=()
-for needle in "instance-images" "volume-family" "compute-management-family"; do
-  printf '%s\n' "$CURRENT_STMTS" | grep -q "$needle" || missing+=("$needle")
+for needle in instance-images volume-family compute-management-family; do
+  cnt=$(printf '%s' "$POLICY_GET_JSON" | jq -r --arg n "$needle" \
+    '[.data.statements[]? | select(contains($n))] | length' 2>/dev/null || echo 0)
+  if [[ "$cnt" = "0" ]]; then
+    missing+=("$needle")
+  fi
 done
+
 if [[ ${#missing[@]} -gt 0 ]]; then
   warn "  policy is MISSING required statements: ${missing[*]}"
   warn "  the update API call may have rate-limited or silently dropped them."
