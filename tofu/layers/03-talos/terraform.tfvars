@@ -48,6 +48,4 @@ cp_dns_zones = [
 # Nodes currently unreachable on :50000 from CI. Apply passes skip
 # them so a run can complete in under 10 min. Remove an entry once the
 # node is recovered (node-recovery workflow handles reinstall/reboot).
-talos_apply_skip = [
-  "oci-bwire-node-1", # OCI CP — new instance (post-rename recreate) is unreachable on :50000 despite security list + route table being correct; needs image/boot diagnosis
-]
+talos_apply_skip = []
