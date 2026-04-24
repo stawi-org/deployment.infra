@@ -49,7 +49,5 @@ cp_dns_zones = [
 # them so a run can complete in under 10 min. Remove an entry once the
 # node is recovered (node-recovery workflow handles reinstall/reboot).
 talos_apply_skip = [
-  "oci-bwire-node-1",     # OCI CP — needs console-log diagnosis
-  "contabo-bwire-node-3", # Contabo worker — Talos not listening (instance 202727781)
-  "contabo-bwire-node-2", # Contabo CP — etcd never joined after reinstall (instance 202727782)
+  "oci-bwire-node-1", # OCI CP — new instance (post-rename recreate) is unreachable on :50000 despite security list + route table being correct; needs image/boot diagnosis
 ]
