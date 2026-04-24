@@ -8,7 +8,7 @@ resource "oci_bastion_bastion" "this" {
   compartment_id               = var.compartment_ocid
   bastion_type                 = "STANDARD"
   name                         = "cluster-bastion-${var.account_key}"
-  target_subnet_id             = oci_core_subnet.private.id
+  target_subnet_id             = oci_core_subnet.public.id
   client_cidr_block_allow_list = var.bastion_client_cidr_block_allow_list
   max_session_ttl_in_seconds   = 10800 # 3h max per session
 }
@@ -34,8 +34,11 @@ resource "oci_bastion_session" "node" {
   }
 
   target_resource_details {
-    session_type                       = "PORT_FORWARDING"
-    target_resource_private_ip_address = module.node[each.key].node.ipv4
+    session_type = "PORT_FORWARDING"
+    # Bastion sessions forward to a PRIVATE IP in the VCN — not the
+    # node's public IPv4 that now populates `ipv4`. Use the dedicated
+    # private_ipv4 output for the tunnel target.
+    target_resource_private_ip_address = module.node[each.key].private_ipv4
     target_resource_port               = 50000
   }
 }

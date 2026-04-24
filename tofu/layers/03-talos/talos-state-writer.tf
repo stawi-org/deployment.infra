@@ -69,7 +69,11 @@ module "oracle_talos_state_writer" {
     }
   }
 
-  depends_on = [talos_machine_configuration_apply.oci]
+  # Oracle CPs go through talos_machine_configuration_apply.cp now that
+  # the VCN has a public subnet and CI can reach them directly. No
+  # separate .oci resource to depend on — .cp already iterates over
+  # every controlplane_node regardless of provider.
+  depends_on = [talos_machine_configuration_apply.cp]
 }
 
 module "onprem_talos_state_writer" {

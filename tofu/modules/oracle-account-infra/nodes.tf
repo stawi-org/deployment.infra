@@ -64,7 +64,7 @@ module "node" {
   shape               = each.value.shape
   ocpus               = each.value.ocpus
   memory_gb           = each.value.memory_gb
-  subnet_id           = oci_core_subnet.private.id
+  subnet_id           = oci_core_subnet.public.id
   image_id            = local.image_ocid
   compartment_ocid    = var.compartment_ocid
   assign_ipv6         = var.enable_ipv6

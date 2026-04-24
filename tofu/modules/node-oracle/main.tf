@@ -21,8 +21,13 @@ resource "oci_core_instance" "this" {
   }
 
   create_vnic_details {
-    subnet_id              = var.subnet_id
-    assign_public_ip       = false
+    subnet_id = var.subnet_id
+    # Ephemeral public IPv4 — free in OCI's always-free tier, released
+    # when the instance terminates. Lets the CI runner, cert-manager
+    # (LE challenges), and kubectl users reach the node directly.
+    # IPv6 is always a GUA in OCI (no NAT66), so enabling IPv6 already
+    # gets a public v6 address.
+    assign_public_ip       = true
     assign_ipv6ip          = var.assign_ipv6
     hostname_label         = var.name
     skip_source_dest_check = true
@@ -55,7 +60,12 @@ data "oci_core_vnic" "primary" {
 }
 
 locals {
+  # Public IPv4 is the ephemeral addr assigned by OCI when
+  # assign_public_ip=true; falls back to private if somehow absent so
+  # the rest of the chain still has something to work with.
+  public_ip  = try(oci_core_instance.this.public_ip, null)
   private_ip = oci_core_instance.this.private_ip
+  ipv4       = local.public_ip != null && local.public_ip != "" ? local.public_ip : local.private_ip
   ipv6       = try(data.oci_core_vnic.primary.ipv6addresses[0], null)
 
   derived_labels = merge(

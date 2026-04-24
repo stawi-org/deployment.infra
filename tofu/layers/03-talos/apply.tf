@@ -1,16 +1,14 @@
 # tofu/layers/03-talos/apply.tf
 
-# CP nodes whose Talos API is reachable directly from the runner
-# (public IPv4). Oracle CP nodes have private-only IPs and are applied
-# via apply_oracle.tf through the bastion tunnel — including them here
-# would race against the bastion path and fail with i/o timeout on the
-# private 10.x.x.x address. Add filters for other private-only providers
-# as they come online.
+# CP nodes reachable directly from the runner on their public IPv4.
+# Every provider we currently support (Contabo, OCI since the VCN
+# switched to a public subnet, on-prem when joining via KubeSpan + a
+# reachable endpoint) exposes the Talos API at ipv4:50000, so no
+# provider-specific filter is needed anymore. Keep the separate
+# "direct" name so a future private-only provider can be excluded
+# without renaming callers.
 locals {
-  direct_controlplane_nodes = {
-    for k, v in local.controlplane_nodes : k => v
-    if try(v.provider, "") != "oracle"
-  }
+  direct_controlplane_nodes = local.controlplane_nodes
 }
 
 # terraform_data tracks the rendered machine config content per node. When the

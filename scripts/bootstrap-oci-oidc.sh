@@ -60,7 +60,7 @@ GH_REPO="antinvestor/deployments"
 GH_BRANCH="main"
 # Budget guardrail. Tofu provisioning only uses Always-Free A1 compute (cost
 # ~ $0), but a small budget gives early warning if anything paid creeps in.
-BUDGET_AMOUNT="${BUDGET_AMOUNT:-1}"      # USD per month
+BUDGET_AMOUNT="${BUDGET_AMOUNT:-10}"      # USD per month
 # BUDGET_EMAIL: alert recipient. If unset, defaults to `git config user.email`
 # of the operator running this script (the most common single-operator
 # convention). Override with --budget-email or env BUDGET_EMAIL=...
