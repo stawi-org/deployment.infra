@@ -5,6 +5,10 @@ resource "oci_core_vcn" "this" {
   display_name                     = "cluster-vcn-${var.account_key}"
   is_ipv6enabled                   = var.enable_ipv6
   is_oracle_gua_allocation_enabled = var.enable_ipv6
+  # dns_label on the VCN is a precondition for subnets that set their own
+  # dns_label (we set "privnet" on the private subnet). Without this, the
+  # subnet create 400s with "Dns not enabled for Vcn". 1-15 alphanumerics.
+  dns_label = "cluster"
 }
 
 resource "oci_core_internet_gateway" "this" {

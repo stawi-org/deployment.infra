@@ -91,6 +91,46 @@ jobs:
             scripts/configure-oci-wif.sh /tmp/oci_auth_accounts.json
           fi
 
+      - name: Ensure Talos image staged in OCI Object Storage (per account)
+        if: inputs.layer == '02-oracle-infra'
+        # OCI's CreateImage API rejects external HTTPS source URIs — only
+        # OCI Object Storage URLs are accepted. Upload the factory QCOW2
+        # into a per-account bucket (public-read) and pass the resulting
+        # URL to tofu via TF_VAR_talos_image_source_uris. The script is
+        # idempotent: bucket+object creation are skipped when already
+        # present, so re-runs are cheap.
+        env:
+          TALOS_VERSION: "v1.12.6"
+        run: |
+          set -euo pipefail
+          if ! command -v oci >/dev/null 2>&1; then
+            pip install --user oci-cli >/dev/null 2>&1 || pipx install oci-cli >/dev/null 2>&1
+            export PATH="$HOME/.local/bin:$PATH"
+          fi
+          # Resolve the Talos schematic id by POSTing the yaml to the factory;
+          # the same id the tofu resource computes internally, derived from
+          # the schematic body hash.
+          SCHEMATIC_ID=$(curl -fsSL -X POST https://factory.talos.dev/schematics \
+            -H "Content-Type: application/yaml" \
+            --data-binary @tofu/shared/schematic.yaml | jq -r '.id')
+          if [[ -z "$SCHEMATIC_ID" || "$SCHEMATIC_ID" == "null" ]]; then
+            echo "::error::failed to resolve Talos schematic id"
+            exit 1
+          fi
+          echo "schematic_id=$SCHEMATIC_ID talos_version=$TALOS_VERSION"
+
+          URIS="{}"
+          shopt -s nullglob
+          for auth in /tmp/inventory/oracle/*/auth.yaml; do
+            acct=$(basename "$(dirname "$auth")")
+            region=$(python3 -c "import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))['auth']['region'])" "$auth")
+            compartment=$(python3 -c "import sys,yaml; print(yaml.safe_load(open(sys.argv[1]))['auth']['compartment_ocid'])" "$auth")
+            URL=$(scripts/ensure-oci-talos-image.sh "$acct" "$region" "$compartment" "$SCHEMATIC_ID" "$TALOS_VERSION")
+            URIS=$(jq -c --arg k "$acct" --arg v "$URL" '. + {($k): $v}' <<<"$URIS")
+          done
+          echo "TF_VAR_talos_image_source_uris=$URIS" >> "$GITHUB_ENV"
+          echo "TF_VAR_talos_image_source_uris=$URIS"
+
       - name: Clear stale state lock
         if: inputs.mode == 'plan' || inputs.mode == 'apply'
         env:

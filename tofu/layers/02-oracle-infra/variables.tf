@@ -43,3 +43,9 @@ variable "local_inventory_dir" {
   default     = "/tmp/inventory"
   description = "Local directory where the workflow syncs R2 production/inventory/ before plan. Module reads use this; writes go directly to R2."
 }
+
+variable "talos_image_source_uris" {
+  type        = map(string)
+  default     = {}
+  description = "Per-account (account_key → public HTTPS URL) pre-staged Talos QCOW2 URLs. The workflow uploads the factory image into each account's OCI Object Storage bucket and sets the map via TF_VAR_talos_image_source_uris. OCI's CreateImage rejects external HTTPS source URIs — it only accepts OCI Object Storage URLs. Unset entries fall back to the live factory URL (which will 400 on CreateImage)."
+}
