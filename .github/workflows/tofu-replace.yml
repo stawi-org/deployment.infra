@@ -109,7 +109,9 @@ jobs:
 
       - name: Init
         working-directory: tofu/layers/${{ inputs.layer }}
-        run: tofu init -input=false -no-color
+        run: |
+          tofu init -input=false -no-color \
+            -backend-config="endpoints={s3=\"https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com\"}"
 
       - name: Plan with -replace
         working-directory: tofu/layers/${{ inputs.layer }}

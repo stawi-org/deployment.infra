@@ -5,6 +5,21 @@ terraform {
   }
 }
 
+# Tracks the image OCID that the instance should launch from. Bumps
+# when var.image_id changes — e.g. oci_core_image.talos was replaced
+# upstream (force_image_generation bump, launch_mode change, etc.).
+#
+# Why this indirection: the OCI provider does NOT mark
+# source_details.source_id as ForceNew, so tofu happily plans an
+# in-place update when image_id changes. OCI then 400s on the update
+# with "Boot volume type in image's launchOptions is not compatible
+# with boot volume type in instance's launchOptions." The trigger
+# below + replace_triggered_by on the instance forces tofu to plan
+# destroy+create instead, matching what OCI actually requires.
+resource "terraform_data" "image_fingerprint" {
+  triggers_replace = var.image_id
+}
+
 # Direct image_id + user_data wiring — changes cause destroy+create of
 # the instance (OCI doesn't support in-place re-image). Expect the
 # worker to disappear and reappear on any Talos version bump. The
@@ -47,6 +62,10 @@ resource "oci_core_instance" "this" {
 
   metadata = {
     user_data = var.user_data
+  }
+
+  lifecycle {
+    replace_triggered_by = [terraform_data.image_fingerprint]
   }
 }
 
