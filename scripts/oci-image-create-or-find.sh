@@ -101,24 +101,33 @@ launch_options=$(jq -nc '{
   isConsistentVolumeNamingEnabled: true
 }')
 
-# Capture stdout; let stderr flow straight to the parent so any CLI
-# error text reaches tofu's error message verbatim.
-if ! created=$(oci compute image create \
-    --compartment-id        "$COMPARTMENT" \
-    --display-name          "$DISPLAY_NAME" \
-    --launch-mode           CUSTOM \
-    --image-source-details  "$source_details" \
-    --launch-options        "$launch_options" \
-    --wait-for-state        AVAILABLE \
-    --max-wait-seconds      900); then
-  echo "::error::oci compute image create failed for $DISPLAY_NAME" >&2
+# Capture both streams into one blob. OCI CLI sometimes puts error
+# text on stdout (with non-zero exit), so we merge — then replay the
+# blob to stderr on failure so tofu's external data source surfaces
+# the real reason verbatim.
+rc=0
+created=$(oci compute image create \
+  --compartment-id        "$COMPARTMENT" \
+  --display-name          "$DISPLAY_NAME" \
+  --launch-mode           CUSTOM \
+  --image-source-details  "$source_details" \
+  --launch-options        "$launch_options" \
+  --wait-for-state        AVAILABLE \
+  --max-wait-seconds      900 \
+  2>&1) || rc=$?
+
+if [[ $rc -ne 0 ]]; then
+  echo "::error::oci compute image create failed for $DISPLAY_NAME (rc=$rc)" >&2
+  echo "--- CLI output ---" >&2
+  printf '%s\n' "$created" >&2
+  echo "--- /CLI output ---" >&2
   exit 1
 fi
 
 ocid=$(jq -r '.data.id' <<<"$created")
 if [[ -z "$ocid" || "$ocid" == "null" ]]; then
   echo "::error::CreateImage returned no OCID. Response was:" >&2
-  echo "$created" >&2
+  printf '%s\n' "$created" >&2
   exit 1
 fi
 
