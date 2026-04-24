@@ -185,6 +185,8 @@ DOMAIN_OCID=$(jq -r '.data[] | select(."display-name"=="Default") | .id' <<<"$DO
 [[ -z "$DOMAIN_OCID" || "$DOMAIN_OCID" == "null" ]] && DOMAIN_OCID=$(jq -r '.data[0].id' <<<"$DOMAIN_JSON")
 [[ -z "$DOMAIN_OCID" || "$DOMAIN_OCID" == "null" ]] && die "No active Identity Domain found"
 
+DOMAIN_NAME=$(jq -r --arg id "$DOMAIN_OCID" '.data[] | select(.id==$id) | ."display-name"' <<<"$DOMAIN_JSON")
+[[ -z "$DOMAIN_NAME" || "$DOMAIN_NAME" == "null" ]] && DOMAIN_NAME="Default"
 DOMAIN_URL=$(jq -r --arg id "$DOMAIN_OCID" '.data[] | select(.id==$id) | .url' <<<"$DOMAIN_JSON")
 # Normalise the domain URL with Python's urllib — strips trailing slash,
 # drops the default :443 port, enforces https scheme. gtrevorrow/oci-
@@ -417,12 +419,21 @@ say "Ensuring IAM policy '$POLICY_NAME'"
 # the service account is the cluster's own provisioner).
 # Tenancy-scoped reads cover tagging, compartment lookup, and budget
 # observation which can't live inside a single compartment.
+#
+# ID-FORMAT NOTE: identity-domains (IDCS-backed) Groups have a SCIM
+# resource id that is NOT a valid OCI policy principal. Policies written
+# as `Allow group id <SCIM_ID>` compile and store but evaluate to an
+# empty group → effective permissions = zero → every write returns
+# 404-NotAuthorizedOrNotFound even though the policy "looks correct."
+# The domain-qualified name form (`Allow group '<DOMAIN>'/'<GROUP>'`)
+# is resolved by IAM via name lookup within the identity domain and
+# avoids the ID problem entirely.
 POLICY_STMTS=$(cat <<EOF
 [
-  "Allow group id $GROUP_OCID to manage all-resources                in compartment id $COMPARTMENT_OCID",
-  "Allow group id $GROUP_OCID to use    tag-namespaces               in tenancy",
-  "Allow group id $GROUP_OCID to read   compartments                 in tenancy",
-  "Allow group id $GROUP_OCID to read   usage-budgets                in tenancy"
+  "Allow group '${DOMAIN_NAME}'/'${GROUP_NAME}' to manage all-resources                in compartment id $COMPARTMENT_OCID",
+  "Allow group '${DOMAIN_NAME}'/'${GROUP_NAME}' to use    tag-namespaces               in tenancy",
+  "Allow group '${DOMAIN_NAME}'/'${GROUP_NAME}' to read   compartments                 in tenancy",
+  "Allow group '${DOMAIN_NAME}'/'${GROUP_NAME}' to read   usage-budgets                in tenancy"
 ]
 EOF
 )
