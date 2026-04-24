@@ -84,8 +84,8 @@ jobs:
         # PATH doesn't inherit ~/.local/bin reliably across runners.
         run: |
           set -euo pipefail
-          sudo python3 -m pip install --upgrade pip
-          sudo python3 -m pip install oci-cli
+          # --break-system-packages needed on Ubuntu 24.04 (PEP 668).
+          sudo python3 -m pip install --break-system-packages oci-cli
           which oci && oci --version
 
       - name: OCI workload-identity federation
