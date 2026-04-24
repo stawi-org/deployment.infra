@@ -157,8 +157,13 @@ resource "oci_core_security_list" "public" {
 resource "oci_core_subnet" "public" {
   compartment_id = var.compartment_ocid
   vcn_id         = oci_core_vcn.this.id
-  cidr_block     = cidrsubnet(var.vcn_cidr, 8, 1) # first /24 within the VCN
-  ipv6cidr_block = var.enable_ipv6 ? cidrsubnet(oci_core_vcn.this.ipv6cidr_blocks[0], 8, 1) : null
+  # Second /24 (10.x.2.0/24) instead of the first — switching the
+  # private-subnet-at-10.x.1.0/24 to a public-subnet-at-10.x.1.0/24
+  # kept racing because OCI hadn't fully reaped the old subnet before
+  # the new one came up. Using a different block sidesteps the
+  # "CIDR overlaps" 400 during the replace apply.
+  cidr_block     = cidrsubnet(var.vcn_cidr, 8, 2)
+  ipv6cidr_block = var.enable_ipv6 ? cidrsubnet(oci_core_vcn.this.ipv6cidr_blocks[0], 8, 2) : null
   display_name   = "cluster-subnet-public-${var.account_key}"
   # Public subnet: CPs and LB-labelled nodes need to be reachable from
   # the internet on 6443/50000, and OCI always-free covers ephemeral

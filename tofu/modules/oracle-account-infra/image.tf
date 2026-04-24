@@ -136,7 +136,17 @@ resource "oci_core_image" "talos" {
   depends_on = [oci_objectstorage_object.talos_qcow2]
 
   lifecycle {
+    # Pin recreation to deliberate generation bumps (or the explicit
+    # force_image_generation knob). Ignore drift in image_source_details
+    # once the image is created — OCI mutates/re-resolves the stored URL
+    # internally and the provider surfaces it as a diff on every plan,
+    # which (before ignore_changes) cascaded into an 8-minute image
+    # re-import + downstream instance/shape_management replaces on
+    # every apply. The image content is identified by the object name
+    # (includes version+schematic id), so a genuine content change still
+    # triggers force_image_generation → replace_triggered_by → replace.
     replace_triggered_by = [terraform_data.image_generation]
+    ignore_changes       = [image_source_details]
   }
 }
 
