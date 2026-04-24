@@ -58,3 +58,9 @@ variable "bastion_client_cidr_block_allow_list" {
   description = "CIDR ranges allowed to open OCI Bastion sessions for this account. Defaults to 0.0.0.0/0 (session still requires SSH key auth). Override with operator/CI-runner IP ranges for defense in depth."
   default     = ["0.0.0.0/0"]
 }
+
+variable "talos_image_source_uri" {
+  type        = string
+  default     = null
+  description = "Optional public HTTPS URL of a pre-staged Talos QCOW2 (e.g. an OCI Object Storage PAR or public bucket). When set, OCI imports from this URL instead of the live talos.factory.dev URL — letting operators host one stable image and reuse it across resets/regions. When null, falls back to data.talos_image_factory_urls.this.urls.disk_image."
+}

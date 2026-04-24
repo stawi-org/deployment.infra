@@ -65,7 +65,7 @@ module "node" {
   ocpus               = each.value.ocpus
   memory_gb           = each.value.memory_gb
   subnet_id           = oci_core_subnet.private.id
-  image_id            = oci_core_image.talos.id
+  image_id            = local.image_ocid
   compartment_ocid    = var.compartment_ocid
   assign_ipv6         = var.enable_ipv6
   availability_domain = local.ad_0
