@@ -55,16 +55,16 @@ jobs:
             01-contabo-infra|02-oracle-infra|02-onprem-infra|03-talos|04-flux) ;;
             *) echo "::error::unsupported layer: $LAYER"; exit 1 ;;
           esac
-          # Accept the characters tofu uses in resource addresses
-          # (alphanumeric, _, ., /, ", [, ], -, space). Bash's [[ =~ ]]
-          # handles escapes inconsistently inside [..]; pipe through
-          # grep -E so the regex is ERE-clean.
-          printf 'resource_address bytes: '
-          printf '%s' "$RESOURCE_ADDRESS" | od -c | head -5
-          if ! printf '%s' "$RESOURCE_ADDRESS" | grep -qE '^[A-Za-z0-9_./"[:space:]\[\]-]+$'; then
-            echo "::error::resource_address contains unexpected characters"
-            exit 1
-          fi
+          # Reject anything that isn't tofu-resource-address syntax. Use
+          # a python one-liner — bash's regex engine handles escapes in
+          # POSIX character classes inconsistently across grep/awk
+          # implementations on the runner, which caused spurious rejects
+          # of valid inputs.
+          python3 - "$RESOURCE_ADDRESS" <<'PY'
+          import re, sys
+          if not re.fullmatch(r'[A-Za-z0-9_./\"\[\]\- ]+', sys.argv[1]):
+              sys.exit('resource_address contains unexpected characters: ' + sys.argv[1])
+          PY
 
       - name: Sync R2 inventory
         run: |
