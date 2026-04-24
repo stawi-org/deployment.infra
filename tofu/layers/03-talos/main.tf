@@ -89,7 +89,10 @@ locals {
   worker_nodes         = { for k, v in local.all_nodes_from_state : k => v if try(v.role, "") == "worker" }
   contabo_worker_nodes = { for k, v in local.worker_nodes : k => v if try(v.provider, "") == "contabo" }
   ci_applied_nodes     = { for k, v in local.all_nodes_from_state : k => v if try(v.config_apply_source, "") == "ci" }
-  bootstrap_node       = length(local.controlplane_nodes) > 0 ? values(local.controlplane_nodes)[0] : null
+  # Prefer a reachable CP when picking the bootstrap / kubeconfig host;
+  # fall back to any CP if the reachable set is empty (shouldn't happen
+  # in practice — that would mean no CPs can be talosctl-applied at all).
+  bootstrap_node = length(local.direct_controlplane_nodes) > 0 ? values(local.direct_controlplane_nodes)[0] : (length(local.controlplane_nodes) > 0 ? values(local.controlplane_nodes)[0] : null)
   all_node_addresses = compact(flatten([
     for n in local.all_nodes_from_state : [
       try(n.ipv4, null),

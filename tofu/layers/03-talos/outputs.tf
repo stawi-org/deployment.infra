@@ -18,15 +18,18 @@ data "talos_client_configuration" "this" {
 }
 
 # Structured kubeconfig — downstream layers consume this directly rather than
-# yamldecode-ing the raw string. The `host` field is overridden to the
-# DNS-managed cluster endpoint so downstream consumers fail over across
-# CPs (talos_cluster_kubeconfig returns whichever single CP IP the
-# talos API gives us, which may be mid-reboot during config rollouts).
+# yamldecode-ing the raw string. The `host` field points at the single
+# known-reachable bootstrap node (first entry of direct_controlplane_nodes),
+# not the DNS round-robin. Round-robin would intermittently resolve to an
+# unreachable CP in the current degraded cluster (OCI CP + api-2/3 are
+# in talos_apply_unreachable) and flux would i/o-timeout. Single-host here
+# is safe because flux's only retry target is always a healthy CP; once
+# the unreachable list is empty this can revert to var.cluster_endpoint.
 output "kubeconfig" {
   description = "Structured kubeconfig client configuration (host, ca_certificate, client_certificate, client_key). Consumed by layer 04."
   value = merge(
     data.talos_cluster_kubeconfig.this.kubernetes_client_configuration,
-    { host = var.cluster_endpoint },
+    { host = "https://${local.bootstrap_node.ipv4}:6443" },
   )
   sensitive = true
 }
