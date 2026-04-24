@@ -55,7 +55,11 @@ jobs:
             01-contabo-infra|02-oracle-infra|02-onprem-infra|03-talos|04-flux) ;;
             *) echo "::error::unsupported layer: $LAYER"; exit 1 ;;
           esac
-          if [[ ! "$RESOURCE_ADDRESS" =~ ^[A-Za-z0-9_./\[\]\"\-]+$ ]]; then
+          # Accept the characters tofu uses in resource addresses
+          # (alphanumeric, _, ., /, ", [, ], -). Bash's [[ =~ ]] handles
+          # escapes inconsistently inside [..]; pipe through grep -E so
+          # the regex is ERE-clean.
+          if ! printf '%s' "$RESOURCE_ADDRESS" | grep -qE '^[A-Za-z0-9_./"[:space:]\[\]-]+$'; then
             echo "::error::resource_address contains unexpected characters"
             exit 1
           fi
