@@ -684,12 +684,11 @@ printf '%s\n' "$inventory_yaml"
 # so cost rolls up only from cluster resources, not the whole tenancy.
 say ""
 say "Ensuring budget '$BUDGET_NAME' (USD ${BUDGET_AMOUNT}/month, target compartment $COMPARTMENT_OCID)"
-# Tolerate non-JSON failure modes — some tenancies/regions don't have
-# the budgets API enabled and return text errors instead of {"data":[]}.
-# Validate JSON before parsing; treat parse failure as "no budget".
-BUDGET_LIST=$("${OCI_CLI[@]}" budgets budget list \
-  --compartment-id "$TENANCY_OCID" --display-name "$BUDGET_NAME" \
-  --output json 2>/dev/null || echo '{"data":[]}')
+# List via raw-request — bypasses oci-cli version differences in the
+# `budgets budget list` subcommand naming.
+BUDGETS_ENDPOINT_LIST="https://usage.${REGION}.oci.oraclecloud.com/20190111/budgets?compartmentId=${TENANCY_OCID}&displayName=${BUDGET_NAME}"
+BUDGET_LIST=$("${OCI_CLI[@]}" raw-request \
+  --target-uri "$BUDGETS_ENDPOINT_LIST" --http-method GET --output json 2>/dev/null || echo '{"data":[]}')
 if ! printf '%s' "$BUDGET_LIST" | jq empty 2>/dev/null; then
   warn "  budget list returned non-JSON (api disabled in region?); treating as empty"
   BUDGET_LIST='{"data":[]}'
@@ -697,19 +696,22 @@ fi
 BUDGET_OCID=$(jq -r '.data[0].id // empty' <<<"$BUDGET_LIST")
 
 if [[ -z "$BUDGET_OCID" ]]; then
-  say "  creating"
-  # OCI CLI subcommand is 'create-budget' (not 'create'); same shape for
-  # 'update-budget'. Capture stdout + stderr together so we can surface
-  # the real error if the API rejects the request.
-  budget_create_out=$("${OCI_CLI[@]}" budgets budget create-budget \
-    --compartment-id "$TENANCY_OCID" \
-    --display-name "$BUDGET_NAME" \
-    --description "Cluster cost guardrail; tracks $COMPARTMENT_OCID" \
-    --amount "$BUDGET_AMOUNT" \
-    --reset-period MONTHLY \
-    --target-type COMPARTMENT \
-    --targets "[\"$COMPARTMENT_OCID\"]" \
-    --output json 2>&1) || true
+  say "  creating (via raw-request — older oci-cli versions lack the create subcommand)"
+  BUDGETS_ENDPOINT="https://usage.${REGION}.oci.oraclecloud.com/20190111/budgets"
+  BUDGET_BODY=$(jq -n \
+    --arg cid "$TENANCY_OCID" --arg name "$BUDGET_NAME" --arg desc "Cluster cost guardrail; tracks $COMPARTMENT_OCID" \
+    --argjson amt "$BUDGET_AMOUNT" --arg target "$COMPARTMENT_OCID" '{
+      compartmentId: $cid,
+      displayName:   $name,
+      description:   $desc,
+      amount:        $amt,
+      resetPeriod:   "MONTHLY",
+      targetType:    "COMPARTMENT",
+      targets:       [$target]
+    }')
+  budget_create_out=$("${OCI_CLI[@]}" raw-request \
+    --target-uri "$BUDGETS_ENDPOINT" --http-method POST \
+    --request-body "$BUDGET_BODY" --output json 2>&1) || true
   if printf '%s' "$budget_create_out" | jq empty 2>/dev/null; then
     BUDGET_OCID=$(printf '%s' "$budget_create_out" | jq -r '.data.id // empty')
   fi
@@ -720,9 +722,11 @@ if [[ -z "$BUDGET_OCID" ]]; then
     warn "  required policy on the admin principal: Allow group <admin> to manage usage-budgets in tenancy"
   fi
 else
-  say "  exists ($BUDGET_OCID); updating amount"
-  "${OCI_CLI[@]}" budgets budget update-budget --budget-id "$BUDGET_OCID" \
-    --amount "$BUDGET_AMOUNT" --force >/dev/null 2>&1 || \
+  say "  exists ($BUDGET_OCID); updating amount via raw-request"
+  UPD_BODY=$(jq -n --argjson amt "$BUDGET_AMOUNT" '{amount: $amt}')
+  "${OCI_CLI[@]}" raw-request \
+    --target-uri "https://usage.${REGION}.oci.oraclecloud.com/20190111/budgets/${BUDGET_OCID}" \
+    --http-method PUT --request-body "$UPD_BODY" --output json >/dev/null 2>&1 || \
     warn "  budget update returned non-zero (often ok — display-name immutable)"
 fi
 say "  budget:  $BUDGET_OCID"
@@ -732,21 +736,30 @@ say "  budget:  $BUDGET_OCID"
 if [[ -n "$BUDGET_OCID" && -n "$BUDGET_EMAIL" ]]; then
   for THRESHOLD in 50 80 100; do
     ALERT_NAME="alert-${THRESHOLD}pct"
-    ALERT_LIST=$("${OCI_CLI[@]}" budgets alert-rule list-alert-rules \
-      --budget-id "$BUDGET_OCID" --display-name "$ALERT_NAME" \
-      --output json 2>/dev/null || echo '{"data":[]}')
+    ALERT_LIST=$("${OCI_CLI[@]}" raw-request \
+      --target-uri "https://usage.${REGION}.oci.oraclecloud.com/20190111/budgets/${BUDGET_OCID}/alertRules?displayName=${ALERT_NAME}" \
+      --http-method GET --output json 2>/dev/null || echo '{"data":[]}')
     if ! printf '%s' "$ALERT_LIST" | jq empty 2>/dev/null; then
       ALERT_LIST='{"data":[]}'
     fi
     ALERT_OCID=$(jq -r '.data[0].id // empty' <<<"$ALERT_LIST")
     if [[ -z "$ALERT_OCID" ]]; then
       say "  creating alert ${ALERT_NAME} → ${BUDGET_EMAIL}"
-      "${OCI_CLI[@]}" budgets alert-rule create-alert-rule \
-        --budget-id "$BUDGET_OCID" \
-        --display-name "$ALERT_NAME" \
-        --threshold "$THRESHOLD" --threshold-type PERCENTAGE --type ACTUAL \
-        --recipients "$BUDGET_EMAIL" \
-        --message "Budget ${BUDGET_NAME} hit ${THRESHOLD}% of monthly cap (\$${BUDGET_AMOUNT})." \
+      ALERT_BODY=$(jq -n \
+        --arg name "$ALERT_NAME" \
+        --argjson th "$THRESHOLD" \
+        --arg recip "$BUDGET_EMAIL" \
+        --arg msg "Budget ${BUDGET_NAME} hit ${THRESHOLD}% of monthly cap (\$${BUDGET_AMOUNT})." '{
+          displayName:   $name,
+          type:          "ACTUAL",
+          threshold:     $th,
+          thresholdType: "PERCENTAGE",
+          recipients:    $recip,
+          message:       $msg
+        }')
+      "${OCI_CLI[@]}" raw-request \
+        --target-uri "https://usage.${REGION}.oci.oraclecloud.com/20190111/budgets/${BUDGET_OCID}/alertRules" \
+        --http-method POST --request-body "$ALERT_BODY" --output json \
         >/dev/null 2>&1 || warn "    alert ${ALERT_NAME} create failed (recipient quota? mail config?)"
     else
       say "  alert ${ALERT_NAME} exists ($ALERT_OCID)"
