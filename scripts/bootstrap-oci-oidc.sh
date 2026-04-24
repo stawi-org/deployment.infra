@@ -229,7 +229,7 @@ USER_EXT_SCHEMA="urn:ietf:params:scim:schemas:oracle:idcs:extension:user:User"
 # extension URN, so neither `.serviceUser` nor `.service-user` reliably
 # matches the post-create payload. The raw API response keeps the exact
 # SCIM keys we set, so JQ paths line up.
-USER_QUERY=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(f'userName eq \"{sys.argv[1]}\"'))" "$SERVICE_USER_NAME")
+USER_QUERY=$(printf '%s' "userName eq \"$SERVICE_USER_NAME\"" | jq -sRr @uri)
 USER_RAW=$("${OCI_CLI[@]}" raw-request \
   --target-uri "${DOMAIN_URL}/admin/v1/Users?filter=${USER_QUERY}&attributes=id,userName,${USER_EXT_SCHEMA}:serviceUser" \
   --http-method GET --output json 2>/dev/null || echo '{"data":{"Resources":[]}}')
