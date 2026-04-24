@@ -1,14 +1,19 @@
 # tofu/layers/03-talos/apply.tf
 
 # CP nodes reachable directly from the runner on their public IPv4.
-# Every provider we currently support (Contabo, OCI since the VCN
-# switched to a public subnet, on-prem when joining via KubeSpan + a
-# reachable endpoint) exposes the Talos API at ipv4:50000, so no
-# provider-specific filter is needed anymore. Keep the separate
-# "direct" name so a future private-only provider can be excluded
-# without renaming callers.
+# Oracle CPs are temporarily excluded — the freshly-created OCI instance
+# is in state at 141.147.55.5 but :50000 times out from the runner
+# (Contabo CPs on the same plan succeed in 1s). Root cause still being
+# diagnosed — likely instance-level (user_data not applying, apid not
+# binding to the public interface, or OCI routing lag on the ephemeral
+# public IP). Un-excluding lets the talos apply hang for 10 min and
+# block the whole cluster from ever bootstrapping. Re-enable once we
+# can console-log the node and confirm Talos is healthy there.
 locals {
-  direct_controlplane_nodes = local.controlplane_nodes
+  direct_controlplane_nodes = {
+    for k, v in local.controlplane_nodes : k => v
+    if try(v.provider, "") != "oracle"
+  }
 }
 
 # terraform_data tracks the rendered machine config content per node. When the

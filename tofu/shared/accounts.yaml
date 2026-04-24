@@ -3,15 +3,7 @@
 # account; the inventory tree is seeded separately by seed-inventory.sh.
 contabo:
   - stawi-contabo
-oracle: []
-# oracle:
-#   - stawi-bwire
-# Temporarily disabled while debugging why the OCI CP at 141.147.55.5:50000
-# is unreachable from the runner despite a clean public subnet + permissive
-# security list. Contabo CPs are reachable and succeed in <1s — whatever
-# is blocking is OCI-specific (likely instance-level: user_data not
-# applying cleanly, Talos not binding apid to the public interface, or
-# the ephemeral public IP isn't actually routable through the IGW).
-# Re-enable after diagnosing via OCI console serial log.
+oracle:
+  - stawi-bwire
 onprem:
   - savannah-hq
