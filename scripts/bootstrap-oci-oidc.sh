@@ -323,14 +323,24 @@ say "  group:   $GROUP_OCID"
 # 4. IAM POLICY
 # =========================================================================
 say "Ensuring IAM policy '$POLICY_NAME'"
+# Permissions cover the resources tofu/modules/oracle-account-infra creates
+# end-to-end: VCN + subnets + security lists + bastion (network/bastion),
+# Talos custom image upload from a URL (instance-images +
+# compute-management-family for image import jobs), running instances and
+# their boot volumes (instance-family + volume-family). Without
+# instance-images + volume-family, layer 02 fails on first apply with
+# 404-NotAuthorizedOrNotFound on CreateImage / CreateBootVolume.
 POLICY_STMTS=$(cat <<EOF
 [
-  "Allow group id $GROUP_OCID to manage virtual-network-family in compartment id $COMPARTMENT_OCID",
-  "Allow group id $GROUP_OCID to manage instance-family in compartment id $COMPARTMENT_OCID",
-  "Allow group id $GROUP_OCID to manage bastion-family in compartment id $COMPARTMENT_OCID",
-  "Allow group id $GROUP_OCID to read all-resources in compartment id $COMPARTMENT_OCID",
-  "Allow group id $GROUP_OCID to use tag-namespaces in tenancy",
-  "Allow group id $GROUP_OCID to read compartments in tenancy"
+  "Allow group id $GROUP_OCID to manage virtual-network-family       in compartment id $COMPARTMENT_OCID",
+  "Allow group id $GROUP_OCID to manage instance-family              in compartment id $COMPARTMENT_OCID",
+  "Allow group id $GROUP_OCID to manage instance-images              in compartment id $COMPARTMENT_OCID",
+  "Allow group id $GROUP_OCID to manage volume-family                in compartment id $COMPARTMENT_OCID",
+  "Allow group id $GROUP_OCID to manage compute-management-family    in compartment id $COMPARTMENT_OCID",
+  "Allow group id $GROUP_OCID to manage bastion-family               in compartment id $COMPARTMENT_OCID",
+  "Allow group id $GROUP_OCID to read   all-resources                in compartment id $COMPARTMENT_OCID",
+  "Allow group id $GROUP_OCID to use    tag-namespaces               in tenancy",
+  "Allow group id $GROUP_OCID to read   compartments                 in tenancy"
 ]
 EOF
 )
