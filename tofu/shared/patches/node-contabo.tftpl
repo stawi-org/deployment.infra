@@ -13,24 +13,22 @@ machine:
         - ${ipv6_subnet}
         - ${ipv4}/32
 
-  # Physical link config + static IPv4 + static IPv6 + default routes
-  # using the legacy machine.network.interfaces[] schema. The newer
-  # apiVersion: v1alpha1 / kind: LinkConfig document accepts neither
-  # 'destination' (rejected by data-source validator) nor 'network'
-  # (rejected at apply-time as "unknown key") consistently across
-  # Talos's two validators — this form is unambiguous and used by the
-  # Ansible-era config that worked.
-  network:
-    interfaces:
-      - interface: ens18
-        addresses:
-          - ${ipv4}/24
-          - ${ipv6}/64
-        routes:
-          - network: 0.0.0.0/0
-            gateway: ${ipv4_gateway}
-          - network: ::/0
-            gateway: ${ipv6_gateway}
+---
+# Physical link configuration with static IPv4 + static IPv6 — Talos v1.12
+# multi-doc form. Mirrors the validated Ansible config in
+# /home/j/code/antinvestor/deployments/talos_config/v1.12.6/patch/*.yaml,
+# specifically using gateway-only route entries (no destination/network
+# field — Talos v1.12 LinkConfig RouteConfig auto-derives a default route
+# from the gateway when no destination is set).
+apiVersion: v1alpha1
+kind: LinkConfig
+name: ens18
+addresses:
+  - address: ${ipv4}/24
+  - address: ${ipv6}/64
+routes:
+  - gateway: ${ipv4_gateway}
+  - gateway: ${ipv6_gateway}
 
 ---
 
