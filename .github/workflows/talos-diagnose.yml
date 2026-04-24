@@ -59,7 +59,7 @@ jobs:
           YAML
           chmod 0600 /tmp/talosconfig
 
-      - name: Talos health + services + dmesg
+      - name: Talos network + services + dmesg
         env:
           TALOSCONFIG: /tmp/talosconfig
         run: |
@@ -70,10 +70,18 @@ jobs:
             talosctl --talosconfig "$TALOSCONFIG" -e "$IP" -n "$IP" service kube-apiserver 2>&1 | head -40
             echo "--- service kubelet ---"
             talosctl --talosconfig "$TALOSCONFIG" -e "$IP" -n "$IP" service kubelet 2>&1 | head -20
-            echo "--- get nodeip ---"
-            talosctl --talosconfig "$TALOSCONFIG" -e "$IP" -n "$IP" get nodeip 2>&1 | head
+            echo "--- get linkstatuses ---"
+            talosctl --talosconfig "$TALOSCONFIG" -e "$IP" -n "$IP" get linkstatuses 2>&1 | head -20
+            echo "--- get addresses ---"
+            talosctl --talosconfig "$TALOSCONFIG" -e "$IP" -n "$IP" get addresses 2>&1 | head -20
+            echo "--- get routes ---"
+            talosctl --talosconfig "$TALOSCONFIG" -e "$IP" -n "$IP" get routes 2>&1 | head -30
+            echo "--- get resolverstatus ---"
+            talosctl --talosconfig "$TALOSCONFIG" -e "$IP" -n "$IP" get resolverstatuses 2>&1 | head
+            echo "--- get nfttable (firewall) ---"
+            talosctl --talosconfig "$TALOSCONFIG" -e "$IP" -n "$IP" get nftableschain 2>&1 | head -30
             echo "--- dmesg (apiserver/etcd/cni/err lines) ---"
-            talosctl --talosconfig "$TALOSCONFIG" -e "$IP" -n "$IP" dmesg 2>&1 | grep -i "apiserver\|etcd\|cni\|err" | head -50
+            talosctl --talosconfig "$TALOSCONFIG" -e "$IP" -n "$IP" dmesg 2>&1 | grep -i "apiserver\|etcd\|cni\|route\|err" | tail -30
             echo "::endgroup::"
           done
           echo "::group::cluster health"
