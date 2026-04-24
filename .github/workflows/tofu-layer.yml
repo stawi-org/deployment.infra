@@ -80,12 +80,8 @@ jobs:
         # field is Computed-only).
         run: |
           set -euo pipefail
-          curl -fsSL https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh \
-            -o /tmp/oci-install.sh
-          bash /tmp/oci-install.sh --accept-all-defaults --install-dir "$HOME/lib/oracle-cli" \
-            --exec-dir "$HOME/bin" --script-dir "$HOME/bin/oci-cli-scripts" \
-            --update-path-and-enable-tab-completion false
-          sudo ln -sf "$HOME/bin/oci" /usr/local/bin/oci
+          python3 -m pip install --user --upgrade pip
+          python3 -m pip install --user oci-cli
           oci --version
 
       - name: OCI workload-identity federation
