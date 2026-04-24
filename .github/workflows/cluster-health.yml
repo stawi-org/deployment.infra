@@ -1,0 +1,42 @@
+# Post-apply verification: is the cluster actually healthy?
+#
+# Fetches the layer-03 tfstate to get kubeconfig + talosconfig, then
+# runs a short battery of checks: apiserver answers, nodes are Ready,
+# no pods stuck, etcd quorum, flux reconciled. Reports PASS / FAIL
+# per check with enough output to root-cause failures.
+#
+# Manual (workflow_dispatch) now — trigger after any tofu-apply run
+# to confirm the cluster survived. Can promote to a scheduled cron
+# once the cluster is stable.
+name: cluster-health
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID:        ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY:    ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID:            ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ENDPOINT:              https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install talosctl + kubectl + flux
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/siderolabs/talos/releases/download/v1.12.6/talosctl-linux-amd64 -o /usr/local/bin/talosctl
+          chmod +x /usr/local/bin/talosctl
+          curl -fsSLO https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl
+          sudo install -m 0755 kubectl /usr/local/bin/kubectl
+          curl -fsSL https://github.com/fluxcd/flux2/releases/download/v2.4.0/flux_2.4.0_linux_amd64.tar.gz | tar xz
+          sudo install -m 0755 flux /usr/local/bin/flux
+
+      - name: Run cluster-health checks
+        run: scripts/cluster-health.sh

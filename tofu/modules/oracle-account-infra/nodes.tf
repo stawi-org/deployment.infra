@@ -17,7 +17,7 @@ data "talos_machine_configuration" "node" {
     ---
     apiVersion: v1alpha1
     kind: HostnameConfig
-    hostname: ${var.account_key}-${each.key}
+    hostname: ${each.key}
     auto: off
     EOT
     ,
@@ -59,7 +59,7 @@ module "node" {
   for_each = var.nodes
   source   = "../node-oracle"
 
-  name                = "${var.account_key}-${each.key}"
+  name                = each.key
   role                = each.value.role
   shape               = each.value.shape
   ocpus               = each.value.ocpus

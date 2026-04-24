@@ -44,3 +44,12 @@ cp_dns_zones = [
     zone_id = "706bf604a333d866bb38c03bf643e79a"
   },
 ]
+
+# Nodes currently unreachable on :50000 from CI. Apply passes skip
+# them so a run can complete in under 10 min. Remove an entry once the
+# node is recovered (node-recovery workflow handles reinstall/reboot).
+talos_apply_skip = [
+  "oci-stawi-bwire-node-1",        # OCI CP — needs console-log diagnosis
+  "kubernetes-controlplane-api-3", # Contabo worker — Talos not listening
+  "kubernetes-controlplane-api-2", # Contabo CP — etcd never joined after reinstall
+]

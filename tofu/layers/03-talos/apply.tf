@@ -10,35 +10,19 @@
 # block the whole cluster from ever bootstrapping. Re-enable once we
 # can console-log the node and confirm Talos is healthy there.
 locals {
-  # Nodes we can't currently reach on :50000 from the CI runner — talos
-  # applies against them would hang for 10 minutes and block the whole
-  # run. Hardcoded here while the underlying nodes are being recovered;
-  # promote to a var once we stabilize.
-  talos_apply_unreachable = [
-    # OCI CP (141.147.55.5) — fresh instance, reachable from OCI but not
-    # from GH runner after public IP assignment. Needs node console log
-    # to confirm Talos is binding to the public interface.
-    "stawi-bwire-oci-stawi-bwire-node-1",
-    # Contabo api-3 — connection refused on :50000. Talos not listening.
-    # Likely needs ensure_image reinstall; running a reset workflow is
-    # the cleanest path.
-    "kubernetes-controlplane-api-3",
-    # Contabo api-2 — Talos is up (:50000 responds) but apiserver never
-    # comes up on :6443 after the reinstall. Etcd likely failing to
-    # form/join quorum; needs `talosctl etcd members` to diagnose. Skip
-    # for now so the run can complete on api-1 alone; single-CP cluster
-    # is enough to deploy Flux and prove the pipeline end-to-end. Will
-    # recover api-2 once we have kubectl access via api-1.
-    "kubernetes-controlplane-api-2",
-  ]
+  # Nodes that are declared in inventory but currently unreachable on
+  # :50000 from CI. Driven by var.talos_apply_skip so operators can
+  # toggle a node's healthy/unreachable status without a code change.
+  # Entries here remain in controlplane_nodes / worker_nodes / DNS /
+  # cert SANs — they just don't receive talosctl apply passes.
 
   direct_controlplane_nodes = {
     for k, v in local.controlplane_nodes : k => v
-    if !contains(local.talos_apply_unreachable, k)
+    if !contains(var.talos_apply_skip, k)
   }
   direct_contabo_worker_nodes = {
     for k, v in local.contabo_worker_nodes : k => v
-    if !contains(local.talos_apply_unreachable, k)
+    if !contains(var.talos_apply_skip, k)
   }
 }
 

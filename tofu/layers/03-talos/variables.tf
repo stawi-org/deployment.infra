@@ -94,3 +94,17 @@ variable "admin_cidrs" {
   default     = []
   description = "Optional operator-supplied CIDRs (IPv4 or IPv6) allowed to reach Talos API (:50000) and Kubernetes API (:6443) in addition to GitHub Actions runner ranges (auto-fetched from api.github.com/meta). Leave empty to restrict admin access to CI only."
 }
+
+variable "talos_apply_skip" {
+  type        = list(string)
+  default     = []
+  description = <<-EOT
+    Node keys to exclude from talos_machine_configuration_apply and
+    from the wait_apiserver probe. Use for nodes that are temporarily
+    unreachable on :50000 from CI — an apply against them wedges the
+    whole run for 10+ min. Entries remain in controlplane_nodes /
+    worker_nodes / node-state / DNS / cert SANs so they don't vanish
+    from the cluster's declared shape; they just don't receive the
+    talosctl-driven apply pass.
+  EOT
+}

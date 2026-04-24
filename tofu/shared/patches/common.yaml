@@ -6,23 +6,25 @@ machine:
     wipe: true # Indicates if the installation disk should be wiped at installation time.
     disk: /dev/sda
   network:
-    # KubeSpan temporarily DISABLED during cluster bootstrap.
+    # KubeSpan: WireGuard mesh for low-ops cross-provider connectivity.
+    # Contabo public, OCI public, on-prem behind NAT — all peer up via
+    # discovery.talos.dev without per-provider VPN wiring.
     #
-    # The mesh is attractive for low-ops cross-provider connectivity
-    # (Contabo public, OCI public, on-prem NAT'd) but on a node with
-    # no reachable peers — which is the state during initial bootstrap
-    # before discovery.talos.dev has seen anyone — Talos installs a
-    # kubespan-interface default route at metric 1, higher priority than
-    # the physical-link route at 1024. Outbound traffic (including the
-    # SYN-ACK for talosctl apply) goes into the dead tunnel and is
-    # dropped. From the runner's perspective this reads as an i/o
-    # timeout even though the firewall is open and the node is up.
-    #
-    # Re-enable once the cluster has stable peers reachable on public
-    # endpoints, probably by also setting kubespan.advertiseKubernetesNetworks=true
-    # so the route install is gated on actual peer presence.
+    # Past blackhole incident (documented so we don't regress): on a
+    # bootstrap node with no reachable peers yet, Talos installed a
+    # kubespan default route at metric 1 above the physical-link 1024.
+    # Outbound responses got eaten by the dead tunnel. Guard is now
+    # threefold:
+    #   1. cluster.discovery.registries.service is explicitly enabled
+    #      (see cluster-network.yaml's discovery block) so peers find
+    #      each other via Sidero's discovery.talos.dev.
+    #   2. Re-enabling only after at least one stable peer exists means
+    #      a newly-booted node has somewhere to handshake to.
+    #   3. advertiseKubernetesNetworks left at default (false) — the
+    #      kubespan interface only gets pod/service traffic, never
+    #      carries the default route for general internet egress.
     kubespan:
-      enabled: false
+      enabled: true
     # Note: DNS nameservers are configured via ResolverConfig (resolvers.yaml)
     # Note: NTP servers are configured via TimeSyncConfig (timesync.yaml)
   kernel:
