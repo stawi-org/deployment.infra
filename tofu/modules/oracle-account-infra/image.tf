@@ -102,57 +102,54 @@ resource "oci_objectstorage_object" "talos_qcow2" {
   }
 }
 
-resource "oci_core_image" "talos" {
-  compartment_id = var.compartment_ocid
-  display_name   = local.image_display_name
-  # arm64 (A1.Flex) Talos needs UEFI_64 + paravirtualized virtio end-
-  # to-end. OCI provider's oci_core_image.launch_options attribute is
-  # computed-only; we can't set it directly. NATIVE mode reads the
-  # launchOptions baked into the QCOW2's image_metadata.json (Talos
-  # factory produces that correctly for oracle-arm64.qcow2); the
-  # instance side then overrides with an explicit launch_options block
-  # for the fields we care about (firmware, network_type, etc.).
-  # Prior EMULATED setting hung CreateInstance on A1.Flex;
-  # PARAVIRTUALIZED launch_mode booted the VM but left the network
-  # stack unconfigured because the firmware defaulted to BIOS.
-  launch_mode = "NATIVE"
-  image_source_details {
-    source_type       = "objectStorageUri"
-    source_uri        = local.image_source_uri
-    source_image_type = "QCOW2"
-  }
-
-  # Must wait for the staged object to be uploaded before CreateImage
-  # attempts to fetch from the bucket URL. Harmless when
-  # stage_local_upload is false.
-  depends_on = [oci_objectstorage_object.talos_qcow2]
-
+removed {
+  from = oci_core_image.talos
   lifecycle {
-    # Recreate only on a deliberate force_image_generation bump.
-    # Ignore image_source_details drift — OCI mutates the stored URL
-    # internally after import and the provider surfaces that as a diff
-    # on every plan. Without ignore_changes that would trigger an
-    # 8-minute re-import on every apply.
-    replace_triggered_by = [terraform_data.image_generation]
-    ignore_changes       = [image_source_details]
+    destroy = true
   }
 }
 
-# State migration: earlier versions of this module used a
-# data.oci_core_images probe + count-based conditional create. That
-# pattern broke badly — the probe refresh at plan time saw the
-# already-created image, flipped count to 0, and tofu planned to
-# destroy the in-state image. During apply the destroy ran AND the
-# instance-create referenced the now-deleted OCID, 400ing with
-# "Invalid image". Moving to an unconditional resource removes the
-# loop; tofu owns the image lifecycle directly.
-moved {
-  from = oci_core_image.talos[0]
-  to   = oci_core_image.talos
+# CreateImage must be driven via OCI CLI, not the tofu provider: the
+# OCI tofu resource has `launch_options` as computed-only (can't set).
+# Talos factory's oracle-arm64.qcow2 ships WITHOUT image_metadata.json
+# baked in, so every preset launch_mode leaves OCI with the wrong
+# defaults:
+#   - EMULATED → CreateInstance hangs >20min (hypervisor can't boot
+#     the EFI payload via emulated devices).
+#   - PARAVIRTUALIZED → defaults firmware to BIOS, Talos arm64 won't
+#     boot (EFI-only).
+#   - NATIVE → defaults bootVolumeType to ISCSI (no embedded metadata
+#     to say otherwise), so the VM has ZERO block devices visible to
+#     the guest, Talos install phase finds "no disks matched", reboot
+#     loop (serial console confirmed).
+# Talos install docs prescribe launchMode=CUSTOM with explicit
+# firmware=UEFI_64 + bootVolumeType/networkType/remoteDataVolumeType
+# all PARAVIRTUALIZED. CreateImage is the only place those can be set
+# (UpdateImage doesn't accept launch_options).
+#
+# Helper script below: find-or-create semantics keyed by display_name.
+# Outputs {"image_ocid": "..."} JSON on stdout for the `external`
+# data source, which feeds the OCID to tofu.
+data "external" "talos_image" {
+  program = [
+    "bash",
+    "${path.module}/../../scripts/oci-image-create-or-find.sh",
+  ]
+
+  query = {
+    compartment_ocid = var.compartment_ocid
+    display_name     = local.image_display_name
+    source_uri       = local.image_source_uri
+    # configure-oci-wif.sh names each ~/.oci/config profile after the
+    # account_key, so pass that through for the CLI --profile flag.
+    oci_profile = var.account_key
+  }
+
+  depends_on = [oci_objectstorage_object.talos_qcow2]
 }
 
 locals {
-  image_ocid = oci_core_image.talos.id
+  image_ocid = data.external.talos_image.result.image_ocid
 }
 
 # OCI imports custom QCOW2 images with a conservative default compatible-
