@@ -58,79 +58,36 @@ resource "null_resource" "wait_apiserver" {
   depends_on = [talos_machine_bootstrap.this]
 
   triggers = {
-    bootstrap_id = talos_machine_bootstrap.this.id
-    # Re-probe whenever anything up-chain forces a rolling restart of
-    # apiservers. Without this, wait_apiserver is cached-happy from a
-    # prior apply and flux layer connect-refuses on a flapping CP.
+    bootstrap_id     = talos_machine_bootstrap.this.id
     cp_config_hashes = jsonencode({ for k, c in talos_machine_configuration_apply.cp : k => c.id })
   }
 
   provisioner "local-exec" {
-    # Default interpreter is /bin/sh (dash on Ubuntu) which doesn't
-    # support `[[ ... ]]`.
     interpreter = ["bash", "-c"]
-    command     = <<-EOT
+    # Cap: 5 min. Steady-state applies don't reboot anything (apply_mode
+    # = auto), bootstrap is a one-shot, image pulls are seconds. If
+    # we're still waiting after 5 min something is actually wrong —
+    # exit and surface the per-CP status rather than hide a flapping
+    # cluster behind a 30-min timer.
+    command = <<-EOT
       set -uo pipefail
-      # Wait for the cluster to recover after a rolling CP reboot.
-      # During a reboot any single CP is briefly unreachable, but
-      # etcd quorum (and therefore kube-apiserver) holds as long as
-      # MAJORITY of CPs are alive. Pass when ≥ ceil(N/2) respond
-      # with a numeric HTTP status — not when ALL respond. The old
-      # require-all logic deadlocked through a normal rolling roll
-      # because there's always one CP rebooting.
       CPS=(${join(" ", [for n in local.direct_controlplane_nodes : n.ipv4])})
       N="$${#CPS[@]}"
-      if (( N == 0 )); then
-        echo "no direct CPs — skipping wait"
-        exit 0
-      fi
+      (( N == 0 )) && { echo "no CPs to wait for"; exit 0; }
       QUORUM=$(( (N / 2) + 1 ))
-      MAX_ATTEMPTS=180  # 180 × 10s = 30 min wall clock — enough for
-                       # sequential CP reboots + apiserver image pull
-                       # + etcd leader re-election on a slow link.
-      echo "probing $${N} CPs ($${CPS[*]}); pass when ≥ $${QUORUM} respond"
-      LAST_HEALTHY=()
-      for i in $(seq 1 "$MAX_ATTEMPTS"); do
-        OK_COUNT=0
-        STATUSES=()
+      for i in $(seq 1 30); do
+        OK=0; STATUSES=()
         for IP in "$${CPS[@]}"; do
-          CODE=$(curl -sk --max-time 5 --resolve "cp.antinvestor.com:6443:$IP" \
+          CODE=$(curl -sk --max-time 3 --resolve "cp.antinvestor.com:6443:$IP" \
             -o /dev/null -w '%%{http_code}' \
             "https://cp.antinvestor.com:6443/healthz" 2>/dev/null || echo 000)
-          # Any numeric HTTP response (200/401/403) proves TLS +
-          # apiserver are up; the kubernetes provider authenticates
-          # with mTLS so the eventual auth check is the client's
-          # problem, not ours.
-          if [[ "$CODE" =~ ^[0-9][0-9][0-9]$ && "$CODE" != "000" ]]; then
-            OK_COUNT=$(( OK_COUNT + 1 ))
-            STATUSES+=("$IP=$CODE")
-          else
-            STATUSES+=("$IP=down")
-          fi
+          [[ "$CODE" =~ ^[1-5][0-9][0-9]$ ]] && { OK=$((OK+1)); STATUSES+=("$IP=$CODE"); } || STATUSES+=("$IP=down")
         done
-        echo "  [attempt $i/$MAX_ATTEMPTS] healthy=$${OK_COUNT}/$${N} ($${STATUSES[*]})"
-        if (( OK_COUNT >= QUORUM )); then
-          LAST_HEALTHY=("$${STATUSES[@]}")
-          # Once we hit quorum, wait one extra round to confirm it's
-          # not a flapping CP — but exit fast (extra round at attempt
-          # 1 wouldn't be useful, so only require stability after attempt 3).
-          if (( i >= 3 )); then
-            echo "quorum reached ($${OK_COUNT}/$${N} healthy); downstream calls safe"
-            exit 0
-          fi
-        fi
+        echo "[$i/30] healthy=$${OK}/$${N} ($${STATUSES[*]})"
+        (( OK >= QUORUM )) && exit 0
         sleep 10
       done
-      echo "::error::cluster never reached quorum after $${MAX_ATTEMPTS} × 10s"
-      echo "::error::final per-CP status: $${STATUSES[*]}"
-      echo "::group::Diagnostic dump"
-      for IP in "$${CPS[@]}"; do
-        echo "--- $IP /healthz ---"
-        curl -sk --max-time 5 --resolve "cp.antinvestor.com:6443:$IP" \
-          "https://cp.antinvestor.com:6443/healthz" 2>&1 || true
-        echo
-      done
-      echo "::endgroup::"
+      echo "::error::quorum not reached in 5 min — final: $${STATUSES[*]}"
       exit 1
     EOT
   }
