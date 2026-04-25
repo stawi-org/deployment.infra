@@ -1,0 +1,67 @@
+# .github/workflows/cluster-reinstall.yml
+#
+# Cluster-wide (or per-node) disk reinstall. Triggered when an
+# approved tofu-reconstruct PR lands a `reinstall-*.yaml` file under
+# `.github/reconstruction/`. The mechanism:
+#
+#   1. The request file is now on `main`.
+#   2. Layer 01 + Layer 02 hash the latest applicable request per node
+#      via reconstruction.tf — the per-node hash is the trigger key
+#      for null_resource.ensure_image (Contabo) and
+#      terraform_data.reinstall_marker (OCI).
+#   3. tofu-apply notices the trigger drift and re-fires the
+#      provider-appropriate disk wipe (Contabo PUT /compute/instances,
+#      OCI destroy+create).
+#
+# So the reinstall happens "naturally" through the next tofu-apply run.
+# This workflow's job is just to dispatch tofu-apply so the operator
+# doesn't have to remember to.
+#
+# Trigger:
+#   merge an approved tofu-reconstruct PR that adds
+#   .github/reconstruction/reinstall-*.yaml on main, OR
+#   gh workflow run cluster-reinstall.yml --ref main -f confirm=REINSTALL
+
+name: cluster-reinstall
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/reconstruction/reinstall-*.yaml'
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type REINSTALL verbatim to confirm.'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: tofu-apply-production
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    env:
+      CONFIRM: ${{ github.event_name == 'workflow_dispatch' && inputs.confirm || 'REINSTALL' }}
+    steps:
+      - name: Validate confirm
+        run: |
+          [[ "$CONFIRM" == "REINSTALL" ]] || { echo "::error::confirm must be REINSTALL"; exit 1; }
+
+  dispatch-apply:
+    needs: guard
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Dispatch tofu-apply
+        run: |
+          gh workflow run tofu-apply.yml --ref main
+          echo "::notice::Dispatched tofu-apply.yml — watch its run for per-node reinstall progress."

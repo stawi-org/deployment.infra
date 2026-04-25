@@ -1,4 +1,4 @@
-# .github/workflows/reset-cluster.yml
+# .github/workflows/cluster-reset.yml
 #
 # One-shot full reset. Used when the cluster is in an unrecoverable
 # state (etcd unreachable, bootstrap stuck, etc.) or when you want a
@@ -9,24 +9,28 @@
 #   1. Deletes every DNS record matching cp* on both Cloudflare zones.
 #   2. Wipes the R2 state objects for layers 01-contabo, 02-oracle,
 #      02-onprem, 03-talos, and 04-flux. Layer 00 is preserved so the
-#      cluster keeps the same PKI identity. Contabo instances themselves
-#      are not destroyed by this workflow; layer 01's imports.tf re-adopts
+#      cluster keeps the same PKI identity. Contabo / OCI instances
+#      themselves are not destroyed; layer 01's imports.tf re-adopts
 #      the fixed CP instance IDs on the next apply.
+#   3. Deletes every Talos* custom Contabo image so the next apply
+#      registers a fresh one.
 #
 # After a successful reset, dispatch tofu-apply manually — it will
-# reapply layer 01 (triggering Contabo reinstall if the Talos image
-# changed), then build layers 02/03/04 from empty state.
+# reapply layer 01 (registering a new Contabo image and triggering
+# Contabo reinstall via the reconstruction mechanism if the request
+# file persists), then build layers 02/03/04 from empty state.
 #
 # Trigger:
-#   gh workflow run reset-cluster.yml --ref main -f confirm=RESET
-#   or merge an approved PR that changes .github/reset-requests/**
+#   gh workflow run cluster-reset.yml --ref main -f confirm=RESET
+#   or merge an approved tofu-reconstruct PR that adds
+#   .github/reconstruction/reset-*.yaml on main.
 
-name: reset-cluster
+name: cluster-reset
 on:
   push:
     branches: [main]
     paths:
-      - '.github/reset-requests/**'
+      - '.github/reconstruction/reset-*.yaml'
   workflow_dispatch:
     inputs:
       confirm:
@@ -45,9 +49,10 @@ concurrency:
 jobs:
   guard:
     runs-on: ubuntu-latest
+    env:
+      CONFIRM: ${{ github.event_name == 'workflow_dispatch' && inputs.confirm || 'RESET' }}
     steps:
-      - env:
-          CONFIRM: ${{ github.event_name == 'workflow_dispatch' && inputs.confirm || 'RESET' }}
+      - name: Validate confirm
         run: |
           [[ "$CONFIRM" == "RESET" ]] || { echo "::error::confirm must be RESET"; exit 1; }
 
@@ -83,8 +88,6 @@ jobs:
       R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
     steps:
       - name: Delete R2 state objects for layers 01, 02, 03, 04
-        # Layer 00 preserved (cluster PKI identity). Cloud-side CP
-        # instances are preserved; imports.tf re-imports them next apply.
         run: |
           set -euo pipefail
           ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
@@ -106,14 +109,8 @@ jobs:
       CONTABO_API_PASSWORD:  ${{ secrets.CONTABO_API_PASSWORD }}
     steps:
       - name: Delete every Talos* custom image in the Contabo account
-        # Stale Talos images (e.g. v1.13.0-rc.0 after a downgrade) clash
-        # with fresh create calls with HTTP 409. Wipe all custom Talos
-        # images for a clean slate; layer 01's contabo_image.talos will
-        # register the current talos_version's image on next apply.
         run: |
           set -euo pipefail
-          # Use --data-urlencode so special chars in the password don't corrupt
-          # the request. Capture the body so we see the reason on failure.
           RESP=$(curl -sS -X POST 'https://auth.contabo.com/auth/realms/contabo/protocol/openid-connect/token' \
             -H 'Content-Type: application/x-www-form-urlencoded' \
             --data-urlencode "client_id=${CONTABO_CLIENT_ID}" \
@@ -155,7 +152,8 @@ jobs:
     needs: [clean-cloudflare, wipe-state, clean-contabo-images]
     runs-on: ubuntu-latest
     steps:
-      - run: |
+      - name: Summarize
+        run: |
           echo "::notice::Reset complete. Next step — dispatch tofu-apply:"
           echo "::notice::  gh workflow run tofu-apply.yml --ref main"
-          echo "::notice::Or merge a fresh cluster-reset request PR to run it through approval."
+          echo "::notice::Or open a fresh tofu-reconstruct PR to run it through approval."
