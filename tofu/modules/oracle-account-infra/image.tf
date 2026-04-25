@@ -60,10 +60,7 @@ locals {
   )
 
   image_bucket_name = "talos-images-${var.account_key}"
-  # Despite the .qcow2 suffix historically used here, the workflow now
-  # uploads a .oci tarball (qcow2 + image_metadata.json). The bucket
-  # contents are opaque; name is just an identifier.
-  image_object_name = "talos-${var.talos_version}-${talos_image_factory_schematic.this.id}-oracle-arm64.oci"
+  image_object_name = "talos-${var.talos_version}-${talos_image_factory_schematic.this.id}-oracle-arm64.qcow2"
 
   staged_image_uri = local.stage_local_upload ? format(
     "https://objectstorage.%s.oraclecloud.com/n/%s/b/%s/o/%s",
@@ -121,21 +118,27 @@ resource "oci_core_image" "talos" {
   compartment_id = var.compartment_ocid
   display_name   = local.image_display_name
 
-  # launch_mode deliberately omitted: the .oci archive's
-  # image_metadata.json carries externalLaunchOptions with the full
-  # Talos-prescribed block. When present, OCI auto-detects the archive
-  # on import and pins UEFI_64 + fully-paravirtualized virtio as the
-  # image's defaults. Setting launch_mode here would override that
-  # auto-detection and land the wrong defaults.
+  # launch_mode = PARAVIRTUALIZED makes OCI set the image's default
+  # launchOptions to fully-paravirtualized virtio (bootVolumeType,
+  # networkType, remoteDataVolumeType all PARAVIRTUALIZED). Talos
+  # arm64 expects this — virtio-scsi presents the boot volume at
+  # /dev/sda, virtio-net brings up eth0. Without it OCI defaults
+  # bootVolumeType to ISCSI and Talos boot loops on
+  # `lstat /dev/sda: no such file or directory`, then iPXE SAN boot
+  # fails (Talos qcow2 isn't a standard distro EFI image with shim).
+  #
+  # The earlier .oci archive approach (qcow2 + image_metadata.json
+  # with externalLaunchOptions) was supposed to set the same options,
+  # but OCI's CreateImage doesn't actually read the archive metadata
+  # — verified by `oci compute instance get --query launch-options`
+  # showing boot-volume-type: ISCSI on the resulting instance. The
+  # provider's launch_mode argument is the only path that works.
+  launch_mode = "PARAVIRTUALIZED"
+
   image_source_details {
-    source_type = "objectStorageUri"
-    source_uri  = local.image_source_uri
-    # source_image_type intentionally omitted. Setting it to "QCOW2"
-    # tells OCI to treat the object as a raw qcow2 and ignore any
-    # wrapping archive, which prevents CreateImage from reading the
-    # `.oci` archive's image_metadata.json. With no source_image_type
-    # OCI auto-detects archive vs. raw and pulls launchOptions from
-    # the embedded metadata when it finds one.
+    source_type       = "objectStorageUri"
+    source_uri        = local.image_source_uri
+    source_image_type = "QCOW2"
   }
 
   # Must wait for the staged object to be uploaded before CreateImage

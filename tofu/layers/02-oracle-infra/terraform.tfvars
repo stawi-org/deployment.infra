@@ -6,20 +6,18 @@ cluster_endpoint = "https://cp.antinvestor.com:6443"
 
 age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt"
 
-# Bump to force a fresh OCI custom image. Driven through scripts/
-# oci-image-create-or-find.sh, which creates with --launch-mode CUSTOM
-# and the explicit --launch-options block Talos arm64 needs (UEFI_64,
-# fully-paravirtualized virtio, pvEncryption). Gen<N> is the image
-# display_name suffix, so bumping it makes the find-or-create probe
-# miss and force a fresh CreateImage.
-force_image_generation = 4
+# Bump to force a fresh OCI custom image. Gen<N> is the image
+# display_name suffix; bumping replaces the resource. The image
+# now uses launch_mode = "PARAVIRTUALIZED" to pin bootVolumeType /
+# networkType / remoteDataVolumeType — confirmed via serial console
+# that gen4 (which omitted launch_mode) had bootVolumeType=ISCSI and
+# Talos couldn't find /dev/sda.
+force_image_generation = 5
 
-# Force recreate of oci-bwire-node-1: previous apply changed
-# launch_options.network_type from VFIO to PARAVIRTUALIZED in-place,
-# OCI accepted the API call but didn't actually rebuild the VNIC.
-# Result: the running VM still has VFIO and is unreachable on every
-# port. Bumping forces destroy+create on next apply with the new NIC
-# type live from launch.
+# Force recreate of oci-bwire-node-1 alongside the image bump. The
+# instance's `source_id` is not ForceNew in the OCI provider, so a
+# new image OCID would otherwise plan as in-place update and OCI 400s
+# on incompatible boot volume types between old and new image.
 per_node_force_recreate_generation = {
-  "oci-bwire-node-1" = 1
+  "oci-bwire-node-1" = 2
 }
