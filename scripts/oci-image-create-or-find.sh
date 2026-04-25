@@ -73,11 +73,19 @@ if [[ -n "$existing" && "$existing" != "null" ]]; then
   exit 0
 fi
 
-# 2. CreateImage via --from-json. The CreateImageDetails body
-# accepts launchOptions when launchMode=CUSTOM, even though it's
-# not in the published API reference — the API errors with
-# "launchOptions must be provided" if you set CUSTOM without it.
+# 2. CreateImage via raw-request. The OCI CLI's `compute image
+# create --from-json` silently strips launchOptions (it's not in the
+# CLI's documented schema), so the API rejects with "launchOptions
+# must be provided when using CUSTOM launchMode". `oci raw-request`
+# POSTs the JSON verbatim — launchOptions reaches the API and pins
+# UEFI_64 + paravirt virtio at image-create time.
 echo "::notice::creating OCI image $DISPLAY_NAME from $SOURCE_URI" >&2
+
+REGION=$(awk -v p="[$OCI_PROFILE]" '$0==p{f=1;next} /^\[/{f=0} f && /^region[[:space:]]*=/{sub(/.*=[[:space:]]*/, ""); print; exit}' "$HOME/.oci/config")
+if [[ -z "$REGION" ]]; then
+  echo "::error::could not parse region for profile $OCI_PROFILE from ~/.oci/config" >&2
+  exit 1
+fi
 
 payload=$(jq -nc \
   --arg comp "$COMPARTMENT" \
@@ -102,19 +110,15 @@ payload=$(jq -nc \
     }
   }')
 
-tmp=$(mktemp --suffix=.json)
-trap 'rm -f "$tmp"' EXIT
-printf '%s' "$payload" > "$tmp"
-
 rc=0
-created=$(oci compute image create \
-  --from-json "file://$tmp" \
-  --wait-for-state   AVAILABLE \
-  --max-wait-seconds 1200 \
+created=$(oci raw-request \
+  --http-method POST \
+  --target-uri "https://iaas.${REGION}.oraclecloud.com/20160918/images" \
+  --request-body "$payload" \
   2>&1) || rc=$?
 
 if [[ $rc -ne 0 ]]; then
-  echo "::error::oci compute image create failed (rc=$rc)" >&2
+  echo "::error::oci raw-request CreateImage failed (rc=$rc)" >&2
   echo "--- payload ---" >&2
   printf '%s\n' "$payload" >&2
   echo "--- CLI output ---" >&2
@@ -126,6 +130,27 @@ ocid=$(jq -r '.data.id' <<<"$created")
 if [[ -z "$ocid" || "$ocid" == "null" ]]; then
   echo "::error::CreateImage returned no OCID. Response was:" >&2
   printf '%s\n' "$created" >&2
+  exit 1
+fi
+
+# Wait for AVAILABLE — raw-request returns immediately after API
+# acknowledges, but image import takes 5-10 min. Poll explicitly.
+echo "::notice::waiting for image $ocid to reach AVAILABLE" >&2
+for i in $(seq 1 80); do
+  state=$(oci compute image get --image-id "$ocid" --query 'data."lifecycle-state"' --raw-output 2>/dev/null || true)
+  echo "  [$i] state=$state" >&2
+  case "$state" in
+    AVAILABLE) break ;;
+    FAILED|DELETED|DELETING)
+      echo "::error::image $ocid landed in $state" >&2
+      exit 1
+      ;;
+  esac
+  sleep 15
+done
+state=$(oci compute image get --image-id "$ocid" --query 'data."lifecycle-state"' --raw-output)
+if [[ "$state" != "AVAILABLE" ]]; then
+  echo "::error::image $ocid still $state after wait" >&2
   exit 1
 fi
 
