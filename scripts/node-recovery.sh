@@ -107,7 +107,7 @@ case "$ACTION" in
   reapply)
     # Pull the per-node config we last wrote to R2 at
     # <provider>/<account>/<talos_version>/<node_key>.yaml and re-apply.
-    TALOS_VERSION=$(awk -F'"' '/^talos_version[[:space:]]*=/ {print $2; exit}' tofu/shared/versions.auto.tfvars)
+    TALOS_VERSION=$(jq -r '.talos_version' tofu/shared/versions.auto.tfvars.json)
     # Recover the account from the node_key: convention is that the
     # account is embedded in the operator-declared node_key. Simpler:
     # search all accounts under the provider for a matching key.

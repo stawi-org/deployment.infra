@@ -46,7 +46,7 @@ jobs:
       - name: Install talosctl
         run: |
           set -euo pipefail
-          TALOS_VERSION=$(awk -F'"' '/^talos_version[[:space:]]*=/ {print $2; exit}' tofu/shared/versions.auto.tfvars)
+          TALOS_VERSION=$(jq -r '.talos_version' tofu/shared/versions.auto.tfvars.json)
           curl -fsSL "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64" \
             -o /usr/local/bin/talosctl
           chmod +x /usr/local/bin/talosctl

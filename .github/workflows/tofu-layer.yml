@@ -166,9 +166,9 @@ jobs:
             echo "::notice::no oracle accounts in inventory; skipping OCI image stage"
             exit 0
           fi
-          TALOS_VERSION=$(awk -F'"' '/^talos_version[[:space:]]*=/ {print $2; exit}' tofu/shared/versions.auto.tfvars)
-          if [[ -z "$TALOS_VERSION" ]]; then
-            echo "::error::could not read talos_version from tofu/shared/versions.auto.tfvars"
+          TALOS_VERSION=$(jq -r '.talos_version' tofu/shared/versions.auto.tfvars.json)
+          if [[ -z "$TALOS_VERSION" || "$TALOS_VERSION" == "null" ]]; then
+            echo "::error::could not read talos_version from tofu/shared/versions.auto.tfvars.json"
             exit 1
           fi
           SCHEMATIC_ID=$(curl -fsSL -X POST https://factory.talos.dev/schematics \
