@@ -5,6 +5,9 @@ output "region" { value = contabo_instance.this.region }
 output "ipv4" { value = local.ipv4 }
 output "ipv6" { value = local.ipv6 }
 output "account_key" { value = var.account_key }
+output "image_apply_generation" {
+  value = md5("${contabo_instance.this.id}:${var.force_reinstall_generation}")
+}
 
 output "node" {
   description = "Node contract consumed by layer 03. Schema identical to modules/node-oracle."

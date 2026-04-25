@@ -41,48 +41,6 @@ jobs:
         with:
           tofu_version: "1.10.0"
 
-      - name: Install seed-step deps (PyYAML, jq, uuidgen, sops, oci-cli)
-        if: inputs.layer == '01-contabo-infra' || inputs.layer == '02-oracle-infra' || inputs.layer == '02-onprem-infra'
-        run: |
-          set -euo pipefail
-          python3 -m pip install --user PyYAML >/dev/null
-          if ! command -v jq >/dev/null;      then sudo apt-get install -y jq;            fi
-          if ! command -v uuidgen >/dev/null; then sudo apt-get install -y uuid-runtime;  fi
-          if ! command -v sops >/dev/null; then
-            SOPS_VERSION="v3.11.0"
-            curl -fsSL -o /tmp/sops "https://github.com/getsops/sops/releases/download/${SOPS_VERSION}/sops-${SOPS_VERSION}.linux.amd64"
-            sudo install -m 0755 /tmp/sops /usr/local/bin/sops
-            rm /tmp/sops
-          fi
-          sops --version --disable-version-check
-
-      - name: Install oci-cli (for OCI discovery during seed)
-        if: inputs.layer == '02-oracle-infra'
-        run: |
-          set -euo pipefail
-          if ! command -v oci >/dev/null; then
-            python3 -m pip install --user oci-cli >/dev/null
-          fi
-          oci --version
-
-      - name: Seed R2 inventory (one-time bootstrap)
-        if: inputs.layer == '01-contabo-infra' || inputs.layer == '02-oracle-infra' || inputs.layer == '02-onprem-infra'
-        env:
-          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_EC2_METADATA_DISABLED: "true"
-          R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ENDPOINT_URL:       https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
-          SOPS_AGE_KEY:          ${{ secrets.SOPS_AGE_KEY }}
-          SOPS_AGE_RECIPIENTS:   ${{ vars.SOPS_AGE_RECIPIENTS }}
-        run: |
-          set -euo pipefail
-          # Always runs; seed-orchestrator.py is idempotent — it sources
-          # from production/config/ (operator-authored) and rewrites
-          # production/inventory/ per account. Safe to re-run on every
-          # workflow invocation. Pulls in any config changes automatically.
-          python3 scripts/seed-orchestrator.py
-
       - name: Sync R2 inventory to /tmp/inventory/ (node-state module reads from here)
         if: inputs.layer == '01-contabo-infra' || inputs.layer == '02-oracle-infra' || inputs.layer == '02-onprem-infra' || inputs.layer == '03-talos'
         env:
@@ -111,6 +69,47 @@ jobs:
           rm /tmp/talosctl
           talosctl version --client
 
+      - name: Pre-resolve cp.<zone> into /etc/hosts
+        if: inputs.layer == '03-talos'
+        # Talos provider connects to cp.<zone> for both `node` and
+        # `endpoint` (round-robin DNS — every CP carries cp.<zone> in
+        # its certSANs). gRPC uses the system resolver, which on
+        # GitHub runners goes through systemd-resolved (127.0.0.53)
+        # and has been observed to time out under load. Pre-resolve
+        # against Cloudflare (1.1.1.1) and pin the answer in
+        # /etc/hosts so subsequent gRPC dials skip DNS entirely.
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq dnsutils
+          for host in cp.antinvestor.com cp.stawi.org; do
+            ips=$(dig +short +time=5 +tries=2 @1.1.1.1 "$host" A | head -n3)
+            if [[ -n "$ips" ]]; then
+              # Pin the first answer — round-robin still works because
+              # every CP has cp.<zone> in SAN. /etc/hosts only needs
+              # ONE address; if it's unreachable the dial fails fast.
+              ip=$(echo "$ips" | head -n1)
+              echo "$ip $host" | sudo tee -a /etc/hosts
+            else
+              echo "::warning::no A records for $host on 1.1.1.1" >&2
+            fi
+          done
+          grep -E "cp\.(antinvestor|stawi)" /etc/hosts || true
+
+      - name: Install OCI CLI
+        if: inputs.layer == '02-oracle-infra'
+        # Required by scripts/oci-image-create-or-find.sh, called via
+        # data.external in modules/oracle-account-infra/image.tf —
+        # the only path to set launchOptions at CreateImage time
+        # since the tofu provider's launch_options is Computed-only.
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq pipx
+          pipx install oci-cli
+          sudo ln -sf "$HOME/.local/bin/oci" /usr/local/bin/oci
+          oci --version
+
       - name: OCI workload-identity federation
         if: inputs.layer == '02-oracle-infra'
         env:
@@ -132,6 +131,44 @@ jobs:
             echo "$AUTH_JSON" > /tmp/oci_auth_accounts.json
             scripts/configure-oci-wif.sh /tmp/oci_auth_accounts.json
           fi
+
+      - name: Download Talos OCI qcow2 for staging
+        if: inputs.layer == '02-oracle-infra'
+        # Plain qcow2 download. The tofu oci_core_image resource sets
+        # launch_mode = PARAVIRTUALIZED which makes OCI pin the image's
+        # default launchOptions to fully-paravirtualized virtio
+        # (bootVolumeType, networkType, remoteDataVolumeType all
+        # PARAVIRTUALIZED). No archive wrapping needed.
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(/tmp/inventory/oracle/*/auth.yaml)
+          if (( ${#files[@]} == 0 )); then
+            echo "::notice::no oracle accounts in inventory; skipping OCI image stage"
+            exit 0
+          fi
+          TALOS_VERSION=$(awk -F'"' '/^talos_version[[:space:]]*=/ {print $2; exit}' tofu/shared/versions.auto.tfvars)
+          if [[ -z "$TALOS_VERSION" ]]; then
+            echo "::error::could not read talos_version from tofu/shared/versions.auto.tfvars"
+            exit 1
+          fi
+          SCHEMATIC_ID=$(curl -fsSL -X POST https://factory.talos.dev/schematics \
+            -H "Content-Type: application/yaml" \
+            --data-binary @tofu/shared/schematic.yaml | jq -r '.id')
+          if [[ -z "$SCHEMATIC_ID" || "$SCHEMATIC_ID" == "null" ]]; then
+            echo "::error::failed to resolve Talos schematic id"
+            exit 1
+          fi
+          mkdir -p /tmp/talos-oci
+          QCOW2="/tmp/talos-oci/talos-${TALOS_VERSION}-${SCHEMATIC_ID}-oracle-arm64.qcow2"
+          if [[ ! -s "$QCOW2" ]]; then
+            curl -fsSL -o "$QCOW2" \
+              "https://factory.talos.dev/image/${SCHEMATIC_ID}/${TALOS_VERSION}/oracle-arm64.qcow2"
+            echo "downloaded $(stat -c%s "$QCOW2") byte qcow2"
+          else
+            echo "already present, reusing"
+          fi
+          echo "TF_VAR_talos_qcow2_local_path=$QCOW2" >> "$GITHUB_ENV"
 
       - name: Clear stale state lock
         if: inputs.mode == 'plan' || inputs.mode == 'apply'

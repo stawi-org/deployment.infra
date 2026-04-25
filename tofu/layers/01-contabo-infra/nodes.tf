@@ -21,9 +21,11 @@ module "nodes" {
   contabo_api_user      = each.value.account.auth.oauth2_user
   contabo_api_password  = each.value.account.auth.oauth2_pass
 
-  # Pass-through. Bump at the layer-01 level (TF_VAR_force_reinstall_generation
-  # or terraform.tfvars) to force a cluster-wide disk-wipe reinstall.
-  force_reinstall_generation = var.force_reinstall_generation
+  # Effective generation = cluster-wide baseline + per-node override.
+  # Bumping the cluster-wide variable wipes every CP in parallel;
+  # bumping an entry in var.per_node_force_reinstall_generation wipes
+  # only that node. See variables.tf for the surgical-recovery flow.
+  force_reinstall_generation = var.force_reinstall_generation + lookup(var.per_node_force_reinstall_generation, each.key, 0)
 
   providers = { contabo = contabo.account[each.value.account_key] }
 }

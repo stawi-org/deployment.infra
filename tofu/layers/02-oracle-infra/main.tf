@@ -1,19 +1,11 @@
 # tofu/layers/02-oracle-infra/main.tf
-data "terraform_remote_state" "secrets" {
-  backend = "s3"
-  config = {
-    bucket                      = "cluster-tofu-state"
-    key                         = "production/00-talos-secrets.tfstate"
-    region                      = "auto"
-    endpoints                   = { s3 = "https://${var.r2_account_id}.r2.cloudflarestorage.com" }
-    use_path_style              = true
-    skip_credentials_validation = true
-    skip_metadata_api_check     = true
-    skip_region_validation      = true
-    skip_requesting_account_id  = true
-    skip_s3_checksum            = true
-  }
-}
+#
+# This layer provisions OCI infrastructure (VCN, subnets, security
+# lists, instances, custom Talos image). It does NOT generate or push
+# Talos machine configs — OCI nodes boot into maintenance mode (no
+# user_data) and layer 03 owns all cluster-level configuration via
+# talos_machine_configuration_apply with insecure-mode auto-fallback,
+# the same flow Contabo + onprem use.
 
 locals {
   accounts_manifest = yamldecode(file("${path.module}/../../shared/accounts.yaml"))
@@ -39,9 +31,6 @@ locals {
   oracle_nodes_from_module = {
     for k, mod in module.oracle_account_state : k => try(mod.nodes.nodes, {})
   }
-  oracle_state_from_module = {
-    for k, mod in module.oracle_account_state : k => try(mod.state.nodes, {})
-  }
 
   oci_accounts_effective = {
     for k in local.oracle_account_keys : k => merge(
@@ -59,13 +48,20 @@ locals {
 }
 
 # Each oci_accounts entry gets its own provider alias that reads auth from R2.
-# For local dev without WIF, the config_file_profile fallback is used.
+# config_file_profile = each.key because configure-oci-wif.sh names the
+# ~/.oci/config profile after the account's R2 directory (which IS the
+# account_key). Honoring a config_file_profile field from auth.yaml
+# caused a rename-trap: after renaming the R2 directory, the stale
+# profile name inside auth.yaml pointed at the pre-rename profile and
+# the provider failed to authenticate. Use each.key as the single source
+# of truth and let operators rename the R2 directory + reupload if they
+# need a different name.
 provider "oci" {
   for_each            = local.oci_provider_accounts
   alias               = "account"
   tenancy_ocid        = try(local.oracle_auth_from_module[each.key].tenancy_ocid, null)
   region              = try(local.oracle_auth_from_module[each.key].region, null)
-  config_file_profile = try(local.oracle_auth_from_module[each.key].config_file_profile, each.key)
+  config_file_profile = each.key
   auth                = try(local.oracle_auth_from_module[each.key].auth_method, "SecurityToken")
 }
 
@@ -83,11 +79,10 @@ module "oracle_account" {
   labels                               = try(each.value.labels, {})
   annotations                          = try(each.value.annotations, {})
   bastion_client_cidr_block_allow_list = try(each.value.bastion_client_cidr_block_allow_list, ["0.0.0.0/0"])
-  cluster_name                         = var.cluster_name
-  cluster_endpoint                     = var.cluster_endpoint
   talos_version                        = var.talos_version
+  talos_image_source_uri               = try(var.talos_image_source_uris[each.key], null)
+  talos_qcow2_local_path               = var.talos_qcow2_local_path
   force_image_generation               = var.force_image_generation
-  kubernetes_version                   = var.kubernetes_version
-  machine_secrets                      = data.terraform_remote_state.secrets.outputs.machine_secrets
+  per_node_force_recreate_generation   = var.per_node_force_recreate_generation
   shared_patches_dir                   = "${path.module}/../../shared/patches"
 }

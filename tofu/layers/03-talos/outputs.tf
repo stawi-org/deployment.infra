@@ -6,22 +6,24 @@ data "talos_cluster_kubeconfig" "this" {
   # kube-apiserver takes 60-180s to start after bootstrap returns.
   depends_on           = [null_resource.wait_apiserver]
   client_configuration = data.terraform_remote_state.secrets.outputs.client_configuration
-  node                 = local.bootstrap_node.ipv4
-  endpoint             = local.bootstrap_node.ipv4
+  node                 = try(local.cp_apply_target[local.bootstrap_node_key], local.bootstrap_node.ipv4)
+  endpoint             = try(local.cp_apply_target[local.bootstrap_node_key], local.bootstrap_node.ipv4)
 }
 
 data "talos_client_configuration" "this" {
   cluster_name         = var.cluster_name
   client_configuration = data.terraform_remote_state.secrets.outputs.client_configuration
-  endpoints            = [for n in local.controlplane_nodes : n.ipv4]
-  nodes                = local.all_node_addresses
+  # Endpoints + nodes published as the round-robin DNS for every zone
+  # — DNS resolution at use time picks any reachable CP, and every CP
+  # carries cp.<zone> in its certSANs so TLS validates. No node IPs.
+  endpoints = [for z in var.cp_dns_zones : "${z.cp_label}.${z.zone}"]
+  nodes     = [for z in var.cp_dns_zones : "${z.cp_label}.${z.zone}"]
 }
 
-# Structured kubeconfig — downstream layers consume this directly rather than
-# yamldecode-ing the raw string. The `host` field is overridden to the
-# DNS-managed cluster endpoint so downstream consumers fail over across
-# CPs (talos_cluster_kubeconfig returns whichever single CP IP the
-# talos API gives us, which may be mid-reboot during config rollouts).
+# Structured kubeconfig — downstream layers consume this directly rather
+# than yamldecode-ing the raw string. The `host` field uses the
+# round-robin DNS endpoint so flux/downstream can connect via any CP
+# without referencing node IPs.
 output "kubeconfig" {
   description = "Structured kubeconfig client configuration (host, ca_certificate, client_certificate, client_key). Consumed by layer 04."
   value = merge(
@@ -61,7 +63,7 @@ output "generic_worker_config" {
 }
 
 output "cp_machine_configs" {
-  description = "Map of controlplane node name → rendered machine config. Useful for side-by-side diffing or manual reapplies."
+  description = "Map of control-plane node name → rendered machine config. Useful for side-by-side diffing or manual reapplies."
   value       = { for k, c in data.talos_machine_configuration.cp : k => c.machine_configuration }
   sensitive   = true
 }

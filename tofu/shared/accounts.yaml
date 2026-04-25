@@ -1,14 +1,9 @@
 # Declares which provider/account keys exist. The node-state module uses
 # these to know which R2 keys to read. Edit this file to onboard a new
 # account; the inventory tree is seeded separately by seed-inventory.sh.
-#
-# NOTE: oracle/stawi-bwire is currently disabled — the WIF session token
-# authenticates but the OCI IAM identity has no policy to create Core
-# resources (CreateImage, CreateVcn return 404-NotAuthorizedOrNotFound).
-# Re-enable once an OCI policy grants the WIF principal the necessary
-# permissions in compartment ocid1.tenancy.oc1..aaaaaaaahz7ibvtyuauk...
 contabo:
-  - stawi-contabo
-oracle: []
+  - bwire
+oracle:
+  - bwire
 onprem:
-  - savannah-hq
+  - tindase

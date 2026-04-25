@@ -1,0 +1,26 @@
+---
+# Narrow apid-ingress (Talos API :50000) to a CIDR allow-list. Overlays
+# network.yaml's default 0.0.0.0/0 + ::/0 by re-using the same
+# NetworkRuleConfig name (Talos config-merge replaces by name).
+#
+# kube-apiserver (:6443) stays open — operator access is gated by
+# auth (kubelogin → GitHub OIDC, planned), not network ACLs.
+
+apiVersion: v1alpha1
+kind: NetworkRuleConfig
+name: apid-ingress
+portSelector:
+  ports:
+    - 50000
+  protocol: tcp
+ingress:
+%{ if length(talos_api_cidrs) > 0 ~}
+%{ for c in talos_api_cidrs ~}
+  - subnet: ${c}
+%{ endfor ~}
+%{ else ~}
+  # Fail-open: api.github.com/meta unreachable AND no admin_cidrs set.
+  # Better to stay reachable than lock the cluster out of its own CI.
+  - subnet: 0.0.0.0/0
+  - subnet: ::/0
+%{ endif ~}

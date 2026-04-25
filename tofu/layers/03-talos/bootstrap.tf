@@ -1,31 +1,53 @@
 # tofu/layers/03-talos/bootstrap.tf
 
-# When any CP's image_apply_generation bumps (= layer 01's ensure_image
-# called Contabo's reinstall action), etcd data on that node was wiped.
-# In the all-CPs-together case — which is what happens on a Talos
-# version bump under the current install-flow policy — the cluster has
-# no quorum left and must be re-bootstrapped. Cascading bootstrap
-# off this hash forces that.
-#
-# Caveat: this also fires on single-CP reinstalls where we'd rather do
-# an etcd-preserving rolling upgrade. That path (talosctl upgrade with
-# drain/uncordon) isn't wired yet; for now we assume reinstall = full
-# cluster rebuild, matching the initial-install / disaster-recovery
-# workflows. Revisit when we add rolling-upgrade support.
-resource "terraform_data" "bootstrap_trigger" {
-  input = {
-    gens = { for k, v in local.controlplane_nodes : k => v.image_apply_generation }
+# Drop the stale terraform_data.bootstrap_trigger from state without
+# deleting any external resource (terraform_data has none). Removed
+# because its input schema changes were cascading replace_triggered_by
+# onto talos_machine_bootstrap and re-bootstrapping an already-joined
+# cluster. See the block above talos_machine_bootstrap below for the
+# follow-up plan. One-shot — safe to delete after a successful apply.
+removed {
+  from = terraform_data.bootstrap_trigger
+  lifecycle {
+    destroy = false
   }
 }
 
+# Import block: adopts the existing bootstrap into tofu state without
+# contacting Talos. Required because commit 13b5abf's OCI rename
+# changed bootstrap_trigger.input keys, which fired replace_triggered_by
+# and destroyed talos_machine_bootstrap.this from state. The cluster is
+# still bootstrapped (etcd data present on api-1) — this just puts
+# tofu's tracking record back. After the first apply following this
+# commit, the block is a no-op.
+import {
+  to = talos_machine_bootstrap.this
+  id = "machine_bootstrap"
+}
+
+# Re-fire the Bootstrap RPC when ALL Contabo CPs were just wiped.
+# Layer 01's force_reinstall_generation is the cluster-wide reinstall
+# counter — bumping it re-images every Contabo CP in parallel and
+# leaves etcd empty on every CP. After that, Talos's Bootstrap RPC
+# must fire again to seed etcd. Per-node reinstalls
+# (per_node_force_reinstall_generation) deliberately don't bump this
+# output — they add a healthy node to a quorate cluster instead.
+resource "terraform_data" "cluster_reinstall_marker" {
+  triggers_replace = data.terraform_remote_state.contabo.outputs.cluster_reinstall_generation
+}
+
 resource "talos_machine_bootstrap" "this" {
-  depends_on           = [talos_machine_configuration_apply.cp]
-  node                 = local.bootstrap_node.ipv4
-  endpoint             = local.bootstrap_node.ipv4
+  depends_on = [null_resource.apply_node_config]
+  # Bootstrap targets ONE specific CP (the etcd seed). Use that node's
+  # per-CP DNS so TLS validates against a SAN whether the CP's IP is
+  # on-NIC (Contabo) or NAT'd (OCI). Falls back to its IPv4 if no DNS
+  # zone is configured.
+  node                 = try(local.cp_apply_target[local.bootstrap_node_key], local.bootstrap_node.ipv4)
+  endpoint             = try(local.cp_apply_target[local.bootstrap_node_key], local.bootstrap_node.ipv4)
   client_configuration = data.terraform_remote_state.secrets.outputs.client_configuration
 
   lifecycle {
-    replace_triggered_by = [terraform_data.bootstrap_trigger]
+    replace_triggered_by = [terraform_data.cluster_reinstall_marker]
   }
 }
 
@@ -43,49 +65,41 @@ resource "null_resource" "wait_apiserver" {
   depends_on = [talos_machine_bootstrap.this]
 
   triggers = {
-    bootstrap_id = talos_machine_bootstrap.this.id
-    # Re-probe whenever anything up-chain forces a rolling restart of
-    # apiservers. Without this, wait_apiserver is cached-happy from a
-    # prior apply and flux layer connect-refuses on a flapping CP.
-    cp_config_hashes = jsonencode({ for k, c in talos_machine_configuration_apply.cp : k => c.id })
+    bootstrap_id   = talos_machine_bootstrap.this.id
+    node_apply_ids = jsonencode({ for k, n in null_resource.apply_node_config : k => n.id })
   }
 
   provisioner "local-exec" {
-    # Default interpreter is /bin/sh — which is dash on Ubuntu and does
-    # NOT support `[[ ... ]]`. Without this override every iteration of
-    # the loop fails silently on "[[: not found".
     interpreter = ["bash", "-c"]
-    command     = <<-EOT
-      set -e
-      # Probe EACH CP's apiserver individually — hitting the shared DNS
-      # name lets curl pick an already-warm CP while a different one
-      # (which flux may dial next) is still rebooting. We need all 3 to
-      # answer before downstream kubernetes-provider calls are safe.
-      CPS=(${join(" ", [for n in local.controlplane_nodes : n.ipv4])})
-      echo "probing apiservers on: $${CPS[*]}"
-      for i in $(seq 1 90); do
-        ALL_OK=true
+    # Cap: 10 min. After a fresh bootstrap each CP runs through ISO
+    # boot → install → reboot → kubelet pulls + starts kube-apiserver
+    # static pod. Image pulls + scheduler+controller-manager warmup
+    # typically takes 5-8 min from talosctl bootstrap returning. After
+    # the cluster is up, idempotent runs see all CPs serving instantly
+    # and exit on iteration 1.
+    #
+    # Pass when ≥1 CP serves /healthz (any HTTP code from a TLS
+    # endpoint = apiserver up). Downstream layer 04 (flux) talks to
+    # the round-robin / single-host endpoint, so one healthy CP is
+    # sufficient to unblock it. The other CPs catch up shortly after.
+    command = <<-EOT
+      set -uo pipefail
+      CPS=(${join(" ", [for n in local.direct_controlplane_nodes : n.ipv4])})
+      N="$${#CPS[@]}"
+      (( N == 0 )) && { echo "no CPs to wait for"; exit 0; }
+      for i in $(seq 1 60); do
+        OK=0; STATUSES=()
         for IP in "$${CPS[@]}"; do
-          CODE=$(curl -sk --max-time 5 --resolve "cp.antinvestor.com:6443:$IP" \
+          CODE=$(curl -sk --max-time 3 --resolve "cp.antinvestor.com:6443:$IP" \
             -o /dev/null -w '%%{http_code}' \
             "https://cp.antinvestor.com:6443/healthz" 2>/dev/null || echo 000)
-          # Any numeric HTTP response proves TLS termination works; 401
-          # from anonymous-auth-off is fine because the kubernetes
-          # provider will authenticate with the client cert.
-          if [[ "$CODE" =~ ^[0-9][0-9][0-9]$ && "$CODE" != "000" ]]; then
-            echo "  [attempt $i] $IP: HTTP $CODE"
-          else
-            echo "  [attempt $i] $IP: not ready (code=$CODE)"
-            ALL_OK=false
-          fi
+          [[ "$CODE" =~ ^[1-5][0-9][0-9]$ ]] && { OK=$((OK+1)); STATUSES+=("$IP=$CODE"); } || STATUSES+=("$IP=down")
         done
-        if [[ "$ALL_OK" == "true" ]]; then
-          echo "all $${#CPS[@]} apiservers responding — downstream calls safe"
-          exit 0
-        fi
+        echo "[$i/60] healthy=$${OK}/$${N} ($${STATUSES[*]})"
+        (( OK >= 1 )) && exit 0
         sleep 10
       done
-      echo "not all apiservers reachable after 15 min"
+      echo "::error::no apiserver reached in 10 min — final: $${STATUSES[*]}"
       exit 1
     EOT
   }

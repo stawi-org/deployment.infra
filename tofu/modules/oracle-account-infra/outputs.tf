@@ -1,7 +1,7 @@
 # tofu/modules/oracle-account-infra/outputs.tf
 output "nodes" {
-  description = "Map of OCI node contracts from this account, keyed by globally-unique name."
-  value       = { for k, m in module.node : "${var.account_key}-${k}" => m.node }
+  description = "Map of OCI node contracts from this account, keyed by node_key as declared in inventory. Operators own key uniqueness across accounts — the keys already encode the account (e.g. oci-<acct>-node-1)."
+  value       = { for k, m in module.node : k => m.node }
 }
 
 output "nodes_state" {
@@ -28,9 +28,9 @@ output "vcn_id" {
 }
 
 output "bastion_sessions" {
-  description = "Per-node bastion port-forwarding session details. Keys are globally-unique node names."
+  description = "Per-node bastion port-forwarding session details. Keys match the node_key in inventory."
   value = {
-    for k, s in oci_bastion_session.node : "${var.account_key}-${k}" => {
+    for k, s in oci_bastion_session.node : k => {
       session_id     = s.id
       bastion_region = var.region
       target_ip      = module.node[k].node.ipv4
@@ -42,6 +42,6 @@ output "bastion_session_keys" {
   description = "Per-node SSH private keys for bastion sessions, PEM encoded. Sensitive."
   sensitive   = true
   value = {
-    for k, key in tls_private_key.bastion : "${var.account_key}-${k}" => key.private_key_pem
+    for k, key in tls_private_key.bastion : k => key.private_key_pem
   }
 }

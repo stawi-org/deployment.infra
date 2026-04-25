@@ -46,7 +46,4 @@ locals {
   contabo_nodes_from_module = {
     for k, mod in module.contabo_account_state : k => try(mod.nodes.nodes, {})
   }
-  contabo_state_from_module = {
-    for k, mod in module.contabo_account_state : k => try(mod.state.nodes, {})
-  }
 }

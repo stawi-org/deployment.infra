@@ -1,0 +1,55 @@
+# tofu/layers/01-contabo-infra/moves.tf
+#
+# Two rename generations layered via moved{} chains. Each block
+# survives indefinitely as a no-op once its "from" address is no
+# longer in state — they're kept as the audit trail.
+#
+#   Gen 1: kubernetes-controlplane-api-N → contabo-stawi-contabo-node-N
+#          (<provider>-<account>-node-N convention).
+#   Gen 2: stawi-contabo → bwire  (account rename).
+#          Node keys become contabo-bwire-node-N.
+#
+# Contabo's display_name is NOT ForceNew, so tofu will update it on
+# Contabo's side in-place on the next apply — no instance replacement.
+
+# --- Gen 1: node-key rename ------------------------------------------
+
+moved {
+  from = module.nodes["kubernetes-controlplane-api-1"]
+  to   = module.nodes["contabo-stawi-contabo-node-1"]
+}
+moved {
+  from = module.nodes["kubernetes-controlplane-api-2"]
+  to   = module.nodes["contabo-stawi-contabo-node-2"]
+}
+moved {
+  from = module.nodes["kubernetes-controlplane-api-3"]
+  to   = module.nodes["contabo-stawi-contabo-node-3"]
+}
+
+# --- Gen 2: account rename ------------------------------------------
+
+moved {
+  from = module.contabo_account_state["stawi-contabo"]
+  to   = module.contabo_account_state["bwire"]
+}
+moved {
+  from = module.contabo_nodes_writer["stawi-contabo"]
+  to   = module.contabo_nodes_writer["bwire"]
+}
+moved {
+  from = contabo_image.talos["stawi-contabo"]
+  to   = contabo_image.talos["bwire"]
+}
+moved {
+  from = module.nodes["contabo-stawi-contabo-node-1"]
+  to   = module.nodes["contabo-bwire-node-1"]
+}
+moved {
+  from = module.nodes["contabo-stawi-contabo-node-2"]
+  to   = module.nodes["contabo-bwire-node-2"]
+}
+moved {
+  from = module.nodes["contabo-stawi-contabo-node-3"]
+  to   = module.nodes["contabo-bwire-node-3"]
+}

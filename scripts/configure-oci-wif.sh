@@ -102,6 +102,8 @@ tenancy = ${tenancy}
 region = ${region}
 CFG
 
+  chmod 0600 "$HOME/.oci/config"
+
   echo "wrote ~/.oci/config profile [$profile]"
   echo "::endgroup::"
 done

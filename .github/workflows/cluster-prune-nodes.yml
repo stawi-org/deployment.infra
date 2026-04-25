@@ -1,0 +1,29 @@
+# Prune stale kubelet Node objects left behind by earlier naming
+# generations. Runs scripts/cluster-prune-nodes.sh which compares the
+# kube-apiserver's Node list against the current tofu inventory and
+# deletes NotReady Nodes that no longer appear in any layer's outputs.
+name: cluster-prune-nodes
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID:        ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY:    ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID:            ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ENDPOINT:              https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install kubectl
+        run: |
+          set -euo pipefail
+          curl -fsSLO https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl
+          sudo install -m 0755 kubectl /usr/local/bin/kubectl
+      - name: Prune stale Node objects
+        run: scripts/cluster-prune-nodes.sh

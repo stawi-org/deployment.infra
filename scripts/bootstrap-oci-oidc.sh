@@ -59,11 +59,19 @@ COMPARTMENT_OCID=""
 GH_REPO="antinvestor/deployments"
 GH_BRANCH="main"
 # Budget guardrail. Tofu provisioning only uses Always-Free A1 compute (cost
-# ~ $0), but a small budget gives early warning if anything paid creeps in.
-BUDGET_AMOUNT="${BUDGET_AMOUNT:-1}"      # USD per month
-# BUDGET_EMAIL: alert recipient. Defaults to bills@stawi.org (the org's
-# billing address). Override with --budget-email or env BUDGET_EMAIL=...
-BUDGET_EMAIL="${BUDGET_EMAIL:-bills@stawi.org}"
+# ~ $0), so the cap itself is mostly symbolic. Default is a random USD value
+# in [1, 20] picked per-run — the OCI Budgets API rounds up so any random
+# value in this range is a meaningful tripwire, and rotating it ensures
+# stale console state from a prior run can't fool the operator into thinking
+# the guardrail is in place when it isn't (every run yields a visible diff
+# in the OCI Console). Override with --budget-amount or env BUDGET_AMOUNT=N
+# when you want a stable, repeatable cap.
+BUDGET_AMOUNT="${BUDGET_AMOUNT:-$(shuf -i 1-20 -n 1)}"
+# BUDGET_EMAIL: alert recipient. If unset, defaults to `git config user.email`
+# of the operator running this script (the most common single-operator
+# convention). Override with --budget-email or env BUDGET_EMAIL=...
+# Fallback to empty (no alerts) only if neither is available.
+BUDGET_EMAIL="${BUDGET_EMAIL:-$(git config --global --get user.email 2>/dev/null || git config --get user.email 2>/dev/null || true)}"
 BUDGET_NAME="${BUDGET_NAME:-stawi-cluster-budget}"
 # Tofu/workflow-facing profile name. Defaults to a slugged form of the local
 # OCI CLI profile. It must match the key in the tofu oci_accounts map AND
@@ -183,6 +191,8 @@ DOMAIN_OCID=$(jq -r '.data[] | select(."display-name"=="Default") | .id' <<<"$DO
 [[ -z "$DOMAIN_OCID" || "$DOMAIN_OCID" == "null" ]] && DOMAIN_OCID=$(jq -r '.data[0].id' <<<"$DOMAIN_JSON")
 [[ -z "$DOMAIN_OCID" || "$DOMAIN_OCID" == "null" ]] && die "No active Identity Domain found"
 
+DOMAIN_NAME=$(jq -r --arg id "$DOMAIN_OCID" '.data[] | select(.id==$id) | ."display-name"' <<<"$DOMAIN_JSON")
+[[ -z "$DOMAIN_NAME" || "$DOMAIN_NAME" == "null" ]] && DOMAIN_NAME="Default"
 DOMAIN_URL=$(jq -r --arg id "$DOMAIN_OCID" '.data[] | select(.id==$id) | .url' <<<"$DOMAIN_JSON")
 # Normalise the domain URL with Python's urllib — strips trailing slash,
 # drops the default :443 port, enforces https scheme. gtrevorrow/oci-
@@ -222,15 +232,60 @@ say "Ensuring service user '$SERVICE_USER_NAME'"
 #   {"error":"unauthorized_client",
 #    "error_description":"User requesting is not a service user."}
 USER_EXT_SCHEMA="urn:ietf:params:scim:schemas:oracle:idcs:extension:user:User"
-USER_JSON=$("${OCI_CLI[@]}" identity-domains users list "${ID_ENDPOINT[@]}" \
-  --filter "userName eq \"$SERVICE_USER_NAME\"" \
-  --attributes "id,userName,${USER_EXT_SCHEMA}:serviceUser" \
-  --output json)
-USER_OCID=$(jq -r '.data.resources[0].id // empty' <<<"$USER_JSON")
-IS_SVC=$(jq -r --arg s "$USER_EXT_SCHEMA" '.data.resources[0]? | .[$s].serviceUser // false' <<<"$USER_JSON")
+# Look up the existing user by name. List-filter via SCIM is reliable for
+# discovery; flag detection is done in two passes (see below) so we never
+# delete a user just because we couldn't parse its serviceUser flag.
+USER_QUERY=$(printf '%s' "userName eq \"$SERVICE_USER_NAME\"" | jq -sRr @uri)
+USER_LIST_RAW=$("${OCI_CLI[@]}" raw-request \
+  --target-uri "${DOMAIN_URL}/admin/v1/Users?filter=${USER_QUERY}" \
+  --http-method GET --output json 2>/dev/null || echo '{"data":{"Resources":[]}}')
+USER_OCID=$(jq -r '(.data.Resources // .data.resources // [])[0].id // empty' <<<"$USER_LIST_RAW")
+
+# Default-SAFE: assume the existing user is OK unless we have positive
+# proof otherwise. Only flip to "definitely-not-svc" when JSON parsing
+# clearly returns serviceUser=false.  Ambiguous / missing key = leave it.
+USER_NEEDS_RECREATE="false"
+if [[ -n "$USER_OCID" ]]; then
+  # GET the specific user by OCID. Searching by ID returns the full record
+  # without SCIM `attributes=` filtering — every field the API stores comes
+  # back, so we can probe several possible key paths defensively.
+  USER_GET_RAW=$("${OCI_CLI[@]}" raw-request \
+    --target-uri "${DOMAIN_URL}/admin/v1/Users/${USER_OCID}" \
+    --http-method GET --output json 2>/dev/null || echo '{"data":{}}')
+  # Walk the entire response tree looking for any leaf key matching
+  # serviceUser / service-user / Service-User regardless of where OCI CLI
+  # buried it. Robust to the CLI's inconsistent key normalisation
+  # (camelCase->kebab, schema-URN flattening, etc.). The walk picks the
+  # first match anywhere in the tree.
+  IS_SVC=$(jq -r '
+    def walk(f): . as $in
+      | if type == "object" then reduce keys[] as $k ({}; . + {($k): ($in[$k] | walk(f))}) | f
+        elif type == "array" then map(walk(f)) | f
+        else f end;
+    [ .. | objects | to_entries[]?
+        | select(.key | ascii_downcase | gsub("[^a-z]"; "") == "serviceuser")
+        | .value
+    ] | first // "unknown" | tostring
+  ' <<<"$USER_GET_RAW")
+  # Diagnostic: print which JSON path holds the flag (useful to harden the
+  # JQ once we see the actual response shape from a live OCI tenancy).
+  if [[ "$IS_SVC" != "true" && "$IS_SVC" != "false" ]]; then
+    say "  serviceUser flag not found anywhere; dumping response keys for debug:"
+    jq -r '[.. | objects | to_entries[]? | .key] | unique | .[]' <<<"$USER_GET_RAW" 2>/dev/null \
+      | head -40 | sed 's/^/      key: /' >&2 || true
+  fi
+
+  if [[ "$IS_SVC" == "false" ]]; then
+    USER_NEEDS_RECREATE="true"
+  elif [[ "$IS_SVC" == "true" ]]; then
+    say "  user is already a service user — keeping"
+  else
+    say "  serviceUser flag indeterminate from API response — assuming OK (no destructive action)"
+  fi
+fi
 
 USER_RECREATED="false"
-if [[ -n "$USER_OCID" && "$IS_SVC" != "true" ]]; then
+if [[ "$USER_NEEDS_RECREATE" == "true" ]]; then
   warn "  existing user '$SERVICE_USER_NAME' is NOT a service user (serviceUser=$IS_SVC)"
   warn "  Deleting and recreating — serviceUser flag is immutable."
 
@@ -317,14 +372,42 @@ if [[ -z "$GROUP_OCID" ]]; then
     --members "[{\"type\":\"User\",\"value\":\"$USER_OCID\"}]" \
     --output json | jq -r '.data.id')
 else
-  IS_MEMBER=$("${OCI_CLI[@]}" identity-domains group get "${ID_ENDPOINT[@]}" --group-id "$GROUP_OCID" \
-    --output json | jq -r --arg u "$USER_OCID" '.data.members // [] | map(select(.value==$u)) | length')
-  if [[ "$IS_MEMBER" == "0" ]]; then
-    say "  adding service user"
-    "${OCI_CLI[@]}" identity-domains group patch "${ID_ENDPOINT[@]}" --group-id "$GROUP_OCID" \
-      --schemas '["urn:ietf:params:scim:api:messages:2.0:PatchOp"]' \
-      --operations "[{\"op\":\"add\",\"path\":\"members\",\"value\":[{\"type\":\"User\",\"value\":\"$USER_OCID\"}]}]" \
-      >/dev/null
+  # SCIM marks Group.members as returned=request — default GETs omit it.
+  # Without --attributes members the membership check ALWAYS sees length=0
+  # and 'add' runs every time. Worse, repeated 'adds' via the high-level
+  # CLI subcommand can silently no-op against IDCS, leaving the user
+  # outside the group while the script reports success — which manifests
+  # later as 404-NotAuthorizedOrNotFound on every CreateImage / CreateVcn.
+  is_member() {
+    "${OCI_CLI[@]}" identity-domains group get "${ID_ENDPOINT[@]}" --group-id "$GROUP_OCID" \
+      --attributes "members" --output json 2>/dev/null \
+      | jq -e --arg u "$USER_OCID" '.data.members // [] | any(.value==$u)' >/dev/null
+  }
+  if ! is_member; then
+    say "  adding service user (group missing user; patching)"
+    # Use raw-request so the JSON body reaches IDCS verbatim — the high-level
+    # `group patch` subcommand has been observed to drop the operation
+    # silently against some IDCS versions.
+    PATCH_BODY=$(cat <<JSON
+{
+  "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+  "Operations": [
+    {"op":"add","path":"members","value":[{"type":"User","value":"$USER_OCID"}]}
+  ]
+}
+JSON
+)
+    PATCH_RESP=$("${OCI_CLI[@]}" raw-request \
+      --target-uri "${DOMAIN_URL}/admin/v1/Groups/${GROUP_OCID}" \
+      --http-method PATCH --request-body "$PATCH_BODY" --output json 2>&1 || true)
+    if ! is_member; then
+      warn "  PATCH did not establish membership; raw response:"
+      printf '%s\n' "$PATCH_RESP" | head -c 800 >&2
+      die "Aborting — group membership PATCH silently failed."
+    fi
+    say "  ✓ user is now a member of $GROUP_NAME"
+  else
+    say "  ✓ user already a member of $GROUP_NAME"
   fi
 fi
 say "  group:   $GROUP_OCID"
@@ -333,25 +416,30 @@ say "  group:   $GROUP_OCID"
 # 4. IAM POLICY
 # =========================================================================
 say "Ensuring IAM policy '$POLICY_NAME'"
-# Permissions cover the resources tofu/modules/oracle-account-infra creates
-# end-to-end: VCN + subnets + security lists + bastion (network/bastion),
-# Talos custom image upload from a URL (instance-images +
-# compute-management-family for image import jobs), running instances and
-# their boot volumes (instance-family + volume-family). Without
-# instance-images + volume-family, layer 02 fails on first apply with
-# 404-NotAuthorizedOrNotFound on CreateImage / CreateBootVolume.
+# Single 'manage all-resources' grant in the compartment — gives the
+# service account full authority over everything tofu provisions
+# (VCN, instances, images, volumes, bastion, etc.) without having to
+# enumerate resource families and chase down 404-NotAuthorizedOrNotFound
+# on each missing one. The blast radius is bounded by COMPARTMENT_OCID
+# (typically the tenancy root for this project — that is intentional;
+# the service account is the cluster's own provisioner).
+# Tenancy-scoped reads cover tagging, compartment lookup, and budget
+# observation which can't live inside a single compartment.
+#
+# ID-FORMAT NOTE: identity-domains (IDCS-backed) Groups have a SCIM
+# resource id that is NOT a valid OCI policy principal. Policies written
+# as `Allow group id <SCIM_ID>` compile and store but evaluate to an
+# empty group → effective permissions = zero → every write returns
+# 404-NotAuthorizedOrNotFound even though the policy "looks correct."
+# The domain-qualified name form (`Allow group '<DOMAIN>'/'<GROUP>'`)
+# is resolved by IAM via name lookup within the identity domain and
+# avoids the ID problem entirely.
 POLICY_STMTS=$(cat <<EOF
 [
-  "Allow group id $GROUP_OCID to manage virtual-network-family       in compartment id $COMPARTMENT_OCID",
-  "Allow group id $GROUP_OCID to manage instance-family              in compartment id $COMPARTMENT_OCID",
-  "Allow group id $GROUP_OCID to manage instance-images              in compartment id $COMPARTMENT_OCID",
-  "Allow group id $GROUP_OCID to manage volume-family                in compartment id $COMPARTMENT_OCID",
-  "Allow group id $GROUP_OCID to manage compute-management-family    in compartment id $COMPARTMENT_OCID",
-  "Allow group id $GROUP_OCID to manage bastion-family               in compartment id $COMPARTMENT_OCID",
-  "Allow group id $GROUP_OCID to read   all-resources                in compartment id $COMPARTMENT_OCID",
-  "Allow group id $GROUP_OCID to use    tag-namespaces               in tenancy",
-  "Allow group id $GROUP_OCID to read   compartments                 in tenancy",
-  "Allow group id $GROUP_OCID to read   usage-budgets                in tenancy"
+  "Allow group '${DOMAIN_NAME}'/'${GROUP_NAME}' to manage all-resources                in compartment id $COMPARTMENT_OCID",
+  "Allow group '${DOMAIN_NAME}'/'${GROUP_NAME}' to use    tag-namespaces               in tenancy",
+  "Allow group '${DOMAIN_NAME}'/'${GROUP_NAME}' to read   compartments                 in tenancy",
+  "Allow group '${DOMAIN_NAME}'/'${GROUP_NAME}' to read   usage-budgets                in tenancy"
 ]
 EOF
 )
@@ -371,13 +459,41 @@ if [[ -z "$POLICY_OCID" ]]; then
 else
   say "  updating"
   # OCI CLI requires --version-date alongside --statements when updating.
-  # Setting version-date to today = effective from today.
-  "${OCI_CLI[@]}" iam policy update --policy-id "$POLICY_OCID" \
+  # Setting version-date to today = effective from today. Capture the
+  # full response so we can fail loudly if the update silently no-oped.
+  upd_out=$("${OCI_CLI[@]}" iam policy update --policy-id "$POLICY_OCID" \
     --statements "$POLICY_STMTS" \
     --version-date "$(date -u +%Y-%m-%d)" \
-    --force >/dev/null
+    --force --output json 2>&1) || true
+  if ! printf '%s' "$upd_out" | jq empty 2>/dev/null; then
+    warn "  policy update returned non-JSON; raw response:"
+    printf '%s\n' "$upd_out" | head -c 800 >&2
+    die "Aborting — policy update failed."
+  fi
 fi
 say "  policy:  $POLICY_OCID"
+
+# Verify the policy NOW contains every statement we intended. OCI policy
+# changes propagate within seconds for the policy itself, but the
+# UPST-bearer's effective permissions can lag a minute or two.
+POLICY_GET_JSON=$("${OCI_CLI[@]}" iam policy get --policy-id "$POLICY_OCID" --output json)
+CURRENT_STMTS=$(printf '%s' "$POLICY_GET_JSON" | jq -r '.data.statements[]?')
+say "  policy statements now in OCI:"
+printf '%s\n' "$CURRENT_STMTS" | sed 's/^/      /'
+
+# Verifier — confirm the broad grant landed. With a single 'manage
+# all-resources' statement there's nothing to enumerate; we just check
+# that the statement is present in the policy as-stored.
+all_resources_cnt=$(printf '%s' "$POLICY_GET_JSON" | jq -r \
+  '[.data.statements[]? | select(test("manage[[:space:]]+all-resources[[:space:]]+in[[:space:]]+compartment"; "i"))] | length' \
+  2>/dev/null || echo 0)
+if [[ "$all_resources_cnt" = "0" ]]; then
+  warn "  policy is MISSING the 'manage all-resources in compartment' grant."
+  warn "  the update API call may have rate-limited or silently dropped it."
+  warn "  re-run the script; if it persists, inspect via OCI Console → Identity → Policies."
+else
+  say "  ✓ 'manage all-resources' grant in place"
+fi
 
 # =========================================================================
 # 5. CONFIDENTIAL OAUTH APP
@@ -515,54 +631,79 @@ TRUST_PAYLOAD=$(cat <<JSON
 JSON
 )
 
-if [[ -n "$TRUST_OCID" && "$USER_RECREATED" == "true" ]]; then
-  say "  user was recreated → trust's impersonation value is stale, forcing recreate"
-  "${OCI_CLI[@]}" identity-domains identity-propagation-trust delete "${ID_ENDPOINT[@]}" \
-    --identity-propagation-trust-id "$TRUST_OCID" --force >/dev/null
-  TRUST_OCID=""
-fi
-
 if [[ -n "$TRUST_OCID" ]]; then
   # Validate the existing trust has all the fields the token-exchange flow
-  # requires (clientClaimName/clientClaimValues/subjectMappingAttribute).
-  # Old versions of this script created trusts without them, leading to
-  # OCI returning {"error":"unauthorized_client","error_description":
-  # "No rules matched from given token to find impersonation user."}.
-  # If we find a broken trust, delete + recreate so re-runs self-heal.
+  # requires (clientClaimName/clientClaimValues/subjectMappingAttribute) AND
+  # that its impersonationServiceUsers[0].value still points at the CURRENT
+  # service user OCID. Old runs of this script (before the user-detection
+  # fix) sometimes deleted+recreated the user, leaving the trust pinned to
+  # a stale OCID — which manifests at apply time as 404-NotAuthorizedOrNotFound.
+  # If we find a broken or stale trust, delete + recreate so re-runs self-heal.
   # impersonationServiceUsers has SCIM "returned: request" so default GETs
-  # omit it — must pass --attributes to inspect the stored rule.
-  TRUST_CURRENT=$("${OCI_CLI[@]}" identity-domains identity-propagation-trust get "${ID_ENDPOINT[@]}" \
-    --identity-propagation-trust-id "$TRUST_OCID" \
-    --attributes impersonationServiceUsers \
-    --output json 2>/dev/null || echo '{}')
-  # Canonical OCI rule DSL uses bare claim names, SCIM-filter style:
-  #   sub sw "repo:owner/name:"
-  # Not "${sub}" placeholders (invented form that stores fine but never
-  # matches). Verified against Oracle's json_web_token_exchange.htm and
-  # devopshouse/oci-oidc-auth-config terraform example.
-  #
-  # To detect the default GET returns "returned: request" fields including
-  # impersonation-service-users — GET it with attributes= to confirm the
-  # rule shape stored. Here we inspect the payload with attributes= below.
-  MISSING=$(jq -r '
-    [
-      (if (."client-claim-name" // .clientClaimName // "") == "" then "clientClaimName" else empty end),
-      (if ((."client-claim-values" // .clientClaimValues) | length // 0) == 0 then "clientClaimValues" else empty end),
-      (if (."subject-mapping-attribute" // .subjectMappingAttribute // "") == "" then "subjectMappingAttribute" else empty end),
-      (
-        ((."impersonation-service-users" // .impersonationServiceUsers // [])[0].rule // "")
-        | if . == "sub eq *" then empty else "rule_syntax" end
-      )
-    ] | join(",")' <<<"$TRUST_CURRENT" 2>/dev/null || echo "")
+  # omit it — must pass --attributes to inspect the stored value.
+  TRUST_RAW=$("${OCI_CLI[@]}" raw-request \
+    --target-uri "${DOMAIN_URL}/admin/v1/IdentityPropagationTrusts/${TRUST_OCID}?attributes=clientClaimName,clientClaimValues,subjectMappingAttribute,impersonationServiceUsers" \
+    --http-method GET --output json 2>/dev/null || echo '{"data":{}}')
 
-  if [[ -n "$MISSING" ]]; then
-    warn "Existing trust is missing required fields: $MISSING"
+  has_field() {
+    # Top-level normalised field present + non-empty.
+    local target="$1"
+    jq -r --arg t "$target" '
+      .data | to_entries[]?
+      | select(.key | ascii_downcase | gsub("[^a-z]"; "") == $t)
+      | .value
+    ' <<<"$TRUST_RAW" 2>/dev/null \
+      | { read -r v && [[ -n "$v" && "$v" != "null" && "$v" != "[]" && "$v" != "{}" ]] && echo "true" || echo "false"; }
+  }
+
+  has_client_claim=$(has_field "clientclaimname")
+  has_client_values=$(has_field "clientclaimvalues")
+  has_subject_map=$(has_field "subjectmappingattribute")
+  # Targeted: rule + value live ONLY inside impersonationServiceUsers[].
+  # Any other "rule" / "value" in the doc is unrelated.
+  rule_value=$(jq -r '
+    (.data."impersonation-service-users" // .data.impersonationServiceUsers // [])
+    | (.[0] // {}).rule // ""
+  ' <<<"$TRUST_RAW" 2>/dev/null || echo "")
+  trust_user_value=$(jq -r '
+    (.data."impersonation-service-users" // .data.impersonationServiceUsers // [])
+    | (.[0] // {}).value // ""
+  ' <<<"$TRUST_RAW" 2>/dev/null || echo "")
+
+  user_drifted="false"
+  if [[ -n "$trust_user_value" && "$trust_user_value" != "$USER_OCID" ]]; then
+    user_drifted="true"
+  fi
+
+  if [[ "$user_drifted" = "true" ]]; then
+    warn "  Trust impersonation user is STALE (stored=$trust_user_value, current=$USER_OCID)"
+    warn "  Deleting trust so it gets re-bound to the current service user."
+    "${OCI_CLI[@]}" identity-domains identity-propagation-trust delete "${ID_ENDPOINT[@]}" \
+      --identity-propagation-trust-id "$TRUST_OCID" --force >/dev/null
+    TRUST_OCID=""
+  elif [[ "${USER_RECREATED:-false}" = "true" ]]; then
+    say "  user was recreated this run → trust's impersonation value is stale, forcing recreate"
+    "${OCI_CLI[@]}" identity-domains identity-propagation-trust delete "${ID_ENDPOINT[@]}" \
+      --identity-propagation-trust-id "$TRUST_OCID" --force >/dev/null
+    TRUST_OCID=""
+  elif [[ "$has_client_claim" = "true" && "$has_client_values" = "true" \
+        && "$has_subject_map" = "true" && "$rule_value" = "sub eq *" ]]; then
+    say "  trust schema looks complete, impersonation user matches ($trust_user_value) — keeping"
+  elif [[ "$has_client_claim" != "true" || "$has_client_values" != "true" \
+          || "$has_subject_map" != "true" || -z "$rule_value" ]]; then
+    warn "  Trust missing required fields (client_claim=$has_client_claim values=$has_client_values subj_map=$has_subject_map rule='$rule_value')"
     warn "  Deleting so we can recreate with the complete payload."
     "${OCI_CLI[@]}" identity-domains identity-propagation-trust delete "${ID_ENDPOINT[@]}" \
       --identity-propagation-trust-id "$TRUST_OCID" --force >/dev/null
     TRUST_OCID=""
   else
-    say "  exists (no-op; schema looks complete)"
+    say "  trust fields all present, rule='$rule_value' (expected 'sub eq *') — keeping (override RECREATE_TRUST=1 to force)"
+    if [[ "${RECREATE_TRUST:-0}" = "1" ]]; then
+      warn "  RECREATE_TRUST=1 set — forcing trust recreation"
+      "${OCI_CLI[@]}" identity-domains identity-propagation-trust delete "${ID_ENDPOINT[@]}" \
+        --identity-propagation-trust-id "$TRUST_OCID" --force >/dev/null
+      TRUST_OCID=""
+    fi
   fi
 fi
 
@@ -599,8 +740,10 @@ oci:
       annotations:
         node.antinvestor.io/account-owner: platform
       nodes:
+        # Generic node naming — controlplane/worker distinction is the
+        # role: + plane label below, not the name. Avoids renames-on-promotion.
         oci-${GH_PROFILE}-node-1:
-          role: worker
+          role: controlplane
           shape: VM.Standard.A1.Flex
           ocpus: 4
           memory_gb: 24
@@ -625,51 +768,88 @@ printf '%s\n' "$inventory_yaml"
 # so cost rolls up only from cluster resources, not the whole tenancy.
 say ""
 say "Ensuring budget '$BUDGET_NAME' (USD ${BUDGET_AMOUNT}/month, target compartment $COMPARTMENT_OCID)"
-BUDGET_LIST=$("${OCI_CLI[@]}" budgets budget list \
-  --compartment-id "$TENANCY_OCID" --display-name "$BUDGET_NAME" \
-  --output json 2>/dev/null || echo '{"data":[]}')
+# List via raw-request — bypasses oci-cli version differences in the
+# `budgets budget list` subcommand naming.
+BUDGETS_ENDPOINT_LIST="https://usage.${REGION}.oci.oraclecloud.com/20190111/budgets?compartmentId=${TENANCY_OCID}&displayName=${BUDGET_NAME}"
+BUDGET_LIST=$("${OCI_CLI[@]}" raw-request \
+  --target-uri "$BUDGETS_ENDPOINT_LIST" --http-method GET --output json 2>/dev/null || echo '{"data":[]}')
+if ! printf '%s' "$BUDGET_LIST" | jq empty 2>/dev/null; then
+  warn "  budget list returned non-JSON (api disabled in region?); treating as empty"
+  BUDGET_LIST='{"data":[]}'
+fi
 BUDGET_OCID=$(jq -r '.data[0].id // empty' <<<"$BUDGET_LIST")
 
 if [[ -z "$BUDGET_OCID" ]]; then
-  say "  creating"
-  BUDGET_OCID=$("${OCI_CLI[@]}" budgets budget create \
-    --compartment-id "$TENANCY_OCID" \
-    --display-name "$BUDGET_NAME" \
-    --description "Cluster cost guardrail; tracks $COMPARTMENT_OCID" \
-    --amount "$BUDGET_AMOUNT" \
-    --reset-period MONTHLY \
-    --target-type COMPARTMENT \
-    --targets "[\"$COMPARTMENT_OCID\"]" \
-    --output json 2>&1 | jq -r '.data.id // empty')
+  say "  creating (via raw-request — older oci-cli versions lack the create subcommand)"
+  BUDGETS_ENDPOINT="https://usage.${REGION}.oci.oraclecloud.com/20190111/budgets"
+  BUDGET_BODY=$(jq -n \
+    --arg cid "$TENANCY_OCID" --arg name "$BUDGET_NAME" --arg desc "Cluster cost guardrail; tracks $COMPARTMENT_OCID" \
+    --argjson amt "$BUDGET_AMOUNT" --arg target "$COMPARTMENT_OCID" '{
+      compartmentId: $cid,
+      displayName:   $name,
+      description:   $desc,
+      amount:        $amt,
+      resetPeriod:   "MONTHLY",
+      targetType:    "COMPARTMENT",
+      targets:       [$target]
+    }')
+  budget_create_out=$("${OCI_CLI[@]}" raw-request \
+    --target-uri "$BUDGETS_ENDPOINT" --http-method POST \
+    --request-body "$BUDGET_BODY" --output json 2>&1) || true
+  if printf '%s' "$budget_create_out" | jq empty 2>/dev/null; then
+    BUDGET_OCID=$(printf '%s' "$budget_create_out" | jq -r '.data.id // empty')
+  fi
   if [[ -z "$BUDGET_OCID" ]]; then
-    warn "  budget create failed (does the admin profile have manage usage-budgets in tenancy?)"
-    warn "  required policy: Allow group <admin-group> to manage usage-budgets in tenancy"
+    warn "  budget create failed; raw response:"
+    printf '%s\n' "$budget_create_out" | head -c 800 >&2
+    warn ""
+    warn "  required policy on the admin principal: Allow group <admin> to manage usage-budgets in tenancy"
   fi
 else
-  say "  exists ($BUDGET_OCID); updating amount"
-  "${OCI_CLI[@]}" budgets budget update --budget-id "$BUDGET_OCID" \
-    --amount "$BUDGET_AMOUNT" --force >/dev/null 2>&1 || \
+  say "  exists ($BUDGET_OCID); updating amount via raw-request"
+  UPD_BODY=$(jq -n --argjson amt "$BUDGET_AMOUNT" '{amount: $amt}')
+  "${OCI_CLI[@]}" raw-request \
+    --target-uri "https://usage.${REGION}.oci.oraclecloud.com/20190111/budgets/${BUDGET_OCID}" \
+    --http-method PUT --request-body "$UPD_BODY" --output json >/dev/null 2>&1 || \
     warn "  budget update returned non-zero (often ok — display-name immutable)"
 fi
 say "  budget:  $BUDGET_OCID"
 
-# Alert rule: only created when an email recipient is supplied. OCI requires
-# at least one recipient (or "messaging" topic) per alert rule.
+# Alert rules: forecasted-spend ladder at 1, 3, 15, 50, 80, 100 percent of
+# cap. type=FORECAST means OCI uses its own usage-projection model (not
+# realised spend) to decide when to fire — operator gets a heads-up the
+# moment the cluster's burn rate would exceed each threshold by month-end,
+# days before realised spend reaches the same point. 1% is the early
+# tripwire on the always-free baseline ($0 expected); the higher tiers
+# track ongoing severity if it does start spending. Each rule is keyed by
+# display_name so re-runs are idempotent.
 if [[ -n "$BUDGET_OCID" && -n "$BUDGET_EMAIL" ]]; then
-  for THRESHOLD in 50 80 100; do
-    ALERT_NAME="alert-${THRESHOLD}pct"
-    ALERT_LIST=$("${OCI_CLI[@]}" budgets alert-rule list \
-      --budget-id "$BUDGET_OCID" --display-name "$ALERT_NAME" \
-      --output json 2>/dev/null || echo '{"data":[]}')
+  for THRESHOLD in 1 3 15 50 80 100; do
+    ALERT_NAME=$(printf 'alert-%03dpct-forecast' "$THRESHOLD")
+    ALERT_LIST=$("${OCI_CLI[@]}" raw-request \
+      --target-uri "https://usage.${REGION}.oci.oraclecloud.com/20190111/budgets/${BUDGET_OCID}/alertRules?displayName=${ALERT_NAME}" \
+      --http-method GET --output json 2>/dev/null || echo '{"data":[]}')
+    if ! printf '%s' "$ALERT_LIST" | jq empty 2>/dev/null; then
+      ALERT_LIST='{"data":[]}'
+    fi
     ALERT_OCID=$(jq -r '.data[0].id // empty' <<<"$ALERT_LIST")
     if [[ -z "$ALERT_OCID" ]]; then
       say "  creating alert ${ALERT_NAME} → ${BUDGET_EMAIL}"
-      "${OCI_CLI[@]}" budgets alert-rule create \
-        --budget-id "$BUDGET_OCID" \
-        --display-name "$ALERT_NAME" \
-        --threshold "$THRESHOLD" --threshold-type PERCENTAGE --type ACTUAL \
-        --recipients "$BUDGET_EMAIL" \
-        --message "Budget ${BUDGET_NAME} hit ${THRESHOLD}% of monthly cap (\$${BUDGET_AMOUNT})." \
+      ALERT_BODY=$(jq -n \
+        --arg name "$ALERT_NAME" \
+        --argjson th "$THRESHOLD" \
+        --arg recip "$BUDGET_EMAIL" \
+        --arg msg "Budget ${BUDGET_NAME} forecast hit ${THRESHOLD}% of monthly cap (\$${BUDGET_AMOUNT}). Investigate paid resources." '{
+          displayName:   $name,
+          type:          "FORECAST",
+          threshold:     $th,
+          thresholdType: "PERCENTAGE",
+          recipients:    $recip,
+          message:       $msg
+        }')
+      "${OCI_CLI[@]}" raw-request \
+        --target-uri "https://usage.${REGION}.oci.oraclecloud.com/20190111/budgets/${BUDGET_OCID}/alertRules" \
+        --http-method POST --request-body "$ALERT_BODY" --output json \
         >/dev/null 2>&1 || warn "    alert ${ALERT_NAME} create failed (recipient quota? mail config?)"
     else
       say "  alert ${ALERT_NAME} exists ($ALERT_OCID)"
