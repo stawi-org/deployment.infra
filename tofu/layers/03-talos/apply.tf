@@ -24,6 +24,18 @@ locals {
     for k, v in local.contabo_worker_nodes : k => v
     if !contains(var.talos_apply_skip, k)
   }
+
+  # Per-CP DNS endpoint — picks `cp-<N>.<first-zone>` for the CP at
+  # index N (1-indexed) in cp_sorted_keys. Used as the TLS
+  # endpoint for talos_machine_configuration_apply so OCI nodes
+  # whose public IPv4 isn't on-NIC (and therefore not auto-discovered
+  # into the cert) can still be reached without a TLS hostname
+  # mismatch — the node's user_data extra_cert_sans includes
+  # cp-<N>.<zone>, so SNI = cp-<N>.<zone> validates.
+  cp_endpoint_dns = length(var.cp_dns_zones) > 0 ? {
+    for i, k in local.cp_sorted_keys :
+    k => "${var.cp_dns_zones[0].cp_label}-${i + 1}.${var.cp_dns_zones[0].zone}"
+  } : {}
 }
 
 # terraform_data tracks the rendered machine config content per node. When the
@@ -50,7 +62,12 @@ resource "talos_machine_configuration_apply" "cp" {
   client_configuration        = data.terraform_remote_state.secrets.outputs.client_configuration
   machine_configuration_input = data.talos_machine_configuration.cp[each.key].machine_configuration
   node                        = each.value.ipv4
-  endpoint                    = each.value.ipv4
+  # Connect via DNS name (cp-N.<zone>) when one exists for this node so
+  # TLS verification matches a SAN. OCI public IPv4s are NAT'd (not on-
+  # NIC), so Talos won't auto-include them in its serving cert; the
+  # node's user_data has cp-N.<zone> in machine.certSANs (see
+  # modules/oracle-account-infra/variables.tf::extra_cert_sans).
+  endpoint = try(local.cp_endpoint_dns[each.key], each.value.ipv4)
   # apply_mode = "reboot" forces the node to reboot after each config change so
   # kubelet + other services restart cleanly with the new version. Without this,
   # Talos stages the config and services keep running on the old one until the

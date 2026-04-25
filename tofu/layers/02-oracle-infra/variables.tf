@@ -61,3 +61,9 @@ variable "per_node_force_recreate_generation" {
   default     = {}
   description = "Per-OCI-node-key force-recreate generation. Bump a key's value to destroy+create that single instance on next apply — needed when OCI's UpdateInstance accepted a launch_options change but didn't actually rebuild the VNIC."
 }
+
+variable "extra_cert_sans" {
+  type        = list(string)
+  default     = []
+  description = "Extra cert SANs included in every OCI node's user_data. Required because OCI's public IPv4 is NAT'd (not on-NIC) so Talos won't auto-discover it for the API serving cert. Layer 03's talos_machine_configuration_apply connects by IP and fails TLS verification without these. Set to the DNS names that layer 03 publishes for OCI CPs (e.g. cp-3.<zone>)."
+}

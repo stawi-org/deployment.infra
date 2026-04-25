@@ -23,6 +23,7 @@ data "talos_machine_configuration" "node" {
     ,
     yamlencode({
       machine = {
+        certSANs = var.extra_cert_sans
         nodeLabels = merge(
           var.labels,
           each.value.labels,
