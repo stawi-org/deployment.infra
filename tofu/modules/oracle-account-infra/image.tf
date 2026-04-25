@@ -118,22 +118,16 @@ resource "oci_core_image" "talos" {
   compartment_id = var.compartment_ocid
   display_name   = local.image_display_name
 
-  # launch_mode = PARAVIRTUALIZED makes OCI set the image's default
-  # launchOptions to fully-paravirtualized virtio (bootVolumeType,
-  # networkType, remoteDataVolumeType all PARAVIRTUALIZED). Talos
-  # arm64 expects this — virtio-scsi presents the boot volume at
-  # /dev/sda, virtio-net brings up eth0. Without it OCI defaults
-  # bootVolumeType to ISCSI and Talos boot loops on
-  # `lstat /dev/sda: no such file or directory`, then iPXE SAN boot
-  # fails (Talos qcow2 isn't a standard distro EFI image with shim).
-  #
-  # The earlier .oci archive approach (qcow2 + image_metadata.json
-  # with externalLaunchOptions) was supposed to set the same options,
-  # but OCI's CreateImage doesn't actually read the archive metadata
-  # — verified by `oci compute instance get --query launch-options`
-  # showing boot-volume-type: ISCSI on the resulting instance. The
-  # provider's launch_mode argument is the only path that works.
-  launch_mode = "PARAVIRTUALIZED"
+  # launch_mode = NATIVE keeps firmware at UEFI_64 (required for arm64)
+  # and lets bootVolumeType be overridden at instance launch.
+  # Empirically (verified via `oci compute image get --query launch-
+  # options`):
+  #   * launch_mode = NATIVE        → firmware=UEFI_64, bootVolumeType=ISCSI
+  #   * launch_mode = PARAVIRTUALIZED → firmware=BIOS, bootVolumeType=PARAVIRT
+  # On arm64 BIOS cannot boot, so PARAVIRTUALIZED is unusable. We pin
+  # launch_mode = NATIVE for the right firmware and have the instance
+  # override boot_volume_type and network_type to PARAVIRTUALIZED.
+  launch_mode = "NATIVE"
 
   image_source_details {
     source_type       = "objectStorageUri"

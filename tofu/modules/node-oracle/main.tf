@@ -62,16 +62,17 @@ resource "oci_core_instance" "this" {
     boot_volume_size_in_gbs = 200
   }
 
-  # Pin per-instance network_type only. OCI's LaunchInstance API
-  # treats most LaunchOptions fields (Firmware, BootVolumeType) as
-  # NON-overridable when the image already declares them — setting
-  # them 400s with "Overriding <Field> in LaunchOptions is not
-  # supported". network_type IS overridable, and we have to set it
-  # because A1.Flex defaults to VFIO (SR-IOV pass-through) for the
-  # instance even when the image's launch_mode = PARAVIRTUALIZED says
-  # virtio. Talos arm64 needs virtio-net (PARAVIRTUALIZED).
+  # Override boot_volume_type and network_type at instance launch.
+  # The image's launch_mode = NATIVE pins firmware = UEFI_64 (required
+  # for arm64) but defaults bootVolumeType = ISCSI which makes Talos
+  # boot loop with `no system disk found`. Instance-level overrides
+  # ARE accepted for these two fields (provider only 400s on Firmware
+  # / fields the image explicitly declares immutable). PARAVIRT for
+  # both gives Talos the virtio-scsi /dev/sda + virtio-net eth0 it
+  # expects.
   launch_options {
-    network_type = "PARAVIRTUALIZED"
+    boot_volume_type = "PARAVIRTUALIZED"
+    network_type     = "PARAVIRTUALIZED"
   }
 
   metadata = {
