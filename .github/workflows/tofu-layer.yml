@@ -69,6 +69,33 @@ jobs:
           rm /tmp/talosctl
           talosctl version --client
 
+      - name: Pre-resolve cp.<zone> into /etc/hosts
+        if: inputs.layer == '03-talos'
+        # Talos provider connects to cp.<zone> for both `node` and
+        # `endpoint` (round-robin DNS — every CP carries cp.<zone> in
+        # its certSANs). gRPC uses the system resolver, which on
+        # GitHub runners goes through systemd-resolved (127.0.0.53)
+        # and has been observed to time out under load. Pre-resolve
+        # against Cloudflare (1.1.1.1) and pin the answer in
+        # /etc/hosts so subsequent gRPC dials skip DNS entirely.
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq dnsutils
+          for host in cp.antinvestor.com cp.stawi.org; do
+            ips=$(dig +short +time=5 +tries=2 @1.1.1.1 "$host" A | head -n3)
+            if [[ -n "$ips" ]]; then
+              # Pin the first answer — round-robin still works because
+              # every CP has cp.<zone> in SAN. /etc/hosts only needs
+              # ONE address; if it's unreachable the dial fails fast.
+              ip=$(echo "$ips" | head -n1)
+              echo "$ip $host" | sudo tee -a /etc/hosts
+            else
+              echo "::warning::no A records for $host on 1.1.1.1" >&2
+            fi
+          done
+          grep -E "cp\.(antinvestor|stawi)" /etc/hosts || true
+
       - name: Install OCI CLI
         if: inputs.layer == '02-oracle-infra'
         # Required by scripts/oci-image-create-or-find.sh, called via
