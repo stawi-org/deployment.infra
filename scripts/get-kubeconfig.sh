@@ -8,7 +8,7 @@
 # status so you know it worked.
 #
 # Requirements locally:
-#   - gh CLI (authed against antinvestor/deployments)
+#   - gh CLI (authed against stawi-org/deployment.infra)
 #   - age (https://github.com/FiloSottile/age — `brew install age` / `apt install age`)
 #   - an ssh-ed25519 or ssh-rsa private key (defaults to ~/.ssh/id_ed25519)
 #   - a matching public key added at https://github.com/settings/keys
@@ -21,13 +21,13 @@
 #   --out  <path>     Where to write the kubeconfig. Default ~/.kube/config.
 #                     If the file already exists it is backed up to <path>.bak.
 #   --repo owner/name Override the repo to dispatch against. Default
-#                     antinvestor/deployments.
+#                     stawi-org/deployment.infra.
 #   -h, --help        Show this help.
 #
 # Usage:
 #   ./scripts/get-kubeconfig.sh
-#   ./scripts/get-kubeconfig.sh --ttl 24 --out ~/.kube/antinvestor.yaml
-#   KUBECONFIG=~/.kube/antinvestor.yaml kubectl get nodes
+#   ./scripts/get-kubeconfig.sh --ttl 24 --out ~/.kube/stawi.yaml
+#   KUBECONFIG=~/.kube/stawi.yaml kubectl get nodes
 
 set -euo pipefail
 
@@ -35,7 +35,7 @@ set -euo pipefail
 TTL=8
 KEY="${HOME}/.ssh/id_ed25519"
 OUT="${HOME}/.kube/config"
-REPO="antinvestor/deployments"
+REPO="stawi-org/deployment.infra"
 WORKFLOW="dispatch-kubeconfig.yml"
 
 usage() { sed -n '2,34p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ; exit 1 ; }
@@ -77,9 +77,14 @@ done
 [[ -n "$RUN_ID" ]] || die "Could not locate the dispatched run."
 say "Run id: $RUN_ID — $(gh run view "$RUN_ID" -R "$REPO" --json url --jq .url)"
 
-# 3. Wait for it to finish.
+# 3. Wait for it to finish. Don't suppress output — if the workflow
+#    fails, gh run watch prints the failed-job log, which is what the
+#    operator needs to debug. Previous version sent it to /dev/null
+#    and the script bailed silently on failure.
 say "Waiting for run to complete..."
-gh run watch "$RUN_ID" -R "$REPO" --exit-status >/dev/null
+if ! gh run watch "$RUN_ID" -R "$REPO" --exit-status ; then
+  die "dispatch-kubeconfig run $RUN_ID failed; see log above. View at $(gh run view "$RUN_ID" -R "$REPO" --json url --jq .url)"
+fi
 
 # 4. Download + decrypt.
 TMP="$(mktemp -d)"

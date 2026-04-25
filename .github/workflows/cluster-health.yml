@@ -29,13 +29,20 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Install talosctl + kubectl + flux
+        # Read versions from the central source of truth so a single
+        # tofu/shared/versions.auto.tfvars.json bump aligns this
+        # runner's CLI versions with what's deployed.
         run: |
           set -euo pipefail
-          curl -fsSL https://github.com/siderolabs/talos/releases/download/v1.12.6/talosctl-linux-amd64 -o /usr/local/bin/talosctl
+          TALOS_VERSION=$(jq -r '.talos_version' tofu/shared/versions.auto.tfvars.json)
+          FLUX_VERSION=$(jq -r '.flux_version' tofu/shared/versions.auto.tfvars.json)
+          FLUX_VERSION_NO_V="${FLUX_VERSION#v}"
+
+          curl -fsSL "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64" -o /usr/local/bin/talosctl
           chmod +x /usr/local/bin/talosctl
           curl -fsSLO https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl
           sudo install -m 0755 kubectl /usr/local/bin/kubectl
-          curl -fsSL https://github.com/fluxcd/flux2/releases/download/v2.4.0/flux_2.4.0_linux_amd64.tar.gz | tar xz
+          curl -fsSL "https://github.com/fluxcd/flux2/releases/download/${FLUX_VERSION}/flux_${FLUX_VERSION_NO_V}_linux_amd64.tar.gz" | tar xz
           sudo install -m 0755 flux /usr/local/bin/flux
 
       - name: Run cluster-health checks

@@ -59,9 +59,13 @@ jobs:
       # Only layer 03 needs talosctl for the null_resource.reboot_cp provisioner.
       - name: Install talosctl
         if: inputs.layer == '03-talos'
+        # talos_version comes from tofu/shared/versions.auto.tfvars.json
+        # (the same file every tofu layer auto-loads via symlink). One
+        # source of truth — bumping the JSON updates the runner-side
+        # talosctl install + the in-cluster Talos version together.
         run: |
           set -euo pipefail
-          TALOS_VERSION="v1.12.6"
+          TALOS_VERSION=$(jq -r '.talos_version' tofu/shared/versions.auto.tfvars.json)
           ASSET_URL="https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64"
           curl -fsSL -o /tmp/talosctl "${ASSET_URL}"
           chmod +x /tmp/talosctl

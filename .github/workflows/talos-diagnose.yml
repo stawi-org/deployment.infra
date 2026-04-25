@@ -24,7 +24,11 @@ jobs:
             sudo install -m 0755 /tmp/sops /usr/local/bin/sops; rm /tmp/sops
           fi
           if ! command -v talosctl >/dev/null; then
-            curl -fsSL -o /tmp/talosctl https://github.com/siderolabs/talos/releases/download/v1.12.6/talosctl-linux-amd64
+            # Read the cluster's Talos version from the central source
+            # of truth (tofu/shared/versions.auto.tfvars.json) so this
+            # runner-side install always matches what's deployed.
+            TALOS_VERSION=$(jq -r '.talos_version' tofu/shared/versions.auto.tfvars.json)
+            curl -fsSL -o /tmp/talosctl "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64"
             sudo install -m 0755 /tmp/talosctl /usr/local/bin/talosctl; rm /tmp/talosctl
           fi
           talosctl version --client

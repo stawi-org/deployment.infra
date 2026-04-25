@@ -1,1 +1,0 @@
-../../shared/versions.auto.tfvars
