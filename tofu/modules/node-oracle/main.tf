@@ -62,11 +62,24 @@ resource "oci_core_instance" "this" {
     boot_volume_size_in_gbs = 200
   }
 
-  # No explicit launch_options. The image's launch_mode = PARAVIRTUALIZED
-  # already sets bootVolumeType / networkType / remoteDataVolumeType
-  # to PARAVIRTUALIZED at the image level, and the instance inherits
-  # those defaults. Setting them here additionally would 400 if any
-  # field conflicts with the image — keep it minimal.
+  # Pin per-instance launch_options to match the image's launch_mode.
+  # Empirically: setting only image launch_mode = PARAVIRTUALIZED is
+  # not enough — OCI's LaunchInstance commits per-instance launch
+  # options at create time, and the runtime VNIC type is whatever
+  # commits there, not what the image declares. Without this block
+  # the new instance comes up unreachable (i/o timeout on every port).
+  #
+  # Each field matches the image (launch_mode = PARAVIRTUALIZED on the
+  # image makes its defaults: bootVolumeType = networkType =
+  # remoteDataVolumeType = PARAVIRTUALIZED). Matching values are
+  # accepted — only mismatches 400 with "Overriding ... in
+  # LaunchOptions is not supported".
+  launch_options {
+    boot_volume_type        = "PARAVIRTUALIZED"
+    network_type            = "PARAVIRTUALIZED"
+    remote_data_volume_type = "PARAVIRTUALIZED"
+    firmware                = "UEFI_64"
+  }
 
   metadata = {
     user_data = var.user_data
