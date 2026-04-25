@@ -68,7 +68,21 @@ existing=$(oci compute image list \
 }
 
 if [[ -n "$existing" && "$existing" != "null" ]]; then
-  echo "::notice::reusing OCI image $existing" >&2
+  # Re-assert shape compat on the reuse path too — a previous apply
+  # may have created the image but failed before/during the original
+  # registration. AddImageShapeCompatibilityEntry is idempotent (PUT
+  # semantics), so the call is cheap when already present.
+  rc=0
+  out=$(oci compute image-shape-compatibility-entry add \
+    --image-id   "$existing" \
+    --shape-name "$SHAPE" \
+    2>&1) || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    echo "::error::shape compatibility re-assertion failed ($SHAPE on $existing, rc=$rc)" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+  echo "::notice::reusing OCI image $existing (shape compat re-asserted)" >&2
   jq -nc --arg ocid "$existing" '{image_ocid: $ocid}'
   exit 0
 fi
@@ -154,14 +168,39 @@ if [[ "$state" != "AVAILABLE" ]]; then
   exit 1
 fi
 
-# 3. Register shape compatibility (idempotent PUT)
-if ! oci compute image-shape-compatibility-entry add \
-    --image-id   "$ocid" \
-    --shape-name "$SHAPE" \
-    >/dev/null 2>&1; then
-  echo "::error::shape compatibility registration failed ($SHAPE on $ocid)" >&2
+# 3. Register shape compatibility (idempotent PUT). Capture both
+# streams — silent failures here cascade into "Shape <X> is not
+# valid for image <Y>" on the very next instance create.
+rc=0
+out=$(oci compute image-shape-compatibility-entry add \
+  --image-id   "$ocid" \
+  --shape-name "$SHAPE" \
+  2>&1) || rc=$?
+
+if [[ $rc -ne 0 ]]; then
+  echo "::error::shape compatibility registration failed ($SHAPE on $ocid, rc=$rc)" >&2
+  printf '%s\n' "$out" >&2
   exit 1
 fi
+
+# Verify the entry actually landed before returning. OCI's
+# shape-compatibility add usually takes effect immediately, but
+# we've seen LaunchInstance race the registration when the script
+# returns the OCID and tofu starts creating the instance in the
+# same second.
+for i in $(seq 1 12); do
+  shapes=$(oci compute image list --compartment-id "$COMPARTMENT" \
+    --query "data[?id=='$ocid'].\"compatible-shapes\"" --raw-output 2>/dev/null || true)
+  if echo "$shapes" | grep -qF "$SHAPE"; then
+    break
+  fi
+  if oci compute image-shape-compatibility-entry list --image-id "$ocid" \
+       --query "data.items[?\"shape-name\"=='$SHAPE']" --raw-output 2>/dev/null | grep -qF "$SHAPE"; then
+    break
+  fi
+  echo "  [$i] waiting for shape compat to materialize" >&2
+  sleep 5
+done
 
 echo "::notice::created OCI image $ocid (shape compat: $SHAPE)" >&2
 jq -nc --arg ocid "$ocid" '{image_ocid: $ocid}'
