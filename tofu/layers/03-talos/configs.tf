@@ -55,6 +55,7 @@ locals {
     file("${path.module}/../../shared/patches/resolvers.yaml"),
     file("${path.module}/../../shared/patches/timesync.yaml"),
     file("${path.module}/../../shared/patches/cluster-network.yaml"),
+    local.installer_image_patch,
     yamlencode({
       machine = {
         certSANs = local.cp_cert_sans
@@ -69,6 +70,7 @@ locals {
     file("${path.module}/../../shared/patches/resolvers.yaml"),
     file("${path.module}/../../shared/patches/timesync.yaml"),
     file("${path.module}/../../shared/patches/cluster-network.yaml"),
+    local.installer_image_patch,
   ]
   worker_hostname_patches = {
     for k, _ in local.worker_nodes : k => <<-EOT
@@ -79,7 +81,23 @@ locals {
     auto: off
     EOT
   }
+
+  # Pin machine.install.image to the factory installer for our exact
+  # schematic + Talos version. Without this, Talos defaults to whatever
+  # the talos provider version emits (currently v1.13.0-alpha.2 from
+  # provider 0.11.0-beta.1), which silently drifts the cluster off
+  # var.talos_version. Multi-arch manifest, so the same URL works for
+  # Contabo amd64 and OCI arm64 — Docker picks the right one per node.
+  installer_image_patch = yamlencode({
+    machine = {
+      install = {
+        image = "factory.talos.dev/installer/${talos_image_factory_schematic.this.id}:${var.talos_version}"
+      }
+    }
+  })
 }
+
+# Schematic resource lives in image.tf — its id is referenced above.
 
 data "talos_machine_configuration" "cp" {
   for_each           = local.controlplane_nodes

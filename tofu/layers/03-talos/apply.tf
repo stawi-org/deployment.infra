@@ -1,21 +1,25 @@
 # tofu/layers/03-talos/apply.tf
+#
+# Per-node Talos config + version reconciliation. The per-node
+# provisioner shells out to scripts/talos-apply-or-upgrade.sh, which
+# inspects each node's current stage and acts accordingly:
+#
+#   maintenance     →  apply-config --insecure   (clean install)
+#   running, match  →  no-op                     (idempotent)
+#   running, mismatch → talosctl upgrade --image (in-place upgrade)
+#
+# This single resource handles all four cases the operator described:
+# fresh install, reinstall, idempotent re-runs, and version upgrades —
+# without destroying running clusters.
+#
+# Configs are also written to R2 by per_node_configs_writer, so an
+# operator can `aws s3 cp` to inspect what was generated:
+#   production/inventory/<provider>/<account>/<talos-version>/<node>.yaml
 
-# CP nodes reachable directly from the runner on their public IPv4.
-# Oracle CPs are temporarily excluded — the freshly-created OCI instance
-# is in state at 141.147.55.5 but :50000 times out from the runner
-# (Contabo CPs on the same plan succeed in 1s). Root cause still being
-# diagnosed — likely instance-level (user_data not applying, apid not
-# binding to the public interface, or OCI routing lag on the ephemeral
-# public IP). Un-excluding lets the talos apply hang for 10 min and
-# block the whole cluster from ever bootstrapping. Re-enable once we
-# can console-log the node and confirm Talos is healthy there.
 locals {
-  # Nodes that are declared in inventory but currently unreachable on
-  # :50000 from CI. Driven by var.talos_apply_skip so operators can
-  # toggle a node's healthy/unreachable status without a code change.
-  # Entries here remain in controlplane_nodes / worker_nodes / DNS /
-  # cert SANs — they just don't receive talosctl apply passes.
-
+  # Skip-list driven exclusion. Entries stay in controlplane_nodes /
+  # cert SANs / DNS so the rest of the layer can model the node — they
+  # just don't receive a `talosctl apply` pass on this run.
   direct_controlplane_nodes = {
     for k, v in local.controlplane_nodes : k => v
     if !contains(var.talos_apply_skip, k)
@@ -25,60 +29,52 @@ locals {
     if !contains(var.talos_apply_skip, k)
   }
 
-  # Per-CP apply target. Each CP gets cp-<N>.<first-zone> where N is
-  # its 1-based index in cp_sorted_keys; that DNS resolves to the
-  # node's public IP (Cloudflare A/AAAA managed by cluster_dns) and
-  # is in cp_cert_sans, so TLS validates regardless of provider.
-  # Falls back to per-node IP when no DNS zone is configured (local
-  # dev). ApplyConfiguration is a per-node RPC — Talos doesn't proxy
-  # it — so we MUST dial each node specifically; round-robin DNS
-  # would land all CPs on whichever single backend resolved.
+  # Per-CP DNS target — used only by talos_machine_bootstrap, which
+  # MUST use mTLS (the BootstrapEtcd RPC requires authentication via
+  # the cluster's client cert). Each CP's cert SANs include
+  # cp-<N>.<zone>, so dialing that name validates regardless of
+  # whether the node's public IP is on-NIC or NAT'd.
   cp_apply_target = length(var.cp_dns_zones) > 0 ? {
     for i, k in local.cp_sorted_keys :
     k => "${var.cp_dns_zones[0].cp_label}-${i + 1}.${var.cp_dns_zones[0].zone}"
     } : {
     for k, v in local.controlplane_nodes : k => v.ipv4
   }
+
+  # Multi-arch factory installer URL — same schematic id picks the
+  # right arch via the OCI manifest list, so Contabo amd64 and OCI
+  # arm64 both resolve from this one base URL.
+  installer_url = "factory.talos.dev/installer/${talos_image_factory_schematic.this.id}"
+
+  # Talosconfig string used by the apply-or-upgrade script to talk
+  # mTLS to running nodes (version checks, upgrades).
+  talosconfig_yaml = data.talos_client_configuration.this.talos_config
 }
 
-# terraform_data tracks the rendered machine config content per node. When the
-# config changes (version bump, patch edit, label change, etc.), its output
-# changes and `replace_triggered_by` below forces the apply resource to be
-# replaced, i.e. a full re-apply with apply_mode=reboot.
-resource "terraform_data" "cp_config_hash" {
+resource "null_resource" "apply_cp_config" {
   for_each = local.direct_controlplane_nodes
-  input = {
-    config     = data.talos_machine_configuration.cp[each.key].machine_configuration
-    generation = var.force_talos_reapply_generation
-    # Bumps whenever the underlying node module reinstalls (Contabo:
-    # null_resource.ensure_image runs; Oracle: instance is replaced).
-    # Forces talos_machine_configuration_apply.cp to re-run against
-    # the freshly-wiped disk — without this, tofu thinks the config is
-    # still applied and downstream layers get a node with correct
-    # state metadata but an empty / unconfigured OS.
+
+  triggers = {
+    # Re-run when the rendered config changes (label/SAN/sysctl edit
+    # flows through), when target Talos version changes (triggers an
+    # upgrade), or after a disk wipe (forces fresh maintenance-mode
+    # apply). The script itself decides which path to take based on
+    # the node's actual state at run time.
+    config_hash            = sha256(data.talos_machine_configuration.cp[each.key].machine_configuration)
+    target_version         = var.talos_version
     image_apply_generation = each.value.image_apply_generation
   }
-}
 
-resource "talos_machine_configuration_apply" "cp" {
-  for_each                    = local.direct_controlplane_nodes
-  client_configuration        = data.terraform_remote_state.secrets.outputs.client_configuration
-  machine_configuration_input = data.talos_machine_configuration.cp[each.key].machine_configuration
-  # Per-CP DNS target — each CP's own cp-<N>.<zone>. ApplyConfiguration
-  # is non-proxying so this MUST resolve to the specific node we're
-  # configuring. cert SANs include the same name, so TLS validates.
-  node     = local.cp_apply_target[each.key]
-  endpoint = local.cp_apply_target[each.key]
-  # apply_mode = "auto" lets Talos decide whether the change requires a
-  # reboot. Most diffs (cert SANs, node labels, sysctls, kubelet args)
-  # are applied live and never touch services. The previous "reboot"
-  # default fired all 3 CPs simultaneously on every config change,
-  # which broke etcd quorum during a normal apply (every CP gone at
-  # once for 60-180s) and made wait_apiserver hit its timeout.
-  apply_mode = "auto"
-
-
-  lifecycle {
-    replace_triggered_by = [terraform_data.cp_config_hash[each.key]]
+  provisioner "local-exec" {
+    interpreter = ["bash", "-c"]
+    environment = {
+      NODE_IP        = each.value.ipv4
+      NODE_NAME      = each.key
+      TARGET_VERSION = var.talos_version
+      INSTALLER_URL  = local.installer_url
+      MACHINE_CONFIG = data.talos_machine_configuration.cp[each.key].machine_configuration
+      TALOSCONFIG    = local.talosconfig_yaml
+    }
+    command = "${path.module}/../../../scripts/talos-apply-or-upgrade.sh"
   }
 }

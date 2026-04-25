@@ -37,7 +37,7 @@ resource "terraform_data" "cluster_reinstall_marker" {
 }
 
 resource "talos_machine_bootstrap" "this" {
-  depends_on = [talos_machine_configuration_apply.cp]
+  depends_on = [null_resource.apply_cp_config]
   # Bootstrap targets ONE specific CP (the etcd seed). Use that node's
   # per-CP DNS so TLS validates against a SAN whether the CP's IP is
   # on-NIC (Contabo) or NAT'd (OCI). Falls back to its IPv4 if no DNS
@@ -65,8 +65,8 @@ resource "null_resource" "wait_apiserver" {
   depends_on = [talos_machine_bootstrap.this]
 
   triggers = {
-    bootstrap_id     = talos_machine_bootstrap.this.id
-    cp_config_hashes = jsonencode({ for k, c in talos_machine_configuration_apply.cp : k => c.id })
+    bootstrap_id = talos_machine_bootstrap.this.id
+    cp_apply_ids = jsonencode({ for k, n in null_resource.apply_cp_config : k => n.id })
   }
 
   provisioner "local-exec" {

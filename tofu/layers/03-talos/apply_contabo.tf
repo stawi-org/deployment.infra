@@ -1,32 +1,29 @@
 # tofu/layers/03-talos/apply_contabo.tf
+#
+# Same apply-or-upgrade script as CPs (apply.tf), parameterised for
+# Contabo workers. OCI / onprem workers don't exist yet; when they do,
+# add an analogous null_resource keyed by their direct_*_worker_nodes
+# map.
 
-# Contabo worker nodes are publicly reachable like the Contabo control plane,
-# so they use the same direct Talos apply path. OCI workers continue to use the
-# bastion tunnel in apply_oracle.tf, and on-prem workers remain manual.
-
-resource "terraform_data" "worker_contabo_config_hash" {
+resource "null_resource" "apply_worker_contabo_config" {
   for_each = local.direct_contabo_worker_nodes
-  input = {
-    config                 = data.talos_machine_configuration.worker[each.key].machine_configuration
-    generation             = var.force_talos_reapply_generation
+
+  triggers = {
+    config_hash            = sha256(data.talos_machine_configuration.worker[each.key].machine_configuration)
+    target_version         = var.talos_version
     image_apply_generation = each.value.image_apply_generation
   }
-}
 
-resource "talos_machine_configuration_apply" "worker_contabo" {
-  for_each                    = local.direct_contabo_worker_nodes
-  client_configuration        = data.terraform_remote_state.secrets.outputs.client_configuration
-  machine_configuration_input = data.talos_machine_configuration.worker[each.key].machine_configuration
-  # Contabo workers have on-NIC public IPs, so Talos auto-includes
-  # them in the apid serving cert. Dial the IP directly — no per-
-  # worker DNS needed. ApplyConfiguration is per-node, so the dial
-  # target IS the node we're configuring.
-  node       = each.value.ipv4
-  endpoint   = each.value.ipv4
-  apply_mode = "auto" # let Talos decide reboot need; see apply.tf
-
-
-  lifecycle {
-    replace_triggered_by = [terraform_data.worker_contabo_config_hash[each.key]]
+  provisioner "local-exec" {
+    interpreter = ["bash", "-c"]
+    environment = {
+      NODE_IP        = each.value.ipv4
+      NODE_NAME      = each.key
+      TARGET_VERSION = var.talos_version
+      INSTALLER_URL  = local.installer_url
+      MACHINE_CONFIG = data.talos_machine_configuration.worker[each.key].machine_configuration
+      TALOSCONFIG    = local.talosconfig_yaml
+    }
+    command = "${path.module}/../../../scripts/talos-apply-or-upgrade.sh"
   }
 }
