@@ -59,8 +59,14 @@ COMPARTMENT_OCID=""
 GH_REPO="antinvestor/deployments"
 GH_BRANCH="main"
 # Budget guardrail. Tofu provisioning only uses Always-Free A1 compute (cost
-# ~ $0), but a small budget gives early warning if anything paid creeps in.
-BUDGET_AMOUNT="${BUDGET_AMOUNT:-10}"      # USD per month
+# ~ $0), so the cap itself is mostly symbolic. Default is a random USD value
+# in [1, 20] picked per-run — the OCI Budgets API rounds up so any random
+# value in this range is a meaningful tripwire, and rotating it ensures
+# stale console state from a prior run can't fool the operator into thinking
+# the guardrail is in place when it isn't (every run yields a visible diff
+# in the OCI Console). Override with --budget-amount or env BUDGET_AMOUNT=N
+# when you want a stable, repeatable cap.
+BUDGET_AMOUNT="${BUDGET_AMOUNT:-$(shuf -i 1-20 -n 1)}"
 # BUDGET_EMAIL: alert recipient. If unset, defaults to `git config user.email`
 # of the operator running this script (the most common single-operator
 # convention). Override with --budget-email or env BUDGET_EMAIL=...
@@ -809,40 +815,43 @@ else
 fi
 say "  budget:  $BUDGET_OCID"
 
-# Alert rule: only created when an email recipient is supplied. OCI requires
-# at least one recipient (or "messaging" topic) per alert rule.
+# Alert rule: forecasted-spend trigger at 1% of cap. type=FORECAST means
+# OCI uses its own usage-projection model (not the realised spend) to
+# decide when to fire — so the operator gets a heads-up the moment the
+# cluster's burn rate would exceed the cap by month-end, even if today's
+# actual spend is still tiny. 1% threshold is intentionally low: we
+# expect $0 spend on Always-Free, so any forecast > $0.01 means
+# something paid is silently provisioned and worth investigating.
+# Single rule (not a 50/80/100 ladder) — at 1%, the ladder collapses.
 if [[ -n "$BUDGET_OCID" && -n "$BUDGET_EMAIL" ]]; then
-  for THRESHOLD in 50 80 100; do
-    ALERT_NAME="alert-${THRESHOLD}pct"
-    ALERT_LIST=$("${OCI_CLI[@]}" raw-request \
-      --target-uri "https://usage.${REGION}.oci.oraclecloud.com/20190111/budgets/${BUDGET_OCID}/alertRules?displayName=${ALERT_NAME}" \
-      --http-method GET --output json 2>/dev/null || echo '{"data":[]}')
-    if ! printf '%s' "$ALERT_LIST" | jq empty 2>/dev/null; then
-      ALERT_LIST='{"data":[]}'
-    fi
-    ALERT_OCID=$(jq -r '.data[0].id // empty' <<<"$ALERT_LIST")
-    if [[ -z "$ALERT_OCID" ]]; then
-      say "  creating alert ${ALERT_NAME} → ${BUDGET_EMAIL}"
-      ALERT_BODY=$(jq -n \
-        --arg name "$ALERT_NAME" \
-        --argjson th "$THRESHOLD" \
-        --arg recip "$BUDGET_EMAIL" \
-        --arg msg "Budget ${BUDGET_NAME} hit ${THRESHOLD}% of monthly cap (\$${BUDGET_AMOUNT})." '{
-          displayName:   $name,
-          type:          "ACTUAL",
-          threshold:     $th,
-          thresholdType: "PERCENTAGE",
-          recipients:    $recip,
-          message:       $msg
-        }')
-      "${OCI_CLI[@]}" raw-request \
-        --target-uri "https://usage.${REGION}.oci.oraclecloud.com/20190111/budgets/${BUDGET_OCID}/alertRules" \
-        --http-method POST --request-body "$ALERT_BODY" --output json \
-        >/dev/null 2>&1 || warn "    alert ${ALERT_NAME} create failed (recipient quota? mail config?)"
-    else
-      say "  alert ${ALERT_NAME} exists ($ALERT_OCID)"
-    fi
-  done
+  ALERT_NAME="alert-1pct-forecast"
+  ALERT_LIST=$("${OCI_CLI[@]}" raw-request \
+    --target-uri "https://usage.${REGION}.oci.oraclecloud.com/20190111/budgets/${BUDGET_OCID}/alertRules?displayName=${ALERT_NAME}" \
+    --http-method GET --output json 2>/dev/null || echo '{"data":[]}')
+  if ! printf '%s' "$ALERT_LIST" | jq empty 2>/dev/null; then
+    ALERT_LIST='{"data":[]}'
+  fi
+  ALERT_OCID=$(jq -r '.data[0].id // empty' <<<"$ALERT_LIST")
+  if [[ -z "$ALERT_OCID" ]]; then
+    say "  creating alert ${ALERT_NAME} → ${BUDGET_EMAIL}"
+    ALERT_BODY=$(jq -n \
+      --arg name "$ALERT_NAME" \
+      --arg recip "$BUDGET_EMAIL" \
+      --arg msg "Budget ${BUDGET_NAME} forecast hit 1% of monthly cap (\$${BUDGET_AMOUNT}). Investigate paid resources." '{
+        displayName:   $name,
+        type:          "FORECAST",
+        threshold:     1,
+        thresholdType: "PERCENTAGE",
+        recipients:    $recip,
+        message:       $msg
+      }')
+    "${OCI_CLI[@]}" raw-request \
+      --target-uri "https://usage.${REGION}.oci.oraclecloud.com/20190111/budgets/${BUDGET_OCID}/alertRules" \
+      --http-method POST --request-body "$ALERT_BODY" --output json \
+      >/dev/null 2>&1 || warn "    alert ${ALERT_NAME} create failed (recipient quota? mail config?)"
+  else
+    say "  alert ${ALERT_NAME} exists ($ALERT_OCID)"
+  fi
 elif [[ -n "$BUDGET_OCID" ]]; then
   say "  alert rules skipped (no --budget-email supplied; budget tracking still active in OCI Console)"
 fi
