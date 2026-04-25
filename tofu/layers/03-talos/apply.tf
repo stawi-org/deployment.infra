@@ -1,25 +1,38 @@
 # tofu/layers/03-talos/apply.tf
 #
-# Per-node Talos config + version reconciliation. Each node's
-# rendered config is staged to disk (so it doesn't blow ARG_MAX on
-# the provisioner's env), then scripts/talos-apply-or-upgrade.sh
-# inspects the node's stage and acts:
+# Uniform per-node Talos config + version reconciliation. Once a node
+# is provisioned and reachable on :50000, the apply path is identical
+# regardless of provider (Contabo / OCI / on-prem) or role (control-
+# plane / worker). The role-vs-provider asymmetry has already been
+# resolved upstream:
 #
-#   maintenance     →  apply-config --insecure   (clean install)
-#   running, match  →  no-op                     (idempotent)
-#   running, mismatch → talosctl upgrade --image (in-place upgrade)
+#   - data.talos_machine_configuration.cp[k]      generates CP configs
+#   - data.talos_machine_configuration.worker[k]  generates worker configs
+#   - local.per_node_configs (per-node-configs-writer.tf) selects the
+#     right one for each k.
+#
+# So this layer's apply path takes the already-customized per-node
+# config and pushes it the same way for every node.
 
 locals {
-  direct_controlplane_nodes = {
-    for k, v in local.controlplane_nodes : k => v
-    if !contains(var.talos_apply_skip, k)
+  # Every node we'll dial, minus the skip list. Spans CPs + workers,
+  # all providers — uniform set. Onprem nodes participate too as long
+  # as they have a public ipv4 the runner can reach.
+  direct_apply_nodes = {
+    for k, v in local.all_nodes_from_state : k => v
+    if !contains(var.talos_apply_skip, k) && try(v.ipv4, "") != ""
   }
-  direct_contabo_worker_nodes = {
-    for k, v in local.contabo_worker_nodes : k => v
-    if !contains(var.talos_apply_skip, k)
+
+  # CP-only view of the same set — bootstrap + wait_apiserver work on
+  # CPs specifically (only CPs run kube-apiserver / etcd).
+  direct_controlplane_nodes = {
+    for k, v in local.direct_apply_nodes : k => v if try(v.role, "") == "controlplane"
   }
 
   # Per-CP DNS target — used only by talos_machine_bootstrap (mTLS).
+  # Bootstrap targets ONE specific CP, and TLS validates that name
+  # against a SAN. CPs have cp-N.<zone> records published by
+  # cluster_dns; workers don't (yet), so this is sparse.
   cp_apply_target = length(var.cp_dns_zones) > 0 ? {
     for i, k in local.cp_sorted_keys :
     k => "${var.cp_dns_zones[0].cp_label}-${i + 1}.${var.cp_dns_zones[0].zone}"
@@ -27,42 +40,48 @@ locals {
     for k, v in local.controlplane_nodes : k => v.ipv4
   }
 
-  installer_url = "factory.talos.dev/installer/${talos_image_factory_schematic.this.id}"
+  installer_url    = "factory.talos.dev/installer/${talos_image_factory_schematic.this.id}"
+  talosconfig_yaml = data.talos_client_configuration.this.talos_config
 
-  # Staging directory for the apply provisioner — written outside the
-  # tofu working tree so init/format don't churn on it.
+  # Staging dir for rendered configs. Outside the tofu tree so init/
+  # format don't churn on it. Gitignored.
   apply_stage_dir = "${path.module}/.apply-stage"
 }
 
-# Talosconfig + per-node machine configs staged to disk so the
-# provisioner can pass file PATHS rather than the file contents
-# (which exceed Linux ARG_MAX as env vars).
+# Talosconfig is the same for every node — staged once.
 resource "local_sensitive_file" "talosconfig" {
-  content              = data.talos_client_configuration.this.talos_config
+  content              = local.talosconfig_yaml
   filename             = "${local.apply_stage_dir}/talosconfig.yaml"
   file_permission      = "0600"
   directory_permission = "0700"
 }
 
-resource "local_sensitive_file" "cp_machine_config" {
-  for_each             = local.direct_controlplane_nodes
-  content              = data.talos_machine_configuration.cp[each.key].machine_configuration
-  filename             = "${local.apply_stage_dir}/cp/${each.key}.yaml"
+# Each node's already-rendered machine config (CP or worker) staged
+# to disk so the provisioner can pass file PATHS rather than the file
+# contents (which exceed Linux ARG_MAX as env vars).
+resource "local_sensitive_file" "node_machine_config" {
+  for_each             = local.direct_apply_nodes
+  content              = local.per_node_configs[each.key]
+  filename             = "${local.apply_stage_dir}/nodes/${each.key}.yaml"
   file_permission      = "0600"
   directory_permission = "0700"
 }
 
-resource "null_resource" "apply_cp_config" {
-  for_each = local.direct_controlplane_nodes
+# One uniform apply resource for every node. Triggers on rendered-
+# config sha + target version + image_apply_generation; the script
+# itself decides path (insecure apply / no-op / upgrade) based on
+# what the node reports at runtime.
+resource "null_resource" "apply_node_config" {
+  for_each = local.direct_apply_nodes
 
   triggers = {
-    config_hash            = local_sensitive_file.cp_machine_config[each.key].content_sha256
+    config_hash            = local_sensitive_file.node_machine_config[each.key].content_sha256
     target_version         = var.talos_version
     image_apply_generation = each.value.image_apply_generation
   }
 
   depends_on = [
-    local_sensitive_file.cp_machine_config,
+    local_sensitive_file.node_machine_config,
     local_sensitive_file.talosconfig,
   ]
 
@@ -73,7 +92,7 @@ resource "null_resource" "apply_cp_config" {
       NODE_NAME           = each.key
       TARGET_VERSION      = var.talos_version
       INSTALLER_URL       = local.installer_url
-      MACHINE_CONFIG_FILE = local_sensitive_file.cp_machine_config[each.key].filename
+      MACHINE_CONFIG_FILE = local_sensitive_file.node_machine_config[each.key].filename
       TALOSCONFIG_FILE    = local_sensitive_file.talosconfig.filename
     }
     command = "${path.module}/../../../scripts/talos-apply-or-upgrade.sh"
