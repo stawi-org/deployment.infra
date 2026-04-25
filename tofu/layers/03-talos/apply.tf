@@ -1,25 +1,15 @@
 # tofu/layers/03-talos/apply.tf
 #
-# Per-node Talos config + version reconciliation. The per-node
-# provisioner shells out to scripts/talos-apply-or-upgrade.sh, which
-# inspects each node's current stage and acts accordingly:
+# Per-node Talos config + version reconciliation. Each node's
+# rendered config is staged to disk (so it doesn't blow ARG_MAX on
+# the provisioner's env), then scripts/talos-apply-or-upgrade.sh
+# inspects the node's stage and acts:
 #
 #   maintenance     →  apply-config --insecure   (clean install)
 #   running, match  →  no-op                     (idempotent)
 #   running, mismatch → talosctl upgrade --image (in-place upgrade)
-#
-# This single resource handles all four cases the operator described:
-# fresh install, reinstall, idempotent re-runs, and version upgrades —
-# without destroying running clusters.
-#
-# Configs are also written to R2 by per_node_configs_writer, so an
-# operator can `aws s3 cp` to inspect what was generated:
-#   production/inventory/<provider>/<account>/<talos-version>/<node>.yaml
 
 locals {
-  # Skip-list driven exclusion. Entries stay in controlplane_nodes /
-  # cert SANs / DNS so the rest of the layer can model the node — they
-  # just don't receive a `talosctl apply` pass on this run.
   direct_controlplane_nodes = {
     for k, v in local.controlplane_nodes : k => v
     if !contains(var.talos_apply_skip, k)
@@ -29,11 +19,7 @@ locals {
     if !contains(var.talos_apply_skip, k)
   }
 
-  # Per-CP DNS target — used only by talos_machine_bootstrap, which
-  # MUST use mTLS (the BootstrapEtcd RPC requires authentication via
-  # the cluster's client cert). Each CP's cert SANs include
-  # cp-<N>.<zone>, so dialing that name validates regardless of
-  # whether the node's public IP is on-NIC or NAT'd.
+  # Per-CP DNS target — used only by talos_machine_bootstrap (mTLS).
   cp_apply_target = length(var.cp_dns_zones) > 0 ? {
     for i, k in local.cp_sorted_keys :
     k => "${var.cp_dns_zones[0].cp_label}-${i + 1}.${var.cp_dns_zones[0].zone}"
@@ -41,39 +27,54 @@ locals {
     for k, v in local.controlplane_nodes : k => v.ipv4
   }
 
-  # Multi-arch factory installer URL — same schematic id picks the
-  # right arch via the OCI manifest list, so Contabo amd64 and OCI
-  # arm64 both resolve from this one base URL.
   installer_url = "factory.talos.dev/installer/${talos_image_factory_schematic.this.id}"
 
-  # Talosconfig string used by the apply-or-upgrade script to talk
-  # mTLS to running nodes (version checks, upgrades).
-  talosconfig_yaml = data.talos_client_configuration.this.talos_config
+  # Staging directory for the apply provisioner — written outside the
+  # tofu working tree so init/format don't churn on it.
+  apply_stage_dir = "${path.module}/.apply-stage"
+}
+
+# Talosconfig + per-node machine configs staged to disk so the
+# provisioner can pass file PATHS rather than the file contents
+# (which exceed Linux ARG_MAX as env vars).
+resource "local_sensitive_file" "talosconfig" {
+  content              = data.talos_client_configuration.this.talos_config
+  filename             = "${local.apply_stage_dir}/talosconfig.yaml"
+  file_permission      = "0600"
+  directory_permission = "0700"
+}
+
+resource "local_sensitive_file" "cp_machine_config" {
+  for_each             = local.direct_controlplane_nodes
+  content              = data.talos_machine_configuration.cp[each.key].machine_configuration
+  filename             = "${local.apply_stage_dir}/cp/${each.key}.yaml"
+  file_permission      = "0600"
+  directory_permission = "0700"
 }
 
 resource "null_resource" "apply_cp_config" {
   for_each = local.direct_controlplane_nodes
 
   triggers = {
-    # Re-run when the rendered config changes (label/SAN/sysctl edit
-    # flows through), when target Talos version changes (triggers an
-    # upgrade), or after a disk wipe (forces fresh maintenance-mode
-    # apply). The script itself decides which path to take based on
-    # the node's actual state at run time.
-    config_hash            = sha256(data.talos_machine_configuration.cp[each.key].machine_configuration)
+    config_hash            = local_sensitive_file.cp_machine_config[each.key].content_sha256
     target_version         = var.talos_version
     image_apply_generation = each.value.image_apply_generation
   }
 
+  depends_on = [
+    local_sensitive_file.cp_machine_config,
+    local_sensitive_file.talosconfig,
+  ]
+
   provisioner "local-exec" {
     interpreter = ["bash", "-c"]
     environment = {
-      NODE_IP        = each.value.ipv4
-      NODE_NAME      = each.key
-      TARGET_VERSION = var.talos_version
-      INSTALLER_URL  = local.installer_url
-      MACHINE_CONFIG = data.talos_machine_configuration.cp[each.key].machine_configuration
-      TALOSCONFIG    = local.talosconfig_yaml
+      NODE_IP             = each.value.ipv4
+      NODE_NAME           = each.key
+      TARGET_VERSION      = var.talos_version
+      INSTALLER_URL       = local.installer_url
+      MACHINE_CONFIG_FILE = local_sensitive_file.cp_machine_config[each.key].filename
+      TALOSCONFIG_FILE    = local_sensitive_file.talosconfig.filename
     }
     command = "${path.module}/../../../scripts/talos-apply-or-upgrade.sh"
   }

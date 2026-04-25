@@ -9,13 +9,18 @@
 #                               (in-place upgrade, etcd survives)
 #
 # Inputs (env, set by the null_resource provisioner):
-#   NODE_IP        — public IP to dial
-#   NODE_NAME      — for log lines
-#   TARGET_VERSION — desired Talos version (e.g. v1.12.6)
-#   INSTALLER_URL  — factory installer URL prefix
-#                    (e.g. factory.talos.dev/installer/<schematic>)
-#   MACHINE_CONFIG — full rendered machine config for this node
-#   TALOSCONFIG    — talosconfig YAML for mTLS calls (post-bootstrap)
+#   NODE_IP             — public IP to dial
+#   NODE_NAME           — for log lines
+#   TARGET_VERSION      — desired Talos version (e.g. v1.12.6)
+#   INSTALLER_URL       — factory installer URL prefix
+#                         (e.g. factory.talos.dev/installer/<schematic>)
+#   MACHINE_CONFIG_FILE — path to the rendered machine config for this node
+#   TALOSCONFIG_FILE    — path to talosconfig YAML for mTLS calls
+#
+# Configs are staged on disk by tofu's local_sensitive_file resources
+# rather than passed inline, because Talos machine configs (~30-50 KB)
+# combined with a talosconfig (~2 KB) plus tofu-injected env easily
+# exceed Linux's ARG_MAX (~128 KB on the runner).
 #
 # Exit codes:
 #   0 — node is at TARGET_VERSION with config applied
@@ -26,13 +31,14 @@ set -uo pipefail
 : "${NODE_NAME:?NODE_NAME must be set}"
 : "${TARGET_VERSION:?TARGET_VERSION must be set}"
 : "${INSTALLER_URL:?INSTALLER_URL must be set}"
-: "${MACHINE_CONFIG:?MACHINE_CONFIG must be set}"
-: "${TALOSCONFIG:?TALOSCONFIG must be set}"
+: "${MACHINE_CONFIG_FILE:?MACHINE_CONFIG_FILE must be set}"
+: "${TALOSCONFIG_FILE:?TALOSCONFIG_FILE must be set}"
 
-scratch=$(mktemp -d); chmod 700 "$scratch"
-trap 'rm -rf "$scratch"' EXIT
-cfg_file="$scratch/machine.yaml"; printf '%s' "$MACHINE_CONFIG" > "$cfg_file"
-tc_file="$scratch/talosconfig";   printf '%s' "$TALOSCONFIG"    > "$tc_file"
+[[ -r "$MACHINE_CONFIG_FILE" ]] || { echo "::error::cannot read $MACHINE_CONFIG_FILE" >&2; exit 1; }
+[[ -r "$TALOSCONFIG_FILE"    ]] || { echo "::error::cannot read $TALOSCONFIG_FILE"    >&2; exit 1; }
+
+cfg_file="$MACHINE_CONFIG_FILE"
+tc_file="$TALOSCONFIG_FILE"
 
 log() { printf '[%s] %s\n' "$NODE_NAME" "$*"; }
 
