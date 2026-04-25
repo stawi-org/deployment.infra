@@ -54,13 +54,11 @@ log() { printf '[%s] %s\n' "$NODE_NAME" "$*"; }
 # 10s was eaten by slow cross-cloud TLS handshakes (OCI from a US-east
 # runner, etc.) and produced false-positive unreachables.
 #
-# stderr from each probe is logged to LAST_PROBE_STDERR so the caller
-# can surface why we're declaring a node unreachable instead of just
-# saying "unreachable" with no diagnostic.
-LAST_PROBE_STDERR=""
+# Diagnostic from each failed probe is written to script stderr (>&2)
+# rather than a captured local var — detect_stage runs inside a $()
+# subshell, so any variable assignment is invisible to the caller.
 detect_stage() {
   local out rc
-  LAST_PROBE_STDERR=""
   out=$(timeout 30 talosctl get machinestatus --insecure \
     --nodes "$NODE_IP" -o jsonpath='{.spec.stage}' 2>/tmp/probe-stderr.$$)
   rc=$?
@@ -69,7 +67,7 @@ detect_stage() {
     printf '%s' "$out"
     return 0
   fi
-  LAST_PROBE_STDERR="insecure: $(cat /tmp/probe-stderr.$$ 2>/dev/null | head -3 | tr '\n' '|')"
+  echo "[$NODE_NAME] insecure probe rc=$rc, stderr: $(cat /tmp/probe-stderr.$$ 2>/dev/null | head -3 | tr '\n' ' / ')" >&2
   # mTLS path — node has rejected insecure (configured cluster).
   out=$(timeout 30 talosctl --talosconfig "$tc_file" \
     --endpoints "$NODE_IP" --nodes "$NODE_IP" \
@@ -80,7 +78,7 @@ detect_stage() {
     printf '%s' "$out"
     return 0
   fi
-  LAST_PROBE_STDERR="$LAST_PROBE_STDERR mtls: $(cat /tmp/probe-stderr.$$ 2>/dev/null | head -3 | tr '\n' '|')"
+  echo "[$NODE_NAME] mtls probe rc=$rc, stderr: $(cat /tmp/probe-stderr.$$ 2>/dev/null | head -3 | tr '\n' ' / ')" >&2
   rm -f /tmp/probe-stderr.$$
   printf 'unreachable'
   return 1
@@ -100,7 +98,7 @@ do_apply() {
     if [[ "$stage" != "unreachable" && -n "$stage" ]]; then
       break
     fi
-    log "attempt $attempt/30: stage=unreachable [$LAST_PROBE_STDERR], retrying in 10s"
+    log "attempt $attempt/30: stage=unreachable, retrying in 10s"
     sleep 10
   done
   log "detected stage=$stage"
