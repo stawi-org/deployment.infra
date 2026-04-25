@@ -48,5 +48,9 @@ spec:
     provider: github
     url: "https://github.com/stawi-org/deployment.manifests"
     ref: "refs/heads/main"
-    path: "manifests/flux-system"
+    # deployment.manifests has the flux-system root Kustomization at
+    # the repo root (per its MANIFESTS.md: "The repository root *is*
+    # the manifests root; FluxCD reconciles directly from flux-system/
+    # here.") — NOT under a leading manifests/ prefix.
+    path: "flux-system"
     pullSecret: "ghapp-secret"
