@@ -815,43 +815,46 @@ else
 fi
 say "  budget:  $BUDGET_OCID"
 
-# Alert rule: forecasted-spend trigger at 1% of cap. type=FORECAST means
-# OCI uses its own usage-projection model (not the realised spend) to
-# decide when to fire — so the operator gets a heads-up the moment the
-# cluster's burn rate would exceed the cap by month-end, even if today's
-# actual spend is still tiny. 1% threshold is intentionally low: we
-# expect $0 spend on Always-Free, so any forecast > $0.01 means
-# something paid is silently provisioned and worth investigating.
-# Single rule (not a 50/80/100 ladder) — at 1%, the ladder collapses.
+# Alert rules: forecasted-spend ladder at 1, 3, 15, 50, 80, 100 percent of
+# cap. type=FORECAST means OCI uses its own usage-projection model (not
+# realised spend) to decide when to fire — operator gets a heads-up the
+# moment the cluster's burn rate would exceed each threshold by month-end,
+# days before realised spend reaches the same point. 1% is the early
+# tripwire on the always-free baseline ($0 expected); the higher tiers
+# track ongoing severity if it does start spending. Each rule is keyed by
+# display_name so re-runs are idempotent.
 if [[ -n "$BUDGET_OCID" && -n "$BUDGET_EMAIL" ]]; then
-  ALERT_NAME="alert-1pct-forecast"
-  ALERT_LIST=$("${OCI_CLI[@]}" raw-request \
-    --target-uri "https://usage.${REGION}.oci.oraclecloud.com/20190111/budgets/${BUDGET_OCID}/alertRules?displayName=${ALERT_NAME}" \
-    --http-method GET --output json 2>/dev/null || echo '{"data":[]}')
-  if ! printf '%s' "$ALERT_LIST" | jq empty 2>/dev/null; then
-    ALERT_LIST='{"data":[]}'
-  fi
-  ALERT_OCID=$(jq -r '.data[0].id // empty' <<<"$ALERT_LIST")
-  if [[ -z "$ALERT_OCID" ]]; then
-    say "  creating alert ${ALERT_NAME} → ${BUDGET_EMAIL}"
-    ALERT_BODY=$(jq -n \
-      --arg name "$ALERT_NAME" \
-      --arg recip "$BUDGET_EMAIL" \
-      --arg msg "Budget ${BUDGET_NAME} forecast hit 1% of monthly cap (\$${BUDGET_AMOUNT}). Investigate paid resources." '{
-        displayName:   $name,
-        type:          "FORECAST",
-        threshold:     1,
-        thresholdType: "PERCENTAGE",
-        recipients:    $recip,
-        message:       $msg
-      }')
-    "${OCI_CLI[@]}" raw-request \
-      --target-uri "https://usage.${REGION}.oci.oraclecloud.com/20190111/budgets/${BUDGET_OCID}/alertRules" \
-      --http-method POST --request-body "$ALERT_BODY" --output json \
-      >/dev/null 2>&1 || warn "    alert ${ALERT_NAME} create failed (recipient quota? mail config?)"
-  else
-    say "  alert ${ALERT_NAME} exists ($ALERT_OCID)"
-  fi
+  for THRESHOLD in 1 3 15 50 80 100; do
+    ALERT_NAME=$(printf 'alert-%03dpct-forecast' "$THRESHOLD")
+    ALERT_LIST=$("${OCI_CLI[@]}" raw-request \
+      --target-uri "https://usage.${REGION}.oci.oraclecloud.com/20190111/budgets/${BUDGET_OCID}/alertRules?displayName=${ALERT_NAME}" \
+      --http-method GET --output json 2>/dev/null || echo '{"data":[]}')
+    if ! printf '%s' "$ALERT_LIST" | jq empty 2>/dev/null; then
+      ALERT_LIST='{"data":[]}'
+    fi
+    ALERT_OCID=$(jq -r '.data[0].id // empty' <<<"$ALERT_LIST")
+    if [[ -z "$ALERT_OCID" ]]; then
+      say "  creating alert ${ALERT_NAME} → ${BUDGET_EMAIL}"
+      ALERT_BODY=$(jq -n \
+        --arg name "$ALERT_NAME" \
+        --argjson th "$THRESHOLD" \
+        --arg recip "$BUDGET_EMAIL" \
+        --arg msg "Budget ${BUDGET_NAME} forecast hit ${THRESHOLD}% of monthly cap (\$${BUDGET_AMOUNT}). Investigate paid resources." '{
+          displayName:   $name,
+          type:          "FORECAST",
+          threshold:     $th,
+          thresholdType: "PERCENTAGE",
+          recipients:    $recip,
+          message:       $msg
+        }')
+      "${OCI_CLI[@]}" raw-request \
+        --target-uri "https://usage.${REGION}.oci.oraclecloud.com/20190111/budgets/${BUDGET_OCID}/alertRules" \
+        --http-method POST --request-body "$ALERT_BODY" --output json \
+        >/dev/null 2>&1 || warn "    alert ${ALERT_NAME} create failed (recipient quota? mail config?)"
+    else
+      say "  alert ${ALERT_NAME} exists ($ALERT_OCID)"
+    fi
+  done
 elif [[ -n "$BUDGET_OCID" ]]; then
   say "  alert rules skipped (no --budget-email supplied; budget tracking still active in OCI Console)"
 fi
