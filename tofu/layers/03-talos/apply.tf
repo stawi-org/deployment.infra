@@ -25,14 +25,20 @@ locals {
     if !contains(var.talos_apply_skip, k)
   }
 
-  # Round-robin DNS endpoint for talos_machine_configuration_apply.
-  # Every CP carries cp.<zone> in its certSANs (set in
-  # configs.tf::shared_cp_patches via cp_cert_sans). Connecting via
-  # cp.<zone> rather than per-node IPs means SNI matches a SAN
-  # regardless of which node DNS lands on, and we don't depend on
-  # any node's interface-bound address being in the cert (key for
-  # OCI where the public IPv4 is NAT'd, not on-NIC).
-  cp_round_robin_dns = length(var.cp_dns_zones) > 0 ? "${var.cp_dns_zones[0].cp_label}.${var.cp_dns_zones[0].zone}" : null
+  # Per-CP apply target. Each CP gets cp-<N>.<first-zone> where N is
+  # its 1-based index in cp_sorted_keys; that DNS resolves to the
+  # node's public IP (Cloudflare A/AAAA managed by cluster_dns) and
+  # is in cp_cert_sans, so TLS validates regardless of provider.
+  # Falls back to per-node IP when no DNS zone is configured (local
+  # dev). ApplyConfiguration is a per-node RPC — Talos doesn't proxy
+  # it — so we MUST dial each node specifically; round-robin DNS
+  # would land all CPs on whichever single backend resolved.
+  cp_apply_target = length(var.cp_dns_zones) > 0 ? {
+    for i, k in local.cp_sorted_keys :
+    k => "${var.cp_dns_zones[0].cp_label}-${i + 1}.${var.cp_dns_zones[0].zone}"
+    } : {
+    for k, v in local.controlplane_nodes : k => v.ipv4
+  }
 }
 
 # terraform_data tracks the rendered machine config content per node. When the
@@ -58,12 +64,11 @@ resource "talos_machine_configuration_apply" "cp" {
   for_each                    = local.direct_controlplane_nodes
   client_configuration        = data.terraform_remote_state.secrets.outputs.client_configuration
   machine_configuration_input = data.talos_machine_configuration.cp[each.key].machine_configuration
-  # Connect via round-robin DNS for both `node` and `endpoint`. Every
-  # CP's machine.certSANs contains cp.<zone>, so TLS verification
-  # succeeds regardless of which CP DNS lands on. Falls back to the
-  # node's IPv4 only if no DNS zone is configured (local-dev fallback).
-  node     = local.cp_round_robin_dns != null ? local.cp_round_robin_dns : each.value.ipv4
-  endpoint = local.cp_round_robin_dns != null ? local.cp_round_robin_dns : each.value.ipv4
+  # Per-CP DNS target — each CP's own cp-<N>.<zone>. ApplyConfiguration
+  # is non-proxying so this MUST resolve to the specific node we're
+  # configuring. cert SANs include the same name, so TLS validates.
+  node     = local.cp_apply_target[each.key]
+  endpoint = local.cp_apply_target[each.key]
   # apply_mode = "auto" lets Talos decide whether the change requires a
   # reboot. Most diffs (cert SANs, node labels, sysctls, kubelet args)
   # are applied live and never touch services. The previous "reboot"

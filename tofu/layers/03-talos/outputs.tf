@@ -6,8 +6,8 @@ data "talos_cluster_kubeconfig" "this" {
   # kube-apiserver takes 60-180s to start after bootstrap returns.
   depends_on           = [null_resource.wait_apiserver]
   client_configuration = data.terraform_remote_state.secrets.outputs.client_configuration
-  node                 = local.cp_round_robin_dns != null ? local.cp_round_robin_dns : local.bootstrap_node.ipv4
-  endpoint             = local.cp_round_robin_dns != null ? local.cp_round_robin_dns : local.bootstrap_node.ipv4
+  node                 = try(local.cp_apply_target[local.bootstrap_node_key], local.bootstrap_node.ipv4)
+  endpoint             = try(local.cp_apply_target[local.bootstrap_node_key], local.bootstrap_node.ipv4)
 }
 
 data "talos_client_configuration" "this" {

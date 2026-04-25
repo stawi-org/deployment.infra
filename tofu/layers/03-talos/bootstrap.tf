@@ -38,12 +38,12 @@ resource "terraform_data" "cluster_reinstall_marker" {
 
 resource "talos_machine_bootstrap" "this" {
   depends_on = [talos_machine_configuration_apply.cp]
-  # Connect via the round-robin DNS — every CP carries cp.<zone> in
-  # its certSANs, so TLS validates regardless of which CP DNS lands
-  # on. Falls back to the bootstrap node's IPv4 only when no DNS
-  # zone is configured (local-dev).
-  node                 = local.cp_round_robin_dns != null ? local.cp_round_robin_dns : local.bootstrap_node.ipv4
-  endpoint             = local.cp_round_robin_dns != null ? local.cp_round_robin_dns : local.bootstrap_node.ipv4
+  # Bootstrap targets ONE specific CP (the etcd seed). Use that node's
+  # per-CP DNS so TLS validates against a SAN whether the CP's IP is
+  # on-NIC (Contabo) or NAT'd (OCI). Falls back to its IPv4 if no DNS
+  # zone is configured.
+  node                 = try(local.cp_apply_target[local.bootstrap_node_key], local.bootstrap_node.ipv4)
+  endpoint             = try(local.cp_apply_target[local.bootstrap_node_key], local.bootstrap_node.ipv4)
   client_configuration = data.terraform_remote_state.secrets.outputs.client_configuration
 
   lifecycle {

@@ -55,18 +55,25 @@ locals {
   lb_has_any = length(local.lb_all_ipv4) + length(local.lb_all_ipv6) > 0
 
   # ---- apiserver + talosd cert SANs ---------------------------------
-  # Round-robin DNS only: cp.<zone> for every zone we publish, plus
-  # operator-supplied extras. NO per-CP names (cp-1, cp-2, ...) and
-  # NO node IPs. Connecting to any CP via the round-robin DNS means
-  # the SNI matches a SAN every CP carries, regardless of which node
-  # DNS happens to land on. Per-CP DNS records still get created (in
-  # cluster_dns) for human-friendly access; they're just not in cert
-  # SANs and tofu apply doesn't connect via them.
-  # prod-* is excluded — those front load-balancer workers, not the
-  # apiserver. Clients that want prod.<zone>:443 go through the LB's
-  # own TLS termination (cert-manager inside the cluster).
+  # cp.<zone>          (round-robin, every CP carries it)
+  # cp-<N>.<zone>      (per-CP, N is 1-based index in cp_sorted_keys)
+  #
+  # Per-CP names are required for talos_machine_configuration_apply,
+  # which is a per-node RPC: each apply must dial the node it's
+  # configuring, and TLS validates the dial target against a SAN. By
+  # giving every CP both the round-robin name AND its own cp-<N>.<zone>,
+  # tofu can address each one without relying on Talos's auto-discovery
+  # of NIC-bound public IPs (which OCI's NAT'd ephemeral doesn't have).
+  # No node IPs in this list — DNS records are tofu-managed and stable
+  # under instance recreates. prod-* is excluded — those front the LB,
+  # which has its own cert-manager TLS termination inside the cluster.
   cp_cert_sans = distinct(concat(
     [for z in var.cp_dns_zones : "${z.cp_label}.${z.zone}"],
+    flatten([
+      for z in var.cp_dns_zones : [
+        for i, _ in local.cp_sorted_keys : "${z.cp_label}-${i + 1}.${z.zone}"
+      ]
+    ]),
     var.extra_cert_sans,
   ))
 }

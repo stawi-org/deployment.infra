@@ -92,7 +92,8 @@ locals {
   # Prefer a reachable CP when picking the bootstrap / kubeconfig host;
   # fall back to any CP if the reachable set is empty (shouldn't happen
   # in practice — that would mean no CPs can be talosctl-applied at all).
-  bootstrap_node = length(local.direct_controlplane_nodes) > 0 ? values(local.direct_controlplane_nodes)[0] : (length(local.controlplane_nodes) > 0 ? values(local.controlplane_nodes)[0] : null)
+  bootstrap_node_key = length(local.direct_controlplane_nodes) > 0 ? keys(local.direct_controlplane_nodes)[0] : (length(local.controlplane_nodes) > 0 ? keys(local.controlplane_nodes)[0] : null)
+  bootstrap_node     = local.bootstrap_node_key != null ? local.all_nodes_from_state[local.bootstrap_node_key] : null
   all_node_addresses = compact(flatten([
     for n in local.all_nodes_from_state : [
       try(n.ipv4, null),

@@ -17,13 +17,12 @@ resource "talos_machine_configuration_apply" "worker_contabo" {
   for_each                    = local.direct_contabo_worker_nodes
   client_configuration        = data.terraform_remote_state.secrets.outputs.client_configuration
   machine_configuration_input = data.talos_machine_configuration.worker[each.key].machine_configuration
-  # Connect via the round-robin DNS (cp.<zone>). Every node's
-  # machine.certSANs contains cp.<zone>, so TLS verification matches
-  # regardless of which CP DNS lands on. The CP routes the
-  # configuration apply to the worker via Talos's intra-cluster
-  # discovery, so no per-node IP is referenced.
-  node       = local.cp_round_robin_dns != null ? local.cp_round_robin_dns : each.value.ipv4
-  endpoint   = local.cp_round_robin_dns != null ? local.cp_round_robin_dns : each.value.ipv4
+  # Contabo workers have on-NIC public IPs, so Talos auto-includes
+  # them in the apid serving cert. Dial the IP directly — no per-
+  # worker DNS needed. ApplyConfiguration is per-node, so the dial
+  # target IS the node we're configuring.
+  node       = each.value.ipv4
+  endpoint   = each.value.ipv4
   apply_mode = "auto" # let Talos decide reboot need; see apply.tf
 
 
