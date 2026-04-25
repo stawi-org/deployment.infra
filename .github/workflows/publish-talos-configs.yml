@@ -35,23 +35,37 @@ jobs:
           sudo install -m 0755 /tmp/age/age /usr/local/bin/age
 
       - name: Fetch dispatcher's SSH public keys from GitHub
+        id: keys
         env:
           ACTOR: ${{ github.triggering_actor }}
         run: |
           set -euo pipefail
+          # Bot actors (github-actions[bot] from cross-workflow dispatch
+          # like cluster-reinstall -> tofu-apply -> publish-talos-configs)
+          # have no GitHub SSH keys. Skip the bundle in that case rather
+          # than failing the parent apply — re-running this workflow
+          # manually as the operator regenerates an encrypted artifact.
+          if [[ "$ACTOR" == *"[bot]" ]]; then
+            echo "::notice::dispatcher is a bot ($ACTOR); skipping bundle. Re-run publish-talos-configs.yml manually if you need the artifact."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           curl -fsSL "https://github.com/${ACTOR}.keys" \
             | grep -E '^(ssh-ed25519|ssh-rsa)[[:space:]]' \
             > /tmp/recipients.keys || true
 
           if [[ ! -s /tmp/recipients.keys ]]; then
-            echo "::error::${ACTOR} has no ssh-ed25519 or ssh-rsa public keys on GitHub."
-            echo "::error::Add one at https://github.com/settings/keys so this workflow can encrypt the Talos config bundle to you."
-            exit 1
+            echo "::warning::${ACTOR} has no ssh-ed25519 or ssh-rsa public keys on GitHub. Skipping bundle (add a key at https://github.com/settings/keys and re-run to retrieve)."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           echo "Will encrypt to $(wc -l < /tmp/recipients.keys) public key(s) belonging to ${ACTOR}"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
 
       - name: Fetch layer-03 state from R2
+        if: steps.keys.outputs.skip != 'true'
         env:
           AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -64,6 +78,7 @@ jobs:
           test -s /tmp/03.tfstate
 
       - name: Render bundle
+        if: steps.keys.outputs.skip != 'true'
         run: |
           set -euo pipefail
           OUT=/tmp/talos-configs
@@ -151,6 +166,7 @@ jobs:
           ls -lh /tmp/talos-configs.tar.gz.age
 
       - name: Upload encrypted bundle to R2 for audit
+        if: steps.keys.outputs.skip != 'true'
         env:
           AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -166,6 +182,7 @@ jobs:
           echo "Uploaded audit bundle to s3://cluster-tofu-state/${AUDIT_KEY}"
 
       - uses: actions/upload-artifact@v6
+        if: steps.keys.outputs.skip != 'true'
         with:
           name: talos-configs
           path: /tmp/talos-configs.tar.gz.age
