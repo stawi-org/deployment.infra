@@ -25,14 +25,17 @@ import {
   id = "machine_bootstrap"
 }
 
-# The previous design used terraform_data.bootstrap_trigger +
-# replace_triggered_by so a CP disk-wipe (image_apply_generation bump)
-# would auto re-bootstrap. That mechanism is intentionally not wired
-# right now: its own input-schema updates were cascading destroy+create
-# onto the imported bootstrap, and etcd rejects "bootstrap twice"
-# (AlreadyExists — etcd data directory is not empty). For disaster
-# recovery today: use the node-recovery workflow to reset etcd, then
-# `tofu taint talos_machine_bootstrap.this` and re-apply.
+# Re-fire the Bootstrap RPC when ALL Contabo CPs were just wiped.
+# Layer 01's force_reinstall_generation is the cluster-wide reinstall
+# counter — bumping it re-images every Contabo CP in parallel and
+# leaves etcd empty on every CP. After that, Talos's Bootstrap RPC
+# must fire again to seed etcd. Per-node reinstalls
+# (per_node_force_reinstall_generation) deliberately don't bump this
+# output — they add a healthy node to a quorate cluster instead.
+resource "terraform_data" "cluster_reinstall_marker" {
+  triggers_replace = data.terraform_remote_state.contabo.outputs.cluster_reinstall_generation
+}
+
 resource "talos_machine_bootstrap" "this" {
   depends_on = [talos_machine_configuration_apply.cp]
   # Connect via the round-robin DNS — every CP carries cp.<zone> in
@@ -42,6 +45,10 @@ resource "talos_machine_bootstrap" "this" {
   node                 = local.cp_round_robin_dns != null ? local.cp_round_robin_dns : local.bootstrap_node.ipv4
   endpoint             = local.cp_round_robin_dns != null ? local.cp_round_robin_dns : local.bootstrap_node.ipv4
   client_configuration = data.terraform_remote_state.secrets.outputs.client_configuration
+
+  lifecycle {
+    replace_triggered_by = [terraform_data.cluster_reinstall_marker]
+  }
 }
 
 # Wait for kube-apiserver /healthz before this layer reports success.
