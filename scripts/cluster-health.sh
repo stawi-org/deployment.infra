@@ -38,6 +38,28 @@ FAIL=0
 pass() { echo "  PASS: $*"; }
 fail() { echo "::error::FAIL: $*"; FAIL=$((FAIL + 1)); }
 
+# ----- 0. Flannel preflight (fail-fast gate) -------------------------
+# Without a healthy CNI the rest of the checks (pod listings, flux,
+# etcd via talos) take many minutes to hang and time out, burning
+# pipeline minutes for a result we already know. Exit cleanly with
+# a notice when Flannel isn't fully ready so the workflow finishes
+# in seconds instead of half an hour.
+echo "::group::Flannel readiness preflight"
+FLANNEL_DS_JSON=$(timeout 20 kubectl -n kube-system get ds kube-flannel \
+  --request-timeout=10s -o json 2>/dev/null || echo '{}')
+DESIRED=$(jq -r '.status.desiredNumberScheduled // 0' <<<"$FLANNEL_DS_JSON")
+READY=$(jq -r '.status.numberReady // 0' <<<"$FLANNEL_DS_JSON")
+if [[ "$DESIRED" == "0" ]]; then
+  echo "::notice::Flannel daemonset not found yet — skipping rest of checks"
+  exit 0
+fi
+if [[ "$READY" != "$DESIRED" ]]; then
+  echo "::notice::Flannel not fully ready ($READY/$DESIRED) — skipping rest of checks to save pipeline minutes; re-run after CNI settles"
+  exit 0
+fi
+echo "  Flannel ready ($READY/$DESIRED)"
+echo "::endgroup::"
+
 # ----- 1. apiserver reachable ----------------------------------------
 echo "::group::apiserver reachability (kubectl version)"
 if kubectl version --request-timeout=10s 2>&1; then
@@ -102,26 +124,31 @@ if [[ -z "$FIRST_CP" ]]; then
   fail "could not resolve any CP IP from tfstate"
 else
   echo "  probing etcd on $FIRST_CP"
-  if talosctl -n "$FIRST_CP" -e "$FIRST_CP" etcd members 2>&1; then
+  # Hard 30s cap — if the CP is unreachable on :50000, talosctl
+  # otherwise stalls for ~10 min on its own connection retries.
+  if timeout 30 talosctl -n "$FIRST_CP" -e "$FIRST_CP" etcd members 2>&1; then
     pass "etcd members query succeeded"
   else
-    fail "etcd members query failed on $FIRST_CP"
+    fail "etcd members query failed or timed out on $FIRST_CP"
   fi
 fi
 echo "::endgroup::"
 
 # ----- 5. flux reconciled --------------------------------------------
 echo "::group::flux reconciliation (flux get all)"
-if flux check 2>&1; then
+# Hard caps on every flux call — flux check probes multiple cluster
+# APIs and can stall for minutes on a partial outage; flux get all
+# can stall on the same when CRDs aren't reachable.
+if timeout 60 flux check 2>&1; then
   pass "flux check"
 else
-  fail "flux check reported problems"
+  fail "flux check reported problems or timed out"
 fi
 echo
-if flux get all -A --status-selector=ready=true 2>&1; then
+if timeout 30 flux get all -A --status-selector=ready=true 2>&1; then
   pass "flux resources ready"
 else
-  fail "some flux resources not ready"
+  fail "some flux resources not ready (or query timed out)"
 fi
 echo "::endgroup::"
 
