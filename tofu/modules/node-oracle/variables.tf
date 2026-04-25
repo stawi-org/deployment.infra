@@ -38,3 +38,8 @@ variable "user_data" {
 variable "bastion_id" { type = string }
 variable "account_key" { type = string }
 variable "region" { type = string }
+variable "force_recreate_generation" {
+  type        = number
+  default     = 0
+  description = "Bump to force a clean destroy+create of the OCI instance even when no other input changed. Needed when OCI's UpdateInstance accepted a launch_options change but didn't actually rebuild the VNIC, leaving the running instance with the wrong NIC type."
+}

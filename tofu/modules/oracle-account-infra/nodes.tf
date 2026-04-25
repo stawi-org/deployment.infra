@@ -75,6 +75,9 @@ module "node" {
   bastion_id          = oci_bastion_bastion.this.id
   account_key         = var.account_key
   region              = var.region
+  force_recreate_generation = lookup(
+    var.per_node_force_recreate_generation, each.key, 0
+  )
 
   providers = { oci = oci }
 

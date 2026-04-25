@@ -93,6 +93,7 @@ module "oracle_account" {
   talos_image_source_uri               = try(var.talos_image_source_uris[each.key], null)
   talos_qcow2_local_path               = var.talos_qcow2_local_path
   force_image_generation               = var.force_image_generation
+  per_node_force_recreate_generation   = var.per_node_force_recreate_generation
   kubernetes_version                   = var.kubernetes_version
   machine_secrets                      = data.terraform_remote_state.secrets.outputs.machine_secrets
   shared_patches_dir                   = "${path.module}/../../shared/patches"

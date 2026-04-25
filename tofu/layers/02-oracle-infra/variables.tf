@@ -55,3 +55,9 @@ variable "talos_qcow2_local_path" {
   default     = null
   description = "Local filesystem path to a pre-downloaded Talos oracle-arm64 QCOW2. When set, each oracle account (for which talos_image_source_uris has no entry) creates a per-account public-read Object Storage bucket and uploads the file. CI populates this from tofu-layer.yml's download step; shared across all OCI accounts since the schematic+version is global."
 }
+
+variable "per_node_force_recreate_generation" {
+  type        = map(number)
+  default     = {}
+  description = "Per-OCI-node-key force-recreate generation. Bump a key's value to destroy+create that single instance on next apply — needed when OCI's UpdateInstance accepted a launch_options change but didn't actually rebuild the VNIC."
+}

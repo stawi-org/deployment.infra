@@ -70,3 +70,9 @@ variable "talos_qcow2_local_path" {
   default     = null
   description = "Local filesystem path to a pre-downloaded Talos oracle-arm64 QCOW2. When set (and talos_image_source_uri is empty), the module creates a per-account public-read Object Storage bucket and uploads the file, then points CreateImage at the resulting objectstorage.<region>.oraclecloud.com URL. The workflow populates this by downloading from factory.talos.dev once per plan."
 }
+
+variable "per_node_force_recreate_generation" {
+  type        = map(number)
+  default     = {}
+  description = "Per-node-key force-recreate generation counter. Bumping a key's value forces destroy+create of that single OCI instance — needed when OCI's UpdateInstance accepts a launch_options change in-place but doesn't actually rebuild the VNIC. Keys not present default to 0 (no recreate)."
+}
