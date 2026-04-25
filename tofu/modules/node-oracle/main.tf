@@ -136,6 +136,23 @@ locals {
       "node.antinvestor.io/provider"            = "oracle"
       "node.antinvestor.io/account"             = var.account_key
       "node.antinvestor.io/role"                = var.role
-    }
+    },
+    # OCI's public IPv4 is NAT'd at the VCN gateway — the on-NIC
+    # address is the private one, so kubelet auto-detects InternalIP
+    # as the private IP and Flannel reads InternalIP for its public-ip
+    # annotation. That breaks cross-cluster Flannel-VXLAN reachability
+    # (other nodes try to tunnel to a non-routable RFC1918 address).
+    # Force Flannel to use the actual public IP via the documented
+    # public-ip-overwrite annotation. Annotations aren't restricted by
+    # NodeRestriction admission, so kubelet sets it on its own node.
+    local.public_ip != null && local.public_ip != "" ? {
+      "flannel.alpha.coreos.com/public-ip-overwrite" = local.public_ip
+    } : {},
+    # IPv6 is on-NIC under OCI (no NAT66) so kubelet usually picks
+    # the right address — but pinning it explicitly costs nothing and
+    # documents the intent.
+    local.ipv6 != null ? {
+      "flannel.alpha.coreos.com/public-ipv6-overwrite" = local.ipv6
+    } : {}
   )
 }
