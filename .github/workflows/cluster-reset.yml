@@ -105,49 +105,113 @@ jobs:
     needs: guard
     runs-on: ubuntu-latest
     env:
-      CONTABO_CLIENT_ID:     ${{ secrets.CONTABO_CLIENT_ID }}
-      CONTABO_CLIENT_SECRET: ${{ secrets.CONTABO_CLIENT_SECRET }}
-      CONTABO_API_USER:      ${{ secrets.CONTABO_API_USER }}
-      CONTABO_API_PASSWORD:  ${{ secrets.CONTABO_API_PASSWORD }}
+      AWS_ACCESS_KEY_ID:        ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY:    ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID:            ${{ secrets.R2_ACCOUNT_ID }}
+      SOPS_AGE_KEY:             ${{ secrets.SOPS_AGE_KEY }}
     steps:
-      - name: Delete every Talos* custom image in the Contabo account
+      - uses: actions/checkout@v5
+
+      - name: Install age + sops + yq
         run: |
           set -euo pipefail
-          RESP=$(curl -sS -X POST 'https://auth.contabo.com/auth/realms/contabo/protocol/openid-connect/token' \
-            -H 'Content-Type: application/x-www-form-urlencoded' \
-            --data-urlencode "client_id=${CONTABO_CLIENT_ID}" \
-            --data-urlencode "client_secret=${CONTABO_CLIENT_SECRET}" \
-            --data-urlencode "username=${CONTABO_API_USER}" \
-            --data-urlencode "password=${CONTABO_API_PASSWORD}" \
-            --data-urlencode "grant_type=password" )
-          TOKEN=$(jq -r '.access_token // empty' <<<"$RESP")
-          if [[ -z "$TOKEN" ]]; then
-            echo "Contabo auth failed. Response body:"
-            echo "$RESP"
-            exit 1
-          fi
+          AGE_VER="v1.2.1"
+          curl -fsSL -o /tmp/age.tgz "https://github.com/FiloSottile/age/releases/download/${AGE_VER}/age-${AGE_VER}-linux-amd64.tar.gz"
+          tar -xzf /tmp/age.tgz -C /tmp
+          sudo install -m 0755 /tmp/age/age /usr/local/bin/age
 
-          LIST_RESP=$(curl -sS \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "x-request-id: $(cat /proc/sys/kernel/random/uuid)" \
-            'https://api.contabo.com/v1/compute/images?size=100')
-          if ! jq -e '.data' >/dev/null 2>&1 <<<"$LIST_RESP" ; then
-            echo "Contabo images list failed:"
-            echo "$LIST_RESP"
-            exit 1
-          fi
-          IDS=$(jq -r '.data[] | select(.name | test("^Talos")) | .imageId' <<<"$LIST_RESP")
-          if [[ -z "$IDS" ]]; then
-            echo "No Talos* images to delete."
+          SOPS_VER="v3.10.2"
+          curl -fsSL -o /tmp/sops "https://github.com/getsops/sops/releases/download/${SOPS_VER}/sops-${SOPS_VER}.linux.amd64"
+          sudo install -m 0755 /tmp/sops /usr/local/bin/sops
+
+          YQ_VER="v4.46.1"
+          curl -fsSL -o /tmp/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VER}/yq_linux_amd64"
+          sudo install -m 0755 /tmp/yq /usr/local/bin/yq
+
+      - name: Delete every Talos* custom image, per Contabo account
+        # Iterates the accounts manifest, decrypts each account's
+        # auth.yaml from R2 (same source the contabo provider uses in
+        # layer 01 — single source of truth, no GitHub-secret drift),
+        # and runs the cleanup loop with those creds.
+        run: |
+          set -euo pipefail
+          ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+
+          ACCOUNTS=$(yq -r '.contabo[]' tofu/shared/accounts.yaml)
+          if [[ -z "$ACCOUNTS" ]]; then
+            echo "::notice::no Contabo accounts in tofu/shared/accounts.yaml — nothing to clean"
             exit 0
           fi
-          for ID in $IDS ; do
-            echo "deleting Contabo image $ID"
-            DEL_RESP=$(curl -sS -w "\nHTTP_%{http_code}" -X DELETE \
+
+          for ACCT in $ACCOUNTS ; do
+            echo "::group::cleanup contabo/${ACCT}"
+            AUTH_KEY="production/inventory/contabo/${ACCT}/auth.yaml"
+            AUTH_FILE="/tmp/${ACCT}-auth.yaml"
+
+            if ! aws s3 cp "s3://cluster-tofu-state/${AUTH_KEY}" "$AUTH_FILE" \
+                 --endpoint-url "$ENDPOINT" --region us-east-1 2>/dev/null ; then
+              echo "::warning::auth.yaml not found at s3://cluster-tofu-state/${AUTH_KEY} — skipping ${ACCT}"
+              echo "::endgroup::"
+              continue
+            fi
+
+            DEC=$(sops -d "$AUTH_FILE" 2>&1) || {
+              echo "::warning::sops decrypt failed for ${ACCT}: $(echo "$DEC" | head -3)"
+              shred -u "$AUTH_FILE" || rm -f "$AUTH_FILE"
+              echo "::endgroup::"
+              continue
+            }
+
+            CLIENT_ID=$(yq -r '.auth.oauth2_client_id' <<<"$DEC")
+            CLIENT_SEC=$(yq -r '.auth.oauth2_client_secret' <<<"$DEC")
+            USER=$(yq -r '.auth.oauth2_user' <<<"$DEC")
+            PASS=$(yq -r '.auth.oauth2_pass' <<<"$DEC")
+            shred -u "$AUTH_FILE" || rm -f "$AUTH_FILE"
+
+            if [[ -z "$CLIENT_ID" || "$CLIENT_ID" == "null" ]]; then
+              echo "::warning::auth.yaml for ${ACCT} missing oauth2_client_id — skipping"
+              echo "::endgroup::"
+              continue
+            fi
+
+            RESP=$(curl -sS -X POST 'https://auth.contabo.com/auth/realms/contabo/protocol/openid-connect/token' \
+              -H 'Content-Type: application/x-www-form-urlencoded' \
+              --data-urlencode "client_id=${CLIENT_ID}" \
+              --data-urlencode "client_secret=${CLIENT_SEC}" \
+              --data-urlencode "username=${USER}" \
+              --data-urlencode "password=${PASS}" \
+              --data-urlencode "grant_type=password")
+            TOKEN=$(jq -r '.access_token // empty' <<<"$RESP")
+            if [[ -z "$TOKEN" ]]; then
+              echo "::warning::Contabo auth failed for ${ACCT}: $(echo "$RESP" | head -1)"
+              echo "::endgroup::"
+              continue
+            fi
+
+            LIST_RESP=$(curl -sS \
               -H "Authorization: Bearer $TOKEN" \
               -H "x-request-id: $(cat /proc/sys/kernel/random/uuid)" \
-              "https://api.contabo.com/v1/compute/images/$ID")
-            echo "$DEL_RESP" | tail -5
+              'https://api.contabo.com/v1/compute/images?size=100')
+            if ! jq -e '.data' >/dev/null 2>&1 <<<"$LIST_RESP" ; then
+              echo "::warning::Contabo images list failed for ${ACCT}: $(echo "$LIST_RESP" | head -1)"
+              echo "::endgroup::"
+              continue
+            fi
+            IDS=$(jq -r '.data[] | select(.name | test("^Talos")) | .imageId' <<<"$LIST_RESP")
+            if [[ -z "$IDS" ]]; then
+              echo "no Talos* images to delete in ${ACCT}"
+              echo "::endgroup::"
+              continue
+            fi
+            for ID in $IDS ; do
+              echo "deleting Contabo image $ID (account=${ACCT})"
+              curl -sS -w "\n  http=%{http_code}\n" -X DELETE \
+                -H "Authorization: Bearer $TOKEN" \
+                -H "x-request-id: $(cat /proc/sys/kernel/random/uuid)" \
+                "https://api.contabo.com/v1/compute/images/$ID" | tail -2
+            done
+            echo "::endgroup::"
           done
 
   # Apply runs in-line so the reset is a single workflow run that

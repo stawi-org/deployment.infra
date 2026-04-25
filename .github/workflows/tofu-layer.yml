@@ -69,32 +69,47 @@ jobs:
           rm /tmp/talosctl
           talosctl version --client
 
-      - name: Pre-resolve cp.<zone> into /etc/hosts
+      - name: Pre-resolve cp.<zone> + cp-N.<zone> into /etc/hosts
         if: inputs.layer == '03-talos'
-        # Talos provider connects to cp.<zone> for both `node` and
-        # `endpoint` (round-robin DNS — every CP carries cp.<zone> in
-        # its certSANs). gRPC uses the system resolver, which on
-        # GitHub runners goes through systemd-resolved (127.0.0.53)
-        # and has been observed to time out under load. Pre-resolve
-        # against Cloudflare (1.1.1.1) and pin the answer in
-        # /etc/hosts so subsequent gRPC dials skip DNS entirely.
+        # Talos provider + apply provisioner connect via DNS for both
+        # `node` and `endpoint`:
+        #   - cp.<zone> (round-robin) — used by talos provider for
+        #     general cluster ops
+        #   - cp-N.<zone> (per-CP) — used by talos_machine_bootstrap
+        #     and the per-node apply provisioner (talosctl --endpoints)
+        # Both names are in the apid serving cert SANs, but the
+        # cp-N names go through systemd-resolved on the runner —
+        # observed to time out under load when the cluster is
+        # mid-reinstall (high churn). Pre-resolve against Cloudflare
+        # (1.1.1.1) and pin into /etc/hosts so gRPC dials skip the
+        # local resolver entirely.
+        #
+        # cp-N records are enumerated by counting the cp.<zone>
+        # round-robin answer set — that's exactly the CP count.
         run: |
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq dnsutils
-          for host in cp.antinvestor.com cp.stawi.org; do
-            ips=$(dig +short +time=5 +tries=2 @1.1.1.1 "$host" A | head -n3)
-            if [[ -n "$ips" ]]; then
-              # Pin the first answer — round-robin still works because
-              # every CP has cp.<zone> in SAN. /etc/hosts only needs
-              # ONE address; if it's unreachable the dial fails fast.
-              ip=$(echo "$ips" | head -n1)
-              echo "$ip $host" | sudo tee -a /etc/hosts
+
+          pin() {
+            local host="$1"
+            local ip
+            ip=$(dig +short +time=5 +tries=2 @1.1.1.1 "$host" A | head -n1)
+            if [[ -n "$ip" ]]; then
+              echo "$ip $host" | sudo tee -a /etc/hosts >/dev/null
             else
-              echo "::warning::no A records for $host on 1.1.1.1" >&2
+              echo "::warning::no A record for $host on 1.1.1.1" >&2
             fi
+          }
+
+          for zone in antinvestor.com stawi.org; do
+            cp_count=$(dig +short +time=5 +tries=2 @1.1.1.1 "cp.${zone}" A | wc -l)
+            pin "cp.${zone}"
+            for i in $(seq 1 "$cp_count"); do
+              pin "cp-${i}.${zone}"
+            done
           done
-          grep -E "cp\.(antinvestor|stawi)" /etc/hosts || true
+          grep -E "cp[-.]" /etc/hosts || true
 
       - name: Install OCI CLI
         if: inputs.layer == '02-oracle-infra'
