@@ -73,6 +73,10 @@ resource "null_resource" "ensure_image" {
       CONTABO_CLIENT_SECRET = var.contabo_client_secret
       CONTABO_API_USER      = var.contabo_api_user
       CONTABO_API_PASSWORD  = var.contabo_api_password
+      # Drives ensure-image.sh's failure-isolation policy: workers
+      # warn-and-continue, controlplanes fail tofu. Keeps a single
+      # bad VPS from blocking provisioning of the rest of the cluster.
+      NODE_ROLE = var.role
       # MODE=verify on first-create: contabo_instance already provisioned
       # the disk with var.image_id via POST /instances — just confirm
       # Talos API is answering on :50000 so downstream layers see a

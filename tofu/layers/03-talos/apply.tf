@@ -15,12 +15,15 @@
 # config and pushes it the same way for every node.
 
 locals {
-  # Every node we'll dial, minus the skip list. Spans CPs + workers,
-  # all providers — uniform set. Onprem nodes participate too as long
-  # as they have a public ipv4 the runner can reach.
+  # Every node we'll dial. Spans CPs + workers, all providers —
+  # uniform set. Onprem nodes participate too as long as they have a
+  # public ipv4 the runner can reach. No skip list: the apply script
+  # handles unreachable nodes (warn-and-continue) and worker errors
+  # (warn-and-continue) on its own; only reachable-but-failing CPs
+  # fail tofu, which is the correct semantics.
   direct_apply_nodes = {
     for k, v in local.all_nodes_from_state : k => v
-    if !contains(var.talos_apply_skip, k) && try(v.ipv4, "") != ""
+    if try(v.ipv4, "") != ""
   }
 
   # CP-only view of the same set — bootstrap + wait_apiserver work on
@@ -88,8 +91,12 @@ resource "null_resource" "apply_node_config" {
   provisioner "local-exec" {
     interpreter = ["bash", "-c"]
     environment = {
-      NODE_IP             = each.value.ipv4
-      NODE_NAME           = each.key
+      NODE_IP   = each.value.ipv4
+      NODE_NAME = each.key
+      # Drives the script's failure-isolation policy: workers warn-and-
+      # continue, controlplanes fail tofu. Keeps a single worker outage
+      # from blocking apply progress on the rest of the cluster.
+      NODE_ROLE           = each.value.role
       TARGET_VERSION      = var.talos_version
       INSTALLER_URL       = local.installer_url
       MACHINE_CONFIG_FILE = local_sensitive_file.node_machine_config[each.key].filename
