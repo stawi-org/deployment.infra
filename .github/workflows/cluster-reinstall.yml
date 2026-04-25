@@ -9,18 +9,13 @@
 #      via reconstruction.tf — the per-node hash is the trigger key
 #      for null_resource.ensure_image (Contabo) and
 #      terraform_data.reinstall_marker (OCI).
-#   3. tofu-apply notices the trigger drift and re-fires the
-#      provider-appropriate disk wipe (Contabo PUT /compute/instances,
-#      OCI destroy+create).
+#   3. The apply jobs below run the per-layer plan/apply chain. The
+#      trigger drift fires the provider-appropriate disk wipe
+#      (Contabo PUT /compute/instances, OCI destroy+create).
 #
-# So the reinstall happens "naturally" through the next tofu-apply run.
-# This workflow's job is just to dispatch tofu-apply so the operator
-# doesn't have to remember to.
-#
-# Trigger:
-#   merge an approved tofu-reconstruct PR that adds
-#   .github/reconstruction/reinstall-*.yaml on main, OR
-#   gh workflow run cluster-reinstall.yml --ref main -f confirm=REINSTALL
+# This workflow IS the reinstall — it does not delegate to
+# tofu-apply.yml. Same job graph, run as one workflow run that
+# carries the cluster-reinstall name in the actions tab.
 
 name: cluster-reinstall
 on:
@@ -37,7 +32,8 @@ on:
 
 permissions:
   contents: read
-  actions: write
+  id-token: write
+  pull-requests: write
 
 concurrency:
   group: tofu-apply-production
@@ -53,15 +49,11 @@ jobs:
         run: |
           [[ "$CONFIRM" == "REINSTALL" ]] || { echo "::error::confirm must be REINSTALL"; exit 1; }
 
-  dispatch-apply:
+  apply:
     needs: guard
-    runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Dispatch tofu-apply
-        run: |
-          gh workflow run tofu-apply.yml --ref main
-          echo "::notice::Dispatched tofu-apply.yml — watch its run for per-node reinstall progress."
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    uses: ./.github/workflows/tofu-apply.yml
+    secrets: inherit

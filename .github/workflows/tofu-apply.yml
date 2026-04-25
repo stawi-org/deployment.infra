@@ -2,6 +2,10 @@
 name: tofu-apply
 on:
   workflow_dispatch: {}
+  # Reusable from cluster-reinstall.yml and cluster-reset.yml so the
+  # reconstruction flows can carry the apply through the same job
+  # graph instead of dispatching a separate tofu-apply run.
+  workflow_call: {}
 
 permissions:
   contents: read

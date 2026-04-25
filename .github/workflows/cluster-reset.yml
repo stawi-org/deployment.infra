@@ -15,10 +15,11 @@
 #   3. Deletes every Talos* custom Contabo image so the next apply
 #      registers a fresh one.
 #
-# After a successful reset, dispatch tofu-apply manually — it will
-# reapply layer 01 (registering a new Contabo image and triggering
+# After the wipe steps, this workflow runs tofu-apply automatically
+# as part of the same run — no manual follow-up dispatch. The apply
+# rebuilds layer 01 (registering a new Contabo image and triggering
 # Contabo reinstall via the reconstruction mechanism if the request
-# file persists), then build layers 02/03/04 from empty state.
+# file persists), then layers 02/03/04 from empty state.
 #
 # Trigger:
 #   gh workflow run cluster-reset.yml --ref main -f confirm=RESET
@@ -40,7 +41,8 @@ on:
 
 permissions:
   contents: read
-  actions: write
+  id-token: write
+  pull-requests: write
 
 concurrency:
   group: tofu-apply-production
@@ -148,12 +150,14 @@ jobs:
             echo "$DEL_RESP" | tail -5
           done
 
-  done:
+  # Apply runs in-line so the reset is a single workflow run that
+  # ends with a working cluster, not a wipe that leaves the operator
+  # to chase a follow-up dispatch.
+  apply:
     needs: [clean-cloudflare, wipe-state, clean-contabo-images]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Summarize
-        run: |
-          echo "::notice::Reset complete. Next step — dispatch tofu-apply:"
-          echo "::notice::  gh workflow run tofu-apply.yml --ref main"
-          echo "::notice::Or open a fresh tofu-reconstruct PR to run it through approval."
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    uses: ./.github/workflows/tofu-apply.yml
+    secrets: inherit
