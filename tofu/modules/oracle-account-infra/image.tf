@@ -118,16 +118,17 @@ resource "oci_core_image" "talos" {
   compartment_id = var.compartment_ocid
   display_name   = local.image_display_name
 
-  # launch_mode = NATIVE keeps firmware at UEFI_64 (required for arm64)
-  # and lets bootVolumeType be overridden at instance launch.
-  # Empirically (verified via `oci compute image get --query launch-
-  # options`):
-  #   * launch_mode = NATIVE        → firmware=UEFI_64, bootVolumeType=ISCSI
-  #   * launch_mode = PARAVIRTUALIZED → firmware=BIOS, bootVolumeType=PARAVIRT
-  # On arm64 BIOS cannot boot, so PARAVIRTUALIZED is unusable. We pin
-  # launch_mode = NATIVE for the right firmware and have the instance
-  # override boot_volume_type and network_type to PARAVIRTUALIZED.
-  launch_mode = "NATIVE"
+  # launch_mode = CUSTOM leaves the image's launchOptions UNSET — no
+  # field is pinned at the image level, so the instance launch can
+  # specify all of them without "Overriding ... not supported" 400s.
+  # Empirically the alternatives don't work for Talos arm64:
+  #   * NATIVE          → firmware=UEFI_64 (good) but bootVolumeType=ISCSI
+  #                       fixed (bad — Talos can't find /dev/sda)
+  #   * PARAVIRTUALIZED → bootVolumeType=PARAVIRT (good) but firmware=BIOS
+  #                       fixed (bad — arm64 doesn't boot from BIOS)
+  # CUSTOM is the only mode that lets us specify both UEFI_64 firmware
+  # AND PARAVIRTUALIZED boot volume at instance launch time.
+  launch_mode = "CUSTOM"
 
   image_source_details {
     source_type       = "objectStorageUri"

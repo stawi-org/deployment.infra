@@ -62,17 +62,18 @@ resource "oci_core_instance" "this" {
     boot_volume_size_in_gbs = 200
   }
 
-  # Override boot_volume_type and network_type at instance launch.
-  # The image's launch_mode = NATIVE pins firmware = UEFI_64 (required
-  # for arm64) but defaults bootVolumeType = ISCSI which makes Talos
-  # boot loop with `no system disk found`. Instance-level overrides
-  # ARE accepted for these two fields (provider only 400s on Firmware
-  # / fields the image explicitly declares immutable). PARAVIRT for
-  # both gives Talos the virtio-scsi /dev/sda + virtio-net eth0 it
-  # expects.
+  # Image's launch_mode = CUSTOM leaves all launchOptions unset, so we
+  # specify the full Talos arm64-compatible block at instance launch.
+  # firmware = UEFI_64 is mandatory on arm64; PARAVIRTUALIZED boot
+  # volume + NIC make Talos see /dev/sda via virtio-scsi and eth0 via
+  # virtio-net.
   launch_options {
-    boot_volume_type = "PARAVIRTUALIZED"
-    network_type     = "PARAVIRTUALIZED"
+    boot_volume_type                    = "PARAVIRTUALIZED"
+    firmware                            = "UEFI_64"
+    network_type                        = "PARAVIRTUALIZED"
+    remote_data_volume_type             = "PARAVIRTUALIZED"
+    is_pv_encryption_in_transit_enabled = true
+    is_consistent_volume_naming_enabled = true
   }
 
   metadata = {

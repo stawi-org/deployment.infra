@@ -12,12 +12,12 @@ age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
 # networkType / remoteDataVolumeType — confirmed via serial console
 # that gen4 (which omitted launch_mode) had bootVolumeType=ISCSI and
 # Talos couldn't find /dev/sda.
-force_image_generation = 6
+force_image_generation = 7
 
 # Force recreate of oci-bwire-node-1 alongside the image bump. The
 # instance's `source_id` is not ForceNew in the OCI provider, so a
 # new image OCID would otherwise plan as in-place update and OCI 400s
 # on incompatible boot volume types between old and new image.
 per_node_force_recreate_generation = {
-  "oci-bwire-node-1" = 5
+  "oci-bwire-node-1" = 6
 }
