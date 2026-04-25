@@ -165,7 +165,7 @@ jobs:
 
       - name: Open reconstruction PR
         id: pr
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ steps.request.outputs.branch }}
