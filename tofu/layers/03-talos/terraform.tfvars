@@ -48,4 +48,12 @@ cp_dns_zones = [
 # Nodes currently unreachable on :50000 from CI. Apply passes skip
 # them so a run can complete in under 10 min. Remove an entry once the
 # node is recovered (node-recovery workflow handles reinstall/reboot).
-talos_apply_skip = []
+# Temporarily exclude two nodes that are stuck unreachable on :50000
+# after the gen 9 reinstall. cp-1 + worker-3 came up at v1.12.6 and
+# return idempotent no-op; pipeline can complete with those plus the
+# auto re-bootstrap. Recover the skipped two via node-recovery
+# workflow then drop them from this list.
+talos_apply_skip = [
+  "contabo-bwire-node-2",
+  "oci-bwire-node-1",
+]
