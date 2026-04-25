@@ -13,5 +13,5 @@ force_image_generation = 9
 # OCID would otherwise plan as in-place update and 400 on the
 # incompatible boot volume type. Bumping forces destroy+create.
 per_node_force_recreate_generation = {
-  "oci-bwire-node-1" = 10
+  "oci-bwire-node-1" = 11
 }

@@ -19,7 +19,7 @@ contabo_accounts = {}
 # Do NOT bump for routine Talos version changes — those flow through
 # the (pending) in-place talosctl upgrade path. Bumping this wipes
 # etcd and workloads on the Contabo CPs.
-force_reinstall_generation = 8
+force_reinstall_generation = 9
 
 # Per-node surgical reinstall. Add/bump an entry to wipe and re-flash
 # a single Contabo node without touching the others (the cluster-wide

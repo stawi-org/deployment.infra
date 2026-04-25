@@ -67,7 +67,19 @@ detect_stage() {
   return 1
 }
 
-stage=$(detect_stage) || true
+# Retry on unreachable for up to 5 min — covers post-reinstall boot,
+# transient network blips, apid still binding to :50000. Steady-state
+# nodes respond instantly; we only loop when the node is genuinely
+# in transition.
+stage=""
+for attempt in $(seq 1 30); do
+  stage=$(detect_stage) || true
+  if [[ "$stage" != "unreachable" && -n "$stage" ]]; then
+    break
+  fi
+  log "attempt $attempt/30: stage=unreachable, retrying in 10s"
+  sleep 10
+done
 log "detected stage=$stage"
 
 case "$stage" in
