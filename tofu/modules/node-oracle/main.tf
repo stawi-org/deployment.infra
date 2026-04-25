@@ -67,9 +67,15 @@ resource "oci_core_instance" "this" {
   # full Talos-prescribed launchOptions) already pins UEFI_64 +
   # fully-paravirtualized virtio. Instances inherit those defaults.
 
-  metadata = {
-    user_data = var.user_data
-  }
+  # No user_data: the OCI Talos image boots into maintenance mode
+  # when no cluster config is provided, listening on :50000 with a
+  # self-signed cert. Layer 03's talos_machine_configuration_apply
+  # auto-falls back to insecure mode for that first push (same flow
+  # Contabo + onprem use). After the first apply Talos regenerates
+  # its serving cert with cluster-CA-signed credentials and the
+  # certSANs layer 03 declares — no chicken-and-egg between
+  # user_data SANs and the connection endpoint.
+  metadata = {}
 
   lifecycle {
     replace_triggered_by = [terraform_data.image_fingerprint]

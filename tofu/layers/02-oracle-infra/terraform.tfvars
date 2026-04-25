@@ -1,31 +1,17 @@
-#
-# cluster_endpoint is the Talos/Kubernetes API endpoint that nodes embed in
-# their generated machine config. Uses kubernetes-controlplane-api-1's public
-# IPv4 (same IP preserved across PR #9's reinstall).
-cluster_endpoint = "https://cp.antinvestor.com:6443"
-
 age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt"
 
 # Bump to force a fresh OCI custom image. Gen<N> is the image
-# display_name suffix; bumping replaces the resource. The image
-# now uses launch_mode = "PARAVIRTUALIZED" to pin bootVolumeType /
-# networkType / remoteDataVolumeType — confirmed via serial console
-# that gen4 (which omitted launch_mode) had bootVolumeType=ISCSI and
-# Talos couldn't find /dev/sda.
-force_image_generation = 8
+# display_name suffix; bumping it forces a new CreateImage and
+# replaces the in-state image. The CLI script behind data.external
+# pins launchOptions to UEFI_64 + fully-paravirtualized virtio at
+# image-create time (the only API path for that — see
+# scripts/oci-image-create-or-find.sh).
+force_image_generation = 9
 
-# Force recreate of oci-bwire-node-1 alongside the image bump. The
-# instance's `source_id` is not ForceNew in the OCI provider, so a
-# new image OCID would otherwise plan as in-place update and OCI 400s
-# on incompatible boot volume types between old and new image.
+# Force recreate of oci-bwire-node-1 alongside the image bump. OCI's
+# instance source_id is not ForceNew in the provider, so a new image
+# OCID would otherwise plan as in-place update and 400 on the
+# incompatible boot volume type. Bumping forces destroy+create.
 per_node_force_recreate_generation = {
-  "oci-bwire-node-1" = 9
+  "oci-bwire-node-1" = 10
 }
-
-# Round-robin DNS only — cp.<zone>. Every CP carries the same SANs in
-# its serving cert, so connecting via cp.<zone> validates regardless
-# of which CP DNS lands on. No per-CP names, no node IPs.
-extra_cert_sans = [
-  "cp.antinvestor.com",
-  "cp.stawi.org",
-]

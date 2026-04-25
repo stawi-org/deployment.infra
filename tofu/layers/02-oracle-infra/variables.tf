@@ -15,24 +15,6 @@ variable "force_image_generation" {
   description = "Bump to force a new Oracle Talos custom image even when talos_version is unchanged."
 }
 
-variable "kubernetes_version" {
-  type = string
-}
-
-variable "flux_version" {
-  type = string
-}
-
-variable "cluster_name" {
-  type    = string
-  default = "antinvestor-cluster"
-}
-
-variable "cluster_endpoint" {
-  type        = string
-  description = "Stable URL of the Talos/K8s API — use the FIRST Contabo CP public IPv4 until a VIP or LB exists."
-}
-
 variable "age_recipients" {
   type        = string
   description = "Comma-separated age recipient pubkeys. Used to re-encrypt on write."
@@ -60,10 +42,4 @@ variable "per_node_force_recreate_generation" {
   type        = map(number)
   default     = {}
   description = "Per-OCI-node-key force-recreate generation. Bump a key's value to destroy+create that single instance on next apply — needed when OCI's UpdateInstance accepted a launch_options change but didn't actually rebuild the VNIC."
-}
-
-variable "extra_cert_sans" {
-  type        = list(string)
-  default     = []
-  description = "Extra cert SANs included in every OCI node's user_data. Required because OCI's public IPv4 is NAT'd (not on-NIC) so Talos won't auto-discover it for the API serving cert. Layer 03's talos_machine_configuration_apply connects by IP and fails TLS verification without these. Set to the DNS names that layer 03 publishes for OCI CPs (e.g. cp-3.<zone>)."
 }

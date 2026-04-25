@@ -1,19 +1,11 @@
 # tofu/layers/02-oracle-infra/main.tf
-data "terraform_remote_state" "secrets" {
-  backend = "s3"
-  config = {
-    bucket                      = "cluster-tofu-state"
-    key                         = "production/00-talos-secrets.tfstate"
-    region                      = "auto"
-    endpoints                   = { s3 = "https://${var.r2_account_id}.r2.cloudflarestorage.com" }
-    use_path_style              = true
-    skip_credentials_validation = true
-    skip_metadata_api_check     = true
-    skip_region_validation      = true
-    skip_requesting_account_id  = true
-    skip_s3_checksum            = true
-  }
-}
+#
+# This layer provisions OCI infrastructure (VCN, subnets, security
+# lists, instances, custom Talos image). It does NOT generate or push
+# Talos machine configs — OCI nodes boot into maintenance mode (no
+# user_data) and layer 03 owns all cluster-level configuration via
+# talos_machine_configuration_apply with insecure-mode auto-fallback,
+# the same flow Contabo + onprem use.
 
 locals {
   accounts_manifest = yamldecode(file("${path.module}/../../shared/accounts.yaml"))
@@ -87,15 +79,10 @@ module "oracle_account" {
   labels                               = try(each.value.labels, {})
   annotations                          = try(each.value.annotations, {})
   bastion_client_cidr_block_allow_list = try(each.value.bastion_client_cidr_block_allow_list, ["0.0.0.0/0"])
-  cluster_name                         = var.cluster_name
-  cluster_endpoint                     = var.cluster_endpoint
   talos_version                        = var.talos_version
   talos_image_source_uri               = try(var.talos_image_source_uris[each.key], null)
   talos_qcow2_local_path               = var.talos_qcow2_local_path
   force_image_generation               = var.force_image_generation
   per_node_force_recreate_generation   = var.per_node_force_recreate_generation
-  extra_cert_sans                      = try(each.value.extra_cert_sans, var.extra_cert_sans)
-  kubernetes_version                   = var.kubernetes_version
-  machine_secrets                      = data.terraform_remote_state.secrets.outputs.machine_secrets
   shared_patches_dir                   = "${path.module}/../../shared/patches"
 }

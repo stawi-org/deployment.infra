@@ -30,11 +30,6 @@ variable "annotations" {
   default     = {}
   description = "Additional Kubernetes node annotations for this OCI worker."
 }
-variable "user_data" {
-  type        = string
-  sensitive   = true
-  description = "Base64-encoded Talos machine config."
-}
 variable "bastion_id" { type = string }
 variable "account_key" { type = string }
 variable "region" { type = string }

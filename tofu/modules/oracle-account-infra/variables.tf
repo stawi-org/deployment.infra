@@ -38,18 +38,11 @@ variable "annotations" {
   description = "Annotations applied to every node generated for this OCI account."
 }
 
-variable "cluster_name" { type = string }
-variable "cluster_endpoint" { type = string }
 variable "talos_version" { type = string }
 variable "force_image_generation" {
   type        = number
   default     = 0
   description = "Bump to force a new Oracle Talos custom image even when the Talos version is unchanged."
-}
-variable "kubernetes_version" { type = string }
-variable "machine_secrets" {
-  type      = any
-  sensitive = true
 }
 variable "shared_patches_dir" { type = string }
 
@@ -75,10 +68,4 @@ variable "per_node_force_recreate_generation" {
   type        = map(number)
   default     = {}
   description = "Per-node-key force-recreate generation counter. Bumping a key's value forces destroy+create of that single OCI instance — needed when OCI's UpdateInstance accepts a launch_options change in-place but doesn't actually rebuild the VNIC. Keys not present default to 0 (no recreate)."
-}
-
-variable "extra_cert_sans" {
-  type        = list(string)
-  default     = []
-  description = "Extra Subject Alternative Names (DNS or IP) added to machine.certSANs in every node's user_data. Required for OCI nodes whose public IPv4 is NAT'd (not bound to the NIC) — Talos auto-discovers only on-NIC addresses, so the API serving cert it generates won't include the public IP/DNS unless we put them here. Layer 03's talos_machine_configuration_apply connects by IP, so without this it fails TLS verification."
 }
