@@ -26,11 +26,11 @@ jobs:
         run: |
           set -euo pipefail
           ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          TMPDIR_AUTH=$(mktemp -d)
-          aws s3 sync "s3://cluster-tofu-state/production/inventory/oracle/" "${TMPDIR_AUTH}/" \
+          mkdir -p /tmp/inventory/oracle
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/oracle/" "/tmp/inventory/oracle/" \
             --endpoint-url "$ENDPOINT" --region us-east-1 \
             --exclude "*" --include "*/auth.yaml"
-          AUTH_JSON=$(python3 scripts/build-oci-auth-json.py "${TMPDIR_AUTH}")
+          AUTH_JSON=$(python3 scripts/build-oci-auth-json.py /tmp/inventory/oracle)
           echo "$AUTH_JSON" > /tmp/oci_auth_accounts.json
           scripts/configure-oci-wif.sh /tmp/oci_auth_accounts.json
       - name: Find instance + capture serial console
@@ -39,16 +39,15 @@ jobs:
           OCI_CLI_PROFILE: bwire
         run: |
           set -euo pipefail
-          # Fetch compartment from auth.yaml
-          COMP=$(python3 -c "import yaml,sys;print(yaml.safe_load(open('/tmp/inventory/oracle/bwire/auth.yaml'))['auth']['compartment_ocid'])" 2>/dev/null || \
-                 python3 -c "import yaml;d=yaml.safe_load(open('/tmp/inventory/oracle/bwire/auth.yaml'));print(d.get('compartment_ocid',d.get('auth',{}).get('compartment_ocid','')))")
+          COMP=$(python3 -c "import yaml;d=yaml.safe_load(open('/tmp/inventory/oracle/bwire/auth.yaml'));print(d.get('compartment_ocid',d.get('auth',{}).get('compartment_ocid','')))")
           echo "compartment=$COMP"
           INSTANCE_OCID=$(oci compute instance list --compartment-id "$COMP" --display-name oci-bwire-node-1 --lifecycle-state RUNNING --query 'data[0].id' --raw-output)
           echo "instance=$INSTANCE_OCID"
-          # Create one-shot serial console history
+          echo "===== instance launch_options ====="
+          oci compute instance get --instance-id "$INSTANCE_OCID" --query 'data."launch-options"'
+          echo "===== compute console-history ====="
           HIST=$(oci compute console-history capture --instance-id "$INSTANCE_OCID" --query 'data.id' --raw-output)
           echo "history=$HIST"
-          # Wait for SUCCEEDED
           for i in $(seq 1 30); do
             ST=$(oci compute console-history get --instance-console-history-id "$HIST" --query 'data."lifecycle-state"' --raw-output)
             echo "i=$i state=$ST"
