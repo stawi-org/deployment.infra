@@ -24,7 +24,7 @@ resource "talos_machine_configuration_apply" "worker_contabo" {
   # discovery, so no per-node IP is referenced.
   node       = local.cp_round_robin_dns != null ? local.cp_round_robin_dns : each.value.ipv4
   endpoint   = local.cp_round_robin_dns != null ? local.cp_round_robin_dns : each.value.ipv4
-  apply_mode = "reboot"
+  apply_mode = "auto" # let Talos decide reboot need; see apply.tf
 
 
   lifecycle {

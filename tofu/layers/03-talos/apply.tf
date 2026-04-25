@@ -64,12 +64,13 @@ resource "talos_machine_configuration_apply" "cp" {
   # node's IPv4 only if no DNS zone is configured (local-dev fallback).
   node     = local.cp_round_robin_dns != null ? local.cp_round_robin_dns : each.value.ipv4
   endpoint = local.cp_round_robin_dns != null ? local.cp_round_robin_dns : each.value.ipv4
-  # apply_mode = "reboot" forces the node to reboot after each config change so
-  # kubelet + other services restart cleanly with the new version. Without this,
-  # Talos stages the config and services keep running on the old one until the
-  # next manual reboot — which masquerades as "healthy config applied" in tofu
-  # state but leaves broken kubelet image pulls stuck.
-  apply_mode = "reboot"
+  # apply_mode = "auto" lets Talos decide whether the change requires a
+  # reboot. Most diffs (cert SANs, node labels, sysctls, kubelet args)
+  # are applied live and never touch services. The previous "reboot"
+  # default fired all 3 CPs simultaneously on every config change,
+  # which broke etcd quorum during a normal apply (every CP gone at
+  # once for 60-180s) and made wait_apiserver hit its timeout.
+  apply_mode = "auto"
 
 
   lifecycle {
