@@ -81,9 +81,9 @@ module "node" {
 
   providers = { oci = oci }
 
-  # Instance launch must wait until the custom image has every required
-  # shape registered — otherwise CreateInstance 400s with "Shape X is
-  # not valid for image Y". Empty when the image is reused (not freshly
-  # created), so this adds no dependency noise on steady-state applies.
-  depends_on = [oci_core_shape_management.talos_compat]
+  # No explicit depends_on. The script in
+  # modules/oracle-account-infra/image.tf registers shape compat
+  # before returning, and image_id flows through data.external —
+  # so LaunchInstance can't run until shape compat is already in
+  # place.
 }

@@ -70,6 +70,8 @@ locals {
     local.image_object_name,
   ) : ""
 
+  image_primary_shape = values(var.nodes)[0].shape
+
   image_source_uri = (
     var.talos_image_source_uri != null && var.talos_image_source_uri != ""
     ? var.talos_image_source_uri
@@ -114,57 +116,36 @@ resource "oci_objectstorage_object" "talos_qcow2" {
   }
 }
 
-resource "oci_core_image" "talos" {
-  compartment_id = var.compartment_ocid
-  display_name   = local.image_display_name
+# Find-or-create the OCI custom image via the CLI script. The OCI
+# REST API requires `launchOptions` in the CreateImage body when
+# launchMode=CUSTOM, but the tofu provider's oci_core_image resource
+# treats launch_options as Computed-only and won't pass it. The
+# script uses `oci compute image create --from-json` to deliver the
+# full payload (including launchOptions) so we can pin UEFI_64 +
+# fully-paravirtualized virtio at image-create time. It also
+# registers shape compatibility (idempotent PUT) before returning.
+data "external" "talos_image" {
+  program = ["bash", "${path.module}/../../../scripts/oci-image-create-or-find.sh"]
 
-  # launch_mode = CUSTOM leaves the image's launchOptions UNSET — no
-  # field is pinned at the image level, so the instance launch can
-  # specify all of them without "Overriding ... not supported" 400s.
-  # Empirically the alternatives don't work for Talos arm64:
-  #   * NATIVE          → firmware=UEFI_64 (good) but bootVolumeType=ISCSI
-  #                       fixed (bad — Talos can't find /dev/sda)
-  #   * PARAVIRTUALIZED → bootVolumeType=PARAVIRT (good) but firmware=BIOS
-  #                       fixed (bad — arm64 doesn't boot from BIOS)
-  # CUSTOM is the only mode that lets us specify both UEFI_64 firmware
-  # AND PARAVIRTUALIZED boot volume at instance launch time.
-  launch_mode = "CUSTOM"
-
-  image_source_details {
-    source_type       = "objectStorageUri"
-    source_uri        = local.image_source_uri
-    source_image_type = "QCOW2"
+  query = {
+    compartment_ocid = var.compartment_ocid
+    display_name     = local.image_display_name
+    source_uri       = local.image_source_uri
+    oci_profile      = var.account_key
+    shape            = local.image_primary_shape
   }
 
-  # Must wait for the staged object to be uploaded before CreateImage
-  # attempts to fetch from the bucket URL. Harmless when
-  # stage_local_upload is false.
   depends_on = [oci_objectstorage_object.talos_qcow2]
-
-  lifecycle {
-    # Recreate only on a deliberate force_image_generation bump.
-    # Ignore image_source_details drift — OCI mutates the stored URL
-    # internally after import and the provider surfaces that as a diff
-    # on every plan. Without ignore_changes that would trigger an
-    # 8-minute re-import on every apply.
-    replace_triggered_by = [terraform_data.image_generation]
-    ignore_changes       = [image_source_details]
-  }
 }
 
 locals {
-  image_ocid = oci_core_image.talos.id
+  image_ocid = data.external.talos_image.result.image_ocid
 }
 
-# OCI imports custom QCOW2/OCI images with an empty compatible-shape
-# list by default. Instances launched on a shape not in this list
-# fail with:
-#   400-InvalidParameter, Shape <X> is not valid for image <...>
-# AddImageShapeCompatibilityEntry is idempotent (PUT semantics), so
-# we register unconditionally on every apply — reruns are cheap.
-resource "oci_core_shape_management" "talos_compat" {
-  for_each       = toset([for n in values(var.nodes) : n.shape])
-  compartment_id = var.compartment_ocid
-  image_id       = local.image_ocid
-  shape_name     = each.key
-}
+# Note on retired resources: oci_core_image.talos,
+# oci_core_shape_management.talos_compat, and terraform_data.
+# image_generation are no longer declared. Whatever's in state from
+# a prior apply (or no longer in OCI because the previous apply
+# already destroyed them via removed{} blocks) gets cleaned up by
+# the next plan automatically — no removed{} blocks needed because
+# tofu auto-detects "in state, not in config" as destroy.

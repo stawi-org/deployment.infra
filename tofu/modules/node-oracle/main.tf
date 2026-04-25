@@ -62,19 +62,10 @@ resource "oci_core_instance" "this" {
     boot_volume_size_in_gbs = 200
   }
 
-  # Image's launch_mode = CUSTOM leaves all launchOptions unset, so we
-  # specify the full Talos arm64-compatible block at instance launch.
-  # firmware = UEFI_64 is mandatory on arm64; PARAVIRTUALIZED boot
-  # volume + NIC make Talos see /dev/sda via virtio-scsi and eth0 via
-  # virtio-net.
-  launch_options {
-    boot_volume_type                    = "PARAVIRTUALIZED"
-    firmware                            = "UEFI_64"
-    network_type                        = "PARAVIRTUALIZED"
-    remote_data_volume_type             = "PARAVIRTUALIZED"
-    is_pv_encryption_in_transit_enabled = true
-    is_consistent_volume_naming_enabled = true
-  }
+  # No instance launch_options. The image (created via the CLI script
+  # in modules/oracle-account-infra with launchMode=CUSTOM and the
+  # full Talos-prescribed launchOptions) already pins UEFI_64 +
+  # fully-paravirtualized virtio. Instances inherit those defaults.
 
   metadata = {
     user_data = var.user_data

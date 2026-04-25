@@ -1,8 +1,9 @@
 # tofu/modules/oracle-account-infra/main.tf
 terraform {
   required_providers {
-    oci   = { source = "oracle/oci", configuration_aliases = [oci] }
-    talos = { source = "siderolabs/talos" }
+    oci      = { source = "oracle/oci", configuration_aliases = [oci] }
+    talos    = { source = "siderolabs/talos" }
+    external = { source = "hashicorp/external" }
   }
 }
 

@@ -69,6 +69,20 @@ jobs:
           rm /tmp/talosctl
           talosctl version --client
 
+      - name: Install OCI CLI
+        if: inputs.layer == '02-oracle-infra'
+        # Required by scripts/oci-image-create-or-find.sh, called via
+        # data.external in modules/oracle-account-infra/image.tf —
+        # the only path to set launchOptions at CreateImage time
+        # since the tofu provider's launch_options is Computed-only.
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq pipx
+          pipx install oci-cli
+          sudo ln -sf "$HOME/.local/bin/oci" /usr/local/bin/oci
+          oci --version
+
       - name: OCI workload-identity federation
         if: inputs.layer == '02-oracle-infra'
         env:
