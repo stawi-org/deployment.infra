@@ -37,19 +37,27 @@ removed {
 }
 
 # ---- Generation 2 → 3 (rename + merge) ---------------------------
+# moved{} only supports 1-to-1 renames, so the worker-side state
+# addresses are dropped via removed{} (state-only — no Talos-side
+# action since these are local-only resources). The CP-side keeps
+# the moved{} so its data lands on the unified resource.
 moved {
   from = null_resource.apply_cp_config
   to   = null_resource.apply_node_config
 }
-moved {
+removed {
   from = null_resource.apply_worker_contabo_config
-  to   = null_resource.apply_node_config
+  lifecycle {
+    destroy = false
+  }
 }
 moved {
   from = local_sensitive_file.cp_machine_config
   to   = local_sensitive_file.node_machine_config
 }
-moved {
+removed {
   from = local_sensitive_file.worker_machine_config
-  to   = local_sensitive_file.node_machine_config
+  lifecycle {
+    destroy = false
+  }
 }
