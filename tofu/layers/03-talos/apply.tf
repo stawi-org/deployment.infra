@@ -25,16 +25,18 @@ locals {
     if !contains(var.talos_apply_skip, k)
   }
 
-  # Per-CP DNS endpoint — picks `cp-<N>.<first-zone>` for the CP at
-  # index N (1-indexed) in cp_sorted_keys. Used as the TLS
-  # endpoint for talos_machine_configuration_apply so OCI nodes
-  # whose public IPv4 isn't on-NIC (and therefore not auto-discovered
-  # into the cert) can still be reached without a TLS hostname
-  # mismatch — the node's user_data extra_cert_sans includes
-  # cp-<N>.<zone>, so SNI = cp-<N>.<zone> validates.
+  # DNS-name endpoint for CPs whose public IPv4 isn't on-NIC
+  # (currently OCI). Their auto-generated cert won't include the
+  # public IP, so we connect via cp-<N>.<zone> and rely on
+  # extra_cert_sans in user_data to make SNI match a SAN. Contabo
+  # nodes keep IP-based endpoints — their public IPv4 IS the NIC
+  # address, Talos auto-discovers it into the cert, and IP works
+  # without depending on the runner's DNS resolver (which has been
+  # unreliable when querying through systemd-resolved).
   cp_endpoint_dns = length(var.cp_dns_zones) > 0 ? {
     for i, k in local.cp_sorted_keys :
     k => "${var.cp_dns_zones[0].cp_label}-${i + 1}.${var.cp_dns_zones[0].zone}"
+    if try(local.controlplane_nodes[k].provider, "") == "oracle"
   } : {}
 }
 
