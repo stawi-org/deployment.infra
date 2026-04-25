@@ -36,15 +36,29 @@ locals {
     for k, v in local.direct_apply_nodes : k => v if try(v.role, "") == "controlplane"
   }
 
-  # Per-CP DNS target — used only by talos_machine_bootstrap (mTLS).
-  # Bootstrap targets ONE specific CP, and TLS validates that name
-  # against a SAN. CPs have cp-N.<zone> records published by
-  # cluster_dns; workers don't (yet), so this is sparse.
+  # Per-CP DNS target. Used by talos_machine_bootstrap and by the
+  # apply provisioner — both are mTLS calls and TLS validates the
+  # dial target against a SAN. Node IPs are ephemeral (OCI rotates
+  # ephemeral public IPv4 on every instance recreate; Contabo public
+  # IPs are stable but we don't want to re-issue certs whenever an
+  # instance is replaced) so we anchor the dial target to the
+  # cp-N.<zone> DNS name, which IS in cert SANs and IS stable across
+  # instance churn. cluster_dns republishes the A/AAAA records to the
+  # current IPs on every apply.
   cp_apply_target = length(var.cp_dns_zones) > 0 ? {
     for i, k in local.cp_sorted_keys :
     k => "${var.cp_dns_zones[0].cp_label}-${i + 1}.${var.cp_dns_zones[0].zone}"
     } : {
     for k, v in local.controlplane_nodes : k => v.ipv4
+  }
+
+  # Per-node dial target. CPs use their cp-N.<zone> DNS name (in cert
+  # SANs); workers fall through to ipv4 since there's no per-worker
+  # DNS yet. Workers without on-NIC public IPv4 (e.g. an OCI worker)
+  # would still hit the SAN problem — but the cluster has none today.
+  per_node_apply_target = {
+    for k, v in local.direct_apply_nodes : k =>
+    try(local.cp_apply_target[k], v.ipv4)
   }
 
   installer_url    = "factory.talos.dev/installer/${talos_image_factory_schematic.this.id}"
@@ -100,7 +114,11 @@ resource "null_resource" "apply_node_config" {
   provisioner "local-exec" {
     interpreter = ["bash", "-c"]
     environment = {
-      NODE_IP   = each.value.ipv4
+      # Dial target — DNS name for CPs (cert SAN-stable), public IPv4
+      # for workers (no per-worker DNS yet). The script uses this for
+      # both --endpoints and --nodes; talosctl validates the cert SAN
+      # against this value, so it MUST be a name/IP in machine.certSANs.
+      NODE_IP   = local.per_node_apply_target[each.key]
       NODE_NAME = each.key
       # Drives the script's failure-isolation policy: workers warn-and-
       # continue, controlplanes fail tofu. Keeps a single worker outage
