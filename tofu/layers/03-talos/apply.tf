@@ -21,9 +21,13 @@ locals {
   # handles unreachable nodes (warn-and-continue) and worker errors
   # (warn-and-continue) on its own; only reachable-but-failing CPs
   # fail tofu, which is the correct semantics.
+  #
+  # null check is necessary because nodes-writer can emit ipv4: null
+  # for nodes with no public address (KubeSpan-only onprem). try()
+  # alone doesn't coerce null to "" — it only catches lookup errors.
   direct_apply_nodes = {
     for k, v in local.all_nodes_from_state : k => v
-    if try(v.ipv4, "") != ""
+    if try(v.ipv4, null) != null && try(v.ipv4, "") != ""
   }
 
   # CP-only view of the same set — bootstrap + wait_apiserver work on
