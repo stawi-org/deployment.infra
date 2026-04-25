@@ -50,25 +50,38 @@ log() { printf '[%s] %s\n' "$NODE_NAME" "$*"; }
 
 # Detect node stage. --insecure works for maintenance-mode nodes; mTLS
 # is needed once the cluster CA is loaded. Try insecure first since
-# machinestatus is readable in both modes.
+# machinestatus is readable in both modes. 30s per probe — the previous
+# 10s was eaten by slow cross-cloud TLS handshakes (OCI from a US-east
+# runner, etc.) and produced false-positive unreachables.
+#
+# stderr from each probe is logged to LAST_PROBE_STDERR so the caller
+# can surface why we're declaring a node unreachable instead of just
+# saying "unreachable" with no diagnostic.
+LAST_PROBE_STDERR=""
 detect_stage() {
   local out rc
-  out=$(timeout 10 talosctl get machinestatus --insecure \
-    --nodes "$NODE_IP" -o jsonpath='{.spec.stage}' 2>&1)
+  LAST_PROBE_STDERR=""
+  out=$(timeout 30 talosctl get machinestatus --insecure \
+    --nodes "$NODE_IP" -o jsonpath='{.spec.stage}' 2>/tmp/probe-stderr.$$)
   rc=$?
   if (( rc == 0 )) && [[ -n "$out" ]]; then
+    rm -f /tmp/probe-stderr.$$
     printf '%s' "$out"
     return 0
   fi
+  LAST_PROBE_STDERR="insecure: $(cat /tmp/probe-stderr.$$ 2>/dev/null | head -3 | tr '\n' '|')"
   # mTLS path — node has rejected insecure (configured cluster).
-  out=$(timeout 10 talosctl --talosconfig "$tc_file" \
+  out=$(timeout 30 talosctl --talosconfig "$tc_file" \
     --endpoints "$NODE_IP" --nodes "$NODE_IP" \
-    get machinestatus -o jsonpath='{.spec.stage}' 2>&1)
+    get machinestatus -o jsonpath='{.spec.stage}' 2>/tmp/probe-stderr.$$)
   rc=$?
   if (( rc == 0 )) && [[ -n "$out" ]]; then
+    rm -f /tmp/probe-stderr.$$
     printf '%s' "$out"
     return 0
   fi
+  LAST_PROBE_STDERR="$LAST_PROBE_STDERR mtls: $(cat /tmp/probe-stderr.$$ 2>/dev/null | head -3 | tr '\n' '|')"
+  rm -f /tmp/probe-stderr.$$
   printf 'unreachable'
   return 1
 }
@@ -87,7 +100,7 @@ do_apply() {
     if [[ "$stage" != "unreachable" && -n "$stage" ]]; then
       break
     fi
-    log "attempt $attempt/30: stage=unreachable, retrying in 10s"
+    log "attempt $attempt/30: stage=unreachable [$LAST_PROBE_STDERR], retrying in 10s"
     sleep 10
   done
   log "detected stage=$stage"
