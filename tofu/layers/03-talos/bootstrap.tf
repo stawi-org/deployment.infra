@@ -71,18 +71,23 @@ resource "null_resource" "wait_apiserver" {
 
   provisioner "local-exec" {
     interpreter = ["bash", "-c"]
-    # Cap: 5 min. Steady-state applies don't reboot anything (apply_mode
-    # = auto), bootstrap is a one-shot, image pulls are seconds. If
-    # we're still waiting after 5 min something is actually wrong —
-    # exit and surface the per-CP status rather than hide a flapping
-    # cluster behind a 30-min timer.
+    # Cap: 10 min. After a fresh bootstrap each CP runs through ISO
+    # boot → install → reboot → kubelet pulls + starts kube-apiserver
+    # static pod. Image pulls + scheduler+controller-manager warmup
+    # typically takes 5-8 min from talosctl bootstrap returning. After
+    # the cluster is up, idempotent runs see all CPs serving instantly
+    # and exit on iteration 1.
+    #
+    # Pass when ≥1 CP serves /healthz (any HTTP code from a TLS
+    # endpoint = apiserver up). Downstream layer 04 (flux) talks to
+    # the round-robin / single-host endpoint, so one healthy CP is
+    # sufficient to unblock it. The other CPs catch up shortly after.
     command = <<-EOT
       set -uo pipefail
       CPS=(${join(" ", [for n in local.direct_controlplane_nodes : n.ipv4])})
       N="$${#CPS[@]}"
       (( N == 0 )) && { echo "no CPs to wait for"; exit 0; }
-      QUORUM=$(( (N / 2) + 1 ))
-      for i in $(seq 1 30); do
+      for i in $(seq 1 60); do
         OK=0; STATUSES=()
         for IP in "$${CPS[@]}"; do
           CODE=$(curl -sk --max-time 3 --resolve "cp.antinvestor.com:6443:$IP" \
@@ -90,11 +95,11 @@ resource "null_resource" "wait_apiserver" {
             "https://cp.antinvestor.com:6443/healthz" 2>/dev/null || echo 000)
           [[ "$CODE" =~ ^[1-5][0-9][0-9]$ ]] && { OK=$((OK+1)); STATUSES+=("$IP=$CODE"); } || STATUSES+=("$IP=down")
         done
-        echo "[$i/30] healthy=$${OK}/$${N} ($${STATUSES[*]})"
-        (( OK >= QUORUM )) && exit 0
+        echo "[$i/60] healthy=$${OK}/$${N} ($${STATUSES[*]})"
+        (( OK >= 1 )) && exit 0
         sleep 10
       done
-      echo "::error::quorum not reached in 5 min — final: $${STATUSES[*]}"
+      echo "::error::no apiserver reached in 10 min — final: $${STATUSES[*]}"
       exit 1
     EOT
   }
