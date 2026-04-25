@@ -122,8 +122,23 @@ do_apply() {
         return 1
       fi
       log "current=$server_version target=$TARGET_VERSION"
+
+      # Push the rendered config via mTLS regardless of version match.
+      # Talos's apply-config is idempotent when the on-node config
+      # already matches; applies the diff hot when it doesn't (e.g. we
+      # added a new patch but the node version is unchanged, like the
+      # Contabo IPv6 patch + Flannel public-ip-overwrite annotation).
+      # Without this, version-match nodes silently keep stale configs
+      # forever — Flannel-on-worker hit "Unable to find default v6
+      # route" on contabo-bwire-node-3 because the node was still
+      # running the pre-IPv6-patch config.
+      log "applying config (idempotent if no diff)"
+      talosctl --talosconfig "$tc_file" \
+        --endpoints "$NODE_IP" --nodes "$NODE_IP" \
+        apply-config --file "$cfg_file" || return 1
+
       if [[ "$server_version" == "$TARGET_VERSION" ]]; then
-        log "version matches — idempotent no-op"
+        log "version matches — config applied, done"
         return 0
       fi
       log "upgrading to $TARGET_VERSION"

@@ -75,15 +75,20 @@ resource "local_sensitive_file" "node_machine_config" {
 }
 
 # One uniform apply resource for every node. Triggers on rendered-
-# config sha + target version + image_apply_generation; the script
-# itself decides path (insecure apply / no-op / upgrade) based on
-# what the node reports at runtime.
+# config sha + target version + image_apply_generation + script hash;
+# the script itself decides path (insecure apply / config-apply /
+# upgrade) based on what the node reports at runtime.
 resource "null_resource" "apply_node_config" {
   for_each = local.direct_apply_nodes
 
   triggers = {
-    config_hash            = local_sensitive_file.node_machine_config[each.key].content_sha256
-    target_version         = var.talos_version
+    config_hash    = local_sensitive_file.node_machine_config[each.key].content_sha256
+    target_version = var.talos_version
+    # Script hash is in the trigger so logic changes (e.g. adding a
+    # config-apply step in the running+version-match branch) propagate
+    # to nodes whose other triggers are stable. Without this the
+    # script edit never fires for steady-state nodes.
+    apply_script_hash      = filesha256("${path.module}/../../../scripts/talos-apply-or-upgrade.sh")
     image_apply_generation = each.value.image_apply_generation
   }
 
