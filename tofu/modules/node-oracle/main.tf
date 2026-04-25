@@ -62,23 +62,16 @@ resource "oci_core_instance" "this" {
     boot_volume_size_in_gbs = 200
   }
 
-  # Pin per-instance launch_options to match the image's launch_mode.
-  # Empirically: setting only image launch_mode = PARAVIRTUALIZED is
-  # not enough — OCI's LaunchInstance commits per-instance launch
-  # options at create time, and the runtime VNIC type is whatever
-  # commits there, not what the image declares. Without this block
-  # the new instance comes up unreachable (i/o timeout on every port).
-  #
-  # Each field matches the image (launch_mode = PARAVIRTUALIZED on the
-  # image makes its defaults: bootVolumeType = networkType =
-  # remoteDataVolumeType = PARAVIRTUALIZED). Matching values are
-  # accepted — only mismatches 400 with "Overriding ... in
-  # LaunchOptions is not supported".
+  # Pin per-instance network_type only. OCI's LaunchInstance API
+  # treats most LaunchOptions fields (Firmware, BootVolumeType) as
+  # NON-overridable when the image already declares them — setting
+  # them 400s with "Overriding <Field> in LaunchOptions is not
+  # supported". network_type IS overridable, and we have to set it
+  # because A1.Flex defaults to VFIO (SR-IOV pass-through) for the
+  # instance even when the image's launch_mode = PARAVIRTUALIZED says
+  # virtio. Talos arm64 needs virtio-net (PARAVIRTUALIZED).
   launch_options {
-    boot_volume_type        = "PARAVIRTUALIZED"
-    network_type            = "PARAVIRTUALIZED"
-    remote_data_volume_type = "PARAVIRTUALIZED"
-    firmware                = "UEFI_64"
+    network_type = "PARAVIRTUALIZED"
   }
 
   metadata = {

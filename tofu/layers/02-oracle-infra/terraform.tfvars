@@ -19,5 +19,5 @@ force_image_generation = 5
 # new image OCID would otherwise plan as in-place update and OCI 400s
 # on incompatible boot volume types between old and new image.
 per_node_force_recreate_generation = {
-  "oci-bwire-node-1" = 3
+  "oci-bwire-node-1" = 4
 }
