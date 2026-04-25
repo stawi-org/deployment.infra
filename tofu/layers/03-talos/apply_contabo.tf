@@ -17,9 +17,14 @@ resource "talos_machine_configuration_apply" "worker_contabo" {
   for_each                    = local.direct_contabo_worker_nodes
   client_configuration        = data.terraform_remote_state.secrets.outputs.client_configuration
   machine_configuration_input = data.talos_machine_configuration.worker[each.key].machine_configuration
-  node                        = each.value.ipv4
-  endpoint                    = each.value.ipv4
-  apply_mode                  = "reboot"
+  # Connect via the round-robin DNS (cp.<zone>). Every node's
+  # machine.certSANs contains cp.<zone>, so TLS verification matches
+  # regardless of which CP DNS lands on. The CP routes the
+  # configuration apply to the worker via Talos's intra-cluster
+  # discovery, so no per-node IP is referenced.
+  node       = local.cp_round_robin_dns != null ? local.cp_round_robin_dns : each.value.ipv4
+  endpoint   = local.cp_round_robin_dns != null ? local.cp_round_robin_dns : each.value.ipv4
+  apply_mode = "reboot"
 
 
   lifecycle {

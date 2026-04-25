@@ -34,9 +34,13 @@ import {
 # recovery today: use the node-recovery workflow to reset etcd, then
 # `tofu taint talos_machine_bootstrap.this` and re-apply.
 resource "talos_machine_bootstrap" "this" {
-  depends_on           = [talos_machine_configuration_apply.cp]
-  node                 = local.bootstrap_node.ipv4
-  endpoint             = local.bootstrap_node.ipv4
+  depends_on = [talos_machine_configuration_apply.cp]
+  # Connect via the round-robin DNS — every CP carries cp.<zone> in
+  # its certSANs, so TLS validates regardless of which CP DNS lands
+  # on. Falls back to the bootstrap node's IPv4 only when no DNS
+  # zone is configured (local-dev).
+  node                 = local.cp_round_robin_dns != null ? local.cp_round_robin_dns : local.bootstrap_node.ipv4
+  endpoint             = local.cp_round_robin_dns != null ? local.cp_round_robin_dns : local.bootstrap_node.ipv4
   client_configuration = data.terraform_remote_state.secrets.outputs.client_configuration
 }
 

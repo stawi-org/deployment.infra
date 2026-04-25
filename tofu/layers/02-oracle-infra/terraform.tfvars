@@ -22,13 +22,10 @@ per_node_force_recreate_generation = {
   "oci-bwire-node-1" = 9
 }
 
-# Layer 03 publishes cp-3.<zone> A records pointing at the OCI CP's
-# public IPv4. The OCI node's API serving cert must include these
-# DNS names so layer 03's talos_machine_configuration_apply (which
-# we configure to connect by DNS) can pass TLS verification.
+# Round-robin DNS only — cp.<zone>. Every CP carries the same SANs in
+# its serving cert, so connecting via cp.<zone> validates regardless
+# of which CP DNS lands on. No per-CP names, no node IPs.
 extra_cert_sans = [
-  "cp-3.antinvestor.com",
-  "cp-3.stawi.org",
   "cp.antinvestor.com",
   "cp.stawi.org",
 ]

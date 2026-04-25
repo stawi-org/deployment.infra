@@ -6,30 +6,29 @@ data "talos_cluster_kubeconfig" "this" {
   # kube-apiserver takes 60-180s to start after bootstrap returns.
   depends_on           = [null_resource.wait_apiserver]
   client_configuration = data.terraform_remote_state.secrets.outputs.client_configuration
-  node                 = local.bootstrap_node.ipv4
-  endpoint             = local.bootstrap_node.ipv4
+  node                 = local.cp_round_robin_dns != null ? local.cp_round_robin_dns : local.bootstrap_node.ipv4
+  endpoint             = local.cp_round_robin_dns != null ? local.cp_round_robin_dns : local.bootstrap_node.ipv4
 }
 
 data "talos_client_configuration" "this" {
   cluster_name         = var.cluster_name
   client_configuration = data.terraform_remote_state.secrets.outputs.client_configuration
-  endpoints            = [for n in local.controlplane_nodes : n.ipv4]
-  nodes                = local.all_node_addresses
+  # Endpoints + nodes published as the round-robin DNS for every zone
+  # — DNS resolution at use time picks any reachable CP, and every CP
+  # carries cp.<zone> in its certSANs so TLS validates. No node IPs.
+  endpoints = [for z in var.cp_dns_zones : "${z.cp_label}.${z.zone}"]
+  nodes     = [for z in var.cp_dns_zones : "${z.cp_label}.${z.zone}"]
 }
 
-# Structured kubeconfig — downstream layers consume this directly rather than
-# yamldecode-ing the raw string. The `host` field points at the single
-# known-reachable bootstrap node (first entry of direct_controlplane_nodes),
-# not the DNS round-robin. Round-robin would intermittently resolve to an
-# unreachable CP in the current degraded cluster (OCI CP + api-2/3 are
-# in talos_apply_unreachable) and flux would i/o-timeout. Single-host here
-# is safe because flux's only retry target is always a healthy CP; once
-# the unreachable list is empty this can revert to var.cluster_endpoint.
+# Structured kubeconfig — downstream layers consume this directly rather
+# than yamldecode-ing the raw string. The `host` field uses the
+# round-robin DNS endpoint so flux/downstream can connect via any CP
+# without referencing node IPs.
 output "kubeconfig" {
   description = "Structured kubeconfig client configuration (host, ca_certificate, client_certificate, client_key). Consumed by layer 04."
   value = merge(
     data.talos_cluster_kubeconfig.this.kubernetes_client_configuration,
-    { host = "https://${local.bootstrap_node.ipv4}:6443" },
+    { host = var.cluster_endpoint },
   )
   sensitive = true
 }

@@ -25,19 +25,14 @@ locals {
     if !contains(var.talos_apply_skip, k)
   }
 
-  # DNS-name endpoint for CPs whose public IPv4 isn't on-NIC
-  # (currently OCI). Their auto-generated cert won't include the
-  # public IP, so we connect via cp-<N>.<zone> and rely on
-  # extra_cert_sans in user_data to make SNI match a SAN. Contabo
-  # nodes keep IP-based endpoints — their public IPv4 IS the NIC
-  # address, Talos auto-discovers it into the cert, and IP works
-  # without depending on the runner's DNS resolver (which has been
-  # unreliable when querying through systemd-resolved).
-  cp_endpoint_dns = length(var.cp_dns_zones) > 0 ? {
-    for i, k in local.cp_sorted_keys :
-    k => "${var.cp_dns_zones[0].cp_label}-${i + 1}.${var.cp_dns_zones[0].zone}"
-    if try(local.controlplane_nodes[k].provider, "") == "oracle"
-  } : {}
+  # Round-robin DNS endpoint for talos_machine_configuration_apply.
+  # Every CP carries cp.<zone> in its certSANs (set in
+  # configs.tf::shared_cp_patches via cp_cert_sans). Connecting via
+  # cp.<zone> rather than per-node IPs means SNI matches a SAN
+  # regardless of which node DNS lands on, and we don't depend on
+  # any node's interface-bound address being in the cert (key for
+  # OCI where the public IPv4 is NAT'd, not on-NIC).
+  cp_round_robin_dns = length(var.cp_dns_zones) > 0 ? "${var.cp_dns_zones[0].cp_label}.${var.cp_dns_zones[0].zone}" : null
 }
 
 # terraform_data tracks the rendered machine config content per node. When the
@@ -63,15 +58,12 @@ resource "talos_machine_configuration_apply" "cp" {
   for_each                    = local.direct_controlplane_nodes
   client_configuration        = data.terraform_remote_state.secrets.outputs.client_configuration
   machine_configuration_input = data.talos_machine_configuration.cp[each.key].machine_configuration
-  # Both `node` and `endpoint` set to a DNS name when one's available so
-  # gRPC's TLS handshake uses the DNS name for SNI / cert verification.
-  # OCI public IPv4s are NAT'd (not on-NIC), so Talos won't auto-include
-  # them in its serving cert; the node's user_data has cp-N.<zone> in
-  # machine.certSANs (modules/oracle-account-infra/variables.tf::
-  # extra_cert_sans), and matching the connection target to that SAN
-  # is the only way to pass verification.
-  node     = try(local.cp_endpoint_dns[each.key], each.value.ipv4)
-  endpoint = try(local.cp_endpoint_dns[each.key], each.value.ipv4)
+  # Connect via round-robin DNS for both `node` and `endpoint`. Every
+  # CP's machine.certSANs contains cp.<zone>, so TLS verification
+  # succeeds regardless of which CP DNS lands on. Falls back to the
+  # node's IPv4 only if no DNS zone is configured (local-dev fallback).
+  node     = local.cp_round_robin_dns != null ? local.cp_round_robin_dns : each.value.ipv4
+  endpoint = local.cp_round_robin_dns != null ? local.cp_round_robin_dns : each.value.ipv4
   # apply_mode = "reboot" forces the node to reboot after each config change so
   # kubelet + other services restart cleanly with the new version. Without this,
   # Talos stages the config and services keep running on the old one until the
