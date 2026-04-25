@@ -1,0 +1,9 @@
+operation: reinstall
+scope: all
+nodes: []
+reason: |-
+  We just need to have a fresh start to be sure we can reset the system
+requested_by: pitabwire
+requested_at: 2026-04-25T13:04:11Z
+source_run_id: "24931402629"
+source_run_url: https://github.com/stawi-org/deployment.infra/actions/runs/24931402629
