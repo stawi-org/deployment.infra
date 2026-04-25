@@ -43,14 +43,14 @@ locals {
   # unchanged.
 
   # ---- Shared patch list (cluster-wide, provider-neutral) ----
-  # apid (:50000) and kube-apiserver (:6443) ingress is left at
-  # network.yaml's defaults of 0.0.0.0/0 + ::/0. Lock-down via a
-  # narrowing overlay was removed — the next iteration of admin auth
-  # will be kubelogin → GitHub OIDC, gating by repo membership at
-  # the auth layer rather than network ACLs.
+  # apid (:50000) is narrowed by firewall.tf to GitHub Actions egress +
+  # var.admin_cidrs (CI runners + operator IPs). kube-apiserver (:6443)
+  # stays at network.yaml's 0.0.0.0/0 + ::/0 — it'll be gated at the
+  # auth layer (kubelogin → GitHub OIDC) rather than by network ACL.
   shared_cp_patches = [
     file("${path.module}/../../shared/patches/common.yaml"),
     file("${path.module}/../../shared/patches/network.yaml"),
+    local.firewall_talos_api_patch,
     file("${path.module}/../../shared/patches/storage.yaml"),
     file("${path.module}/../../shared/patches/resolvers.yaml"),
     file("${path.module}/../../shared/patches/timesync.yaml"),
@@ -64,6 +64,7 @@ locals {
   shared_worker_patches = [
     file("${path.module}/../../shared/patches/common.yaml"),
     file("${path.module}/../../shared/patches/network.yaml"),
+    local.firewall_talos_api_patch,
     file("${path.module}/../../shared/patches/storage.yaml"),
     file("${path.module}/../../shared/patches/resolvers.yaml"),
     file("${path.module}/../../shared/patches/timesync.yaml"),
