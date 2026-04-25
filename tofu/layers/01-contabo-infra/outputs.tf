@@ -4,9 +4,9 @@ output "nodes" {
   value       = { for k, m in module.nodes : k => m.node }
 }
 
-output "cluster_reinstall_generation" {
-  description = "Cluster-wide Contabo reinstall counter. Layer 03 watches this on talos_machine_bootstrap.replace_triggered_by — when it bumps, all 3 Contabo CPs were wiped together and the bootstrap RPC must re-fire against fresh etcd. Per-node reinstalls (per_node_force_reinstall_generation) do NOT bump this; those add a healthy node to a quorate cluster, not bootstrap a new one."
-  value       = var.force_reinstall_generation
+output "cluster_reinstall_marker" {
+  description = "SHA1 of all scope=all reinstall requests under .github/reconstruction/. Layer 03 watches this on talos_machine_bootstrap.replace_triggered_by — when it changes, every Contabo CP got a wipe request together and the bootstrap RPC must re-fire against fresh etcd. Per-node (scope=selected) requests deliberately do NOT change this; those add a healthy node to a quorate cluster instead of bootstrapping a new one."
+  value       = local.cluster_wide_reinstall_marker
 }
 
 output "debug_inventory_has_files" {

@@ -5,20 +5,33 @@ terraform {
   }
 }
 
-# Tracks the image OCID + var.force_recreate_generation. Bumps when
-# var.image_id changes upstream OR when an operator deliberately bumps
-# the generation to force a clean recreate (e.g. NIC type can't be
-# changed on a running instance — OCI accepts UpdateInstance with new
-# launch_options but doesn't rebuild the VNIC, so the VM keeps booting
-# with the old NIC type).
+# Drops the legacy terraform_data.image_fingerprint from state without
+# destroying anything. terraform_data has no real backend, so removed
+# is a state-only edit. The replacement (reinstall_marker below) is a
+# brand-new resource — its creation does NOT count as a replacement
+# for replace_triggered_by purposes, so oci_core_instance is preserved
+# across this migration.
+removed {
+  from = terraform_data.image_fingerprint
+  lifecycle {
+    destroy = false
+  }
+}
+
+# Tracks image_id (so a Talos version bump still rebuilds the
+# instance) and the per-node reinstall-request hash (so dropping a
+# new request file under .github/reconstruction/ recreates the node
+# from a fresh disk).
 #
 # The OCI provider marks neither source_details.source_id nor
 # launch_options.* as ForceNew, so without this indirection tofu
-# would plan an in-place update that lands silently broken.
-resource "terraform_data" "image_fingerprint" {
+# would plan an in-place update that lands silently broken (e.g.
+# UpdateInstance accepts a launch_options change but doesn't rebuild
+# the VNIC, leaving the VM booted with the old NIC type).
+resource "terraform_data" "reinstall_marker" {
   triggers_replace = {
-    image_id            = var.image_id
-    recreate_generation = var.force_recreate_generation
+    image_id               = var.image_id
+    reinstall_request_hash = var.reinstall_request_hash
   }
 }
 
@@ -78,7 +91,7 @@ resource "oci_core_instance" "this" {
   metadata = {}
 
   lifecycle {
-    replace_triggered_by = [terraform_data.image_fingerprint]
+    replace_triggered_by = [terraform_data.reinstall_marker]
   }
 }
 

@@ -77,18 +77,16 @@ variable "contabo_api_password" {
   sensitive   = true
 }
 
-variable "force_reinstall_generation" {
-  type        = number
-  default     = 0
+variable "reinstall_request_hash" {
+  type        = string
+  default     = ""
   description = <<-EOT
-    Bump this to force a disk-wipe reinstall of this instance on the
-    next apply. Normally 0 (no reinstall). Change only when:
-      - initial onboarding of an instance whose disk has the wrong OS
-      - disaster recovery (e.g. etcd corruption on this node)
-      - operator explicitly wants a clean Talos install
+    SHA1 of the latest applicable reinstall-request file from
+    .github/reconstruction/, or "" when no request applies. Drives
+    null_resource.ensure_image's trigger and the script's MODE
+    inference: non-empty → MODE=reinstall (disk wipe via Contabo PUT);
+    empty → MODE=verify (just probe :50000).
 
-    For normal Talos version changes, DO NOT bump this — use the
-    talos-upgrade flow instead (in-place `talosctl upgrade`, which
-    preserves etcd and data). Bumping this wipes the disk.
+    Computed in layer 01's reconstruction.tf — never set by hand.
   EOT
 }

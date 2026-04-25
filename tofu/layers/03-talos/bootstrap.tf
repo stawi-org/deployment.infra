@@ -25,15 +25,26 @@ import {
   id = "machine_bootstrap"
 }
 
-# Re-fire the Bootstrap RPC when ALL Contabo CPs were just wiped.
-# Layer 01's force_reinstall_generation is the cluster-wide reinstall
-# counter — bumping it re-images every Contabo CP in parallel and
-# leaves etcd empty on every CP. After that, Talos's Bootstrap RPC
-# must fire again to seed etcd. Per-node reinstalls
-# (per_node_force_reinstall_generation) deliberately don't bump this
-# output — they add a healthy node to a quorate cluster instead.
-resource "terraform_data" "cluster_reinstall_marker" {
-  triggers_replace = data.terraform_remote_state.contabo.outputs.cluster_reinstall_generation
+# Drop the legacy cluster_reinstall_marker from state without
+# destroying anything. The new resource below has a different name so
+# tofu treats it as a fresh create — replace_triggered_by only fires
+# on REPLACEMENT of a referenced resource, not creation, so the
+# bootstrap is preserved across this migration.
+removed {
+  from = terraform_data.cluster_reinstall_marker
+  lifecycle {
+    destroy = false
+  }
+}
+
+# Re-fire the Bootstrap RPC when EVERY Contabo CP was just wiped.
+# Layer 01's cluster_reinstall_marker is the SHA1 of all scope=all
+# reconstruction reinstall requests; when it drifts, every Contabo CP
+# is mid-reinstall in parallel and etcd needs to be seeded again.
+# Per-node (scope=selected) requests deliberately don't change this
+# marker — those add a healthy node to a quorate cluster instead.
+resource "terraform_data" "cluster_wide_reinstall_marker" {
+  triggers_replace = data.terraform_remote_state.contabo.outputs.cluster_reinstall_marker
 }
 
 resource "talos_machine_bootstrap" "this" {
@@ -47,7 +58,7 @@ resource "talos_machine_bootstrap" "this" {
   client_configuration = data.terraform_remote_state.secrets.outputs.client_configuration
 
   lifecycle {
-    replace_triggered_by = [terraform_data.cluster_reinstall_marker]
+    replace_triggered_by = [terraform_data.cluster_wide_reinstall_marker]
   }
 }
 

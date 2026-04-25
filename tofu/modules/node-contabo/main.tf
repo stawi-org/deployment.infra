@@ -46,22 +46,22 @@ resource "contabo_instance" "this" {
 }
 
 # Enforce that contabo_instance.this.id is running var.image_id on the
-# Contabo side. Runs once per image target change (trigger-keyed) and
-# on first create.
+# Contabo side. Runs once per active reinstall request and on first
+# create.
 resource "null_resource" "ensure_image" {
   # Fires ONLY on:
   #   (a) first creation of this instance (no OS yet — needs a real
   #       install). instance_id is fresh, so null_resource is new.
-  #   (b) operator explicitly bumps var.force_reinstall_generation
-  #       (disaster recovery / forced clean slate).
+  #   (b) a new reinstall request file under .github/reconstruction/
+  #       lists this node (or scope=all) → reinstall_request_hash drifts.
   #
   # Intentionally NOT keyed on var.image_id or the script hash —
   # bumping Talos versions is an UPGRADE, not a reinstall. An in-place
   # talosctl upgrade preserves etcd, volumes, and workload state; a
   # reinstall wipes all of that. The two paths must stay separate.
   triggers = {
-    instance_id                = contabo_instance.this.id
-    force_reinstall_generation = var.force_reinstall_generation
+    instance_id            = contabo_instance.this.id
+    reinstall_request_hash = var.reinstall_request_hash
   }
 
   provisioner "local-exec" {
@@ -77,14 +77,12 @@ resource "null_resource" "ensure_image" {
       # warn-and-continue, controlplanes fail tofu. Keeps a single
       # bad VPS from blocking provisioning of the rest of the cluster.
       NODE_ROLE = var.role
-      # MODE=verify on first-create: contabo_instance already provisioned
-      # the disk with var.image_id via POST /instances — just confirm
-      # Talos API is answering on :50000 so downstream layers see a
-      # ready node.
-      # MODE=reinstall when var.force_reinstall_generation is non-zero:
+      # MODE=verify on first-create or trigger-drift-with-no-active-
+      # request: just confirm Talos API is answering on :50000.
+      # MODE=reinstall when an active request applies to this node:
       # call Contabo's reinstall PUT directly and wait for Talos to
       # come back up. Wipes the disk.
-      MODE = var.force_reinstall_generation > 0 ? "reinstall" : "verify"
+      MODE = var.reinstall_request_hash != "" ? "reinstall" : "verify"
     }
     command = "${path.module}/ensure-image.sh"
   }

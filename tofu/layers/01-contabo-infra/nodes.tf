@@ -21,11 +21,10 @@ module "nodes" {
   contabo_api_user      = each.value.account.auth.oauth2_user
   contabo_api_password  = each.value.account.auth.oauth2_pass
 
-  # Effective generation = cluster-wide baseline + per-node override.
-  # Bumping the cluster-wide variable wipes every CP in parallel;
-  # bumping an entry in var.per_node_force_reinstall_generation wipes
-  # only that node. See variables.tf for the surgical-recovery flow.
-  force_reinstall_generation = var.force_reinstall_generation + lookup(var.per_node_force_reinstall_generation, each.key, 0)
+  # SHA1 of the latest applicable reinstall request file for this
+  # node, or "" if none. Drives null_resource.ensure_image's trigger
+  # in the module — drift fires the script in MODE=reinstall.
+  reinstall_request_hash = local.per_node_reinstall_request_hash[each.key]
 
   providers = { contabo = contabo.account[each.value.account_key] }
 }

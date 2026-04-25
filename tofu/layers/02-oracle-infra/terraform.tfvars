@@ -8,10 +8,8 @@ age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
 # scripts/oci-image-create-or-find.sh).
 force_image_generation = 9
 
-# Force recreate of oci-bwire-node-1 alongside the image bump. OCI's
-# instance source_id is not ForceNew in the provider, so a new image
-# OCID would otherwise plan as in-place update and 400 on the
-# incompatible boot volume type. Bumping forces destroy+create.
-per_node_force_recreate_generation = {
-  "oci-bwire-node-1" = 11
-}
+# Per-node reinstalls are now driven by request files under
+# .github/reconstruction/. The tofu-reconstruct workflow opens a PR
+# adding reinstall-*.yaml; merging fires cluster-reinstall.yml which
+# dispatches tofu-apply, and the request hash flows into the per-node
+# terraform_data.reinstall_marker triggers via reconstruction.tf.

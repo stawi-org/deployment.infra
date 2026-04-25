@@ -12,41 +12,6 @@ variable "flux_version" {
 }
 
 
-variable "force_reinstall_generation" {
-  type        = number
-  default     = 0
-  description = <<-EOT
-    Bump this (e.g. 0 → 1) to force a disk-wipe reinstall of ALL
-    Contabo CPs on the next apply. Cluster goes down for ~10 minutes
-    while the 3 CPs re-image in parallel; etcd, volumes, and
-    workloads are lost on those nodes. Do NOT bump for normal Talos
-    version changes — use the in-place upgrade path instead.
-
-    Recognised uses:
-      - initial onboarding when imported instances boot a wrong OS
-      - disaster recovery (unrecoverable etcd, corrupted CP)
-      - deliberate clean-slate rebuild
-
-    Plumbed into modules/node-contabo/null_resource.ensure_image.
-  EOT
-}
-
-variable "per_node_force_reinstall_generation" {
-  type        = map(number)
-  default     = {}
-  description = <<-EOT
-    Per-node override for force_reinstall_generation. Keyed by
-    node_key (e.g. contabo-bwire-node-2). The effective
-    generation for a node is
-      var.force_reinstall_generation + lookup(map, node_key, 0)
-    so bumping an entry here fires ensure-image for just that one
-    node, leaving the other CPs untouched. Intended for surgical
-    disaster recovery when one CP is broken but the others are
-    healthy — bumping the cluster-wide variable would wipe the
-    working CPs and take etcd below quorum.
-  EOT
-}
-
 variable "cloudflare_api_token" {
   type        = string
   sensitive   = true

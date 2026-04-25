@@ -10,23 +10,21 @@ data "talos_image_factory_urls" "this" {
   architecture  = "amd64"
 }
 
-# Image name includes var.force_reinstall_generation so bumping the
-# generation produces a brand-new Contabo custom image with a brand-new
-# UUID. That guarantees null_resource.ensure_image's PUT payload has a
-# target imageId that's DIFFERENT from whatever the instance currently
-# reports in its metadata — without that difference Contabo treats the
-# PUT as a no-op (accepts HTTP 200, doesn't re-image the disk).
-# Observed directly: previous attempts had PUT target == live imageId,
-# and the disk stayed on v1.13.0-alpha.2 across three reinstall cycles.
-# terraform_data that replaces on force_reinstall_generation change.
-# MUST use triggers_replace (not input) — input is an updatable
-# attribute and does NOT trigger replacement. Previous iteration used
-# `input` and tofu updated the resource in-place, kept the same
-# sentinel id, and lifecycle.replace_triggered_by on contabo_image
-# never fired → Contabo image UUID stayed the same across generations
-# → reinstall PUT was still a metadata no-op.
-resource "terraform_data" "image_generation" {
-  triggers_replace = var.force_reinstall_generation
+# terraform_data that replaces whenever a new reinstall request
+# (cluster-wide OR per-node) lands under .github/reconstruction/.
+# Replacement chains into contabo_image via lifecycle.replace_triggered_by
+# below — that gives every reinstall a fresh imageId, which is required
+# because Contabo's PUT /compute/instances/{id} treats imageId-equals-
+# current as a metadata no-op (accepts HTTP 200 but does not actually
+# re-image the disk). Observed directly: prior attempts with stable
+# imageIds left disks on v1.13.0-alpha.2 across three reinstall cycles.
+#
+# triggers_replace (not input) — input is an updatable attribute and
+# does NOT trigger replacement. A prior iteration used input, tofu
+# updated in-place, kept the same sentinel id, and the chain never
+# fired.
+resource "terraform_data" "image_reinstall_marker" {
+  triggers_replace = local.any_reinstall_marker
 }
 
 resource "contabo_image" "talos" {
@@ -34,20 +32,17 @@ resource "contabo_image" "talos" {
 
   provider = contabo.account[each.key]
 
-  name = "Talos ${var.talos_version} gen${var.force_reinstall_generation}-${each.key}"
-  # The urls.iso attribute is the installer ISO URL for the metal platform.
-  # If the Talos provider schema uses a different attribute name (e.g. urls.installer),
-  # update this reference — Phase 4 validation will surface it.
+  name        = "Talos ${var.talos_version}-${each.key}"
   image_url   = data.talos_image_factory_urls.this.urls.iso
   os_type     = "Linux"
   version     = var.talos_version
-  description = "Talos v${var.talos_version} metal-amd64 (gen ${var.force_reinstall_generation})"
+  description = "Talos v${var.talos_version} metal-amd64"
 
-  # Explicit replacement whenever force_reinstall_generation bumps —
-  # whether contabo_image treats name as ForceNew or updatable, this
-  # guarantees a NEW image UUID, which is the fact ensure-image.sh
+  # Explicit replacement on every new reinstall request. Whether
+  # contabo_image treats name as ForceNew or updatable, this guarantees
+  # a NEW image UUID per request, which is the fact ensure-image.sh
   # relies on to get Contabo to actually re-image the disk.
   lifecycle {
-    replace_triggered_by = [terraform_data.image_generation]
+    replace_triggered_by = [terraform_data.image_reinstall_marker]
   }
 }

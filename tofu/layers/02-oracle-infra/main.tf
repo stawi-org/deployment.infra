@@ -83,6 +83,6 @@ module "oracle_account" {
   talos_image_source_uri               = try(var.talos_image_source_uris[each.key], null)
   talos_qcow2_local_path               = var.talos_qcow2_local_path
   force_image_generation               = var.force_image_generation
-  per_node_force_recreate_generation   = var.per_node_force_recreate_generation
+  per_node_reinstall_request_hash      = local.per_account_reinstall_request_hashes[each.key]
   shared_patches_dir                   = "${path.module}/../../shared/patches"
 }
