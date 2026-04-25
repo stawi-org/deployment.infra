@@ -61,12 +61,14 @@ resource "talos_machine_configuration_apply" "cp" {
   for_each                    = local.direct_controlplane_nodes
   client_configuration        = data.terraform_remote_state.secrets.outputs.client_configuration
   machine_configuration_input = data.talos_machine_configuration.cp[each.key].machine_configuration
-  node                        = each.value.ipv4
-  # Connect via DNS name (cp-N.<zone>) when one exists for this node so
-  # TLS verification matches a SAN. OCI public IPv4s are NAT'd (not on-
-  # NIC), so Talos won't auto-include them in its serving cert; the
-  # node's user_data has cp-N.<zone> in machine.certSANs (see
-  # modules/oracle-account-infra/variables.tf::extra_cert_sans).
+  # Both `node` and `endpoint` set to a DNS name when one's available so
+  # gRPC's TLS handshake uses the DNS name for SNI / cert verification.
+  # OCI public IPv4s are NAT'd (not on-NIC), so Talos won't auto-include
+  # them in its serving cert; the node's user_data has cp-N.<zone> in
+  # machine.certSANs (modules/oracle-account-infra/variables.tf::
+  # extra_cert_sans), and matching the connection target to that SAN
+  # is the only way to pass verification.
+  node     = try(local.cp_endpoint_dns[each.key], each.value.ipv4)
   endpoint = try(local.cp_endpoint_dns[each.key], each.value.ipv4)
   # apply_mode = "reboot" forces the node to reboot after each config change so
   # kubelet + other services restart cleanly with the new version. Without this,
