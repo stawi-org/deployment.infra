@@ -8,8 +8,6 @@ prints usage when run with `-h` / `--help` or with no arguments.
 | [`bootstrap-oci-oidc.sh`](#bootstrap-oci-oidcsh) | Idempotently configure an OCI Identity Domain and print an inventory-ready OCI account stanza to stdout. | Operator, once per OCI tenancy, usually in OCI Cloud Shell. |
 | [`get-kubeconfig.sh`](#get-kubeconfigsh) | Dispatch the `dispatch-kubeconfig` workflow and get a short-lived, per-user cluster-admin kubeconfig, encrypted to your SSH keys. | Any collaborator who needs ad-hoc cluster access from their workstation. |
 | [`create-cluster-user.sh`](#create-cluster-usersh) | Mint a long-lived x509 client cert + kubeconfig for a stable Kubernetes user, optionally scoped to namespaces. | Cluster-admin (already holds a kubeconfig), for onboarding collaborators. |
-| [`get-talos-configs.sh`](#get-talos-configssh) | Download the rendered Talos machine-config bundle published by the last apply. Use to onboard non-cloud machines as workers (laptops, on-prem, home labs). | Operator, when joining a new off-cloud node. |
-| [`check-quota-fit.sh`](#check-quota-fitsh) | (Existing) sanity-check that configured workloads fit in the provisioned node quotas. | Operator, pre-apply sanity check. |
 
 ---
 
@@ -283,62 +281,6 @@ kubectl delete rolebinding <user>-admin-binding -n <namespace>   # per namespace
 
 They'll still authenticate (the cert is valid against the CA) but have
 zero permissions. If that's not enough, rotate the cluster CA.
-
----
-
-## `get-talos-configs.sh`
-
-Downloads the Talos machine-config bundle published by the
-[`publish-talos-configs`](../.github/workflows/publish-talos-configs.yml)
-workflow. The artifact is **unencrypted** because machine configs are
-boot-time cluster secrets that every workflow collaborator already has
-equivalent access to via other paths — encrypting them would just get in
-the way of the intended use case (onboarding a new node).
-
-Contents of the bundle:
-
-- `talosconfig` — root `talosctl` client config.
-- `control-plane/<node>.yaml` — one per CP.
-- `worker/<node>.yaml` — one per cloud worker.
-- `generic-worker.yaml` — platform-neutral worker config for off-cloud
-  machines (laptops, on-prem servers, home lab). No public IP required
-  on the joining machine; it joins via outbound KubeSpan WireGuard.
-- `schematic.yaml` — the Talos Image Factory schematic matching this
-  cluster's extensions, so the boot ISO is reproducible.
-- `README.md` — step-by-step join instructions.
-
-**Prereqs:** `gh` (authed), `jq`.
-
-**Usage:**
-
-```bash
-# Use the most recent successful publish run (automatic after each apply):
-./scripts/get-talos-configs.sh
-
-# Force a fresh render — dispatches publish-talos-configs and waits:
-./scripts/get-talos-configs.sh --refresh
-
-# Pick a different output directory:
-./scripts/get-talos-configs.sh --out /tmp/talos-configs
-```
-
-**Joining a laptop / on-prem box** is documented end-to-end in the
-bundle's own `README.md`. Summary:
-
-1. POST `schematic.yaml` to Talos Image Factory to get an ISO URL.
-2. Boot the machine from that ISO; note its LAN IP.
-3. `talosctl apply-config --insecure --nodes <lan-ip> --file generic-worker.yaml`
-4. Wait ~60s; `kubectl get nodes` shows the new machine.
-
----
-
-## `check-quota-fit.sh`
-
-Static sanity-check that configured workloads (pods, jobs, etc.) sum to
-less than the provisioned node capacity across all nodes. Runs
-against the committed manifests; no cluster interaction required.
-
-See `./scripts/check-quota-fit.sh --help` for invocation details.
 
 ---
 
