@@ -54,6 +54,6 @@ jobs:
             [[ "$ST" == "SUCCEEDED" ]] && break
             sleep 5
           done
-          oci compute console-history get-content --instance-console-history-id "$HIST" --length 65536 > /tmp/console.txt
+          oci compute console-history get-content --instance-console-history-id "$HIST" --file /tmp/console.txt --length 65536
           echo "===== last 200 lines of serial console ====="
           tail -n 200 /tmp/console.txt
