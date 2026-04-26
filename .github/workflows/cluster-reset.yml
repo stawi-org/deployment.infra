@@ -40,7 +40,9 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write # archive-requests pushes a commit moving processed
+  # reset-*.yaml + reinstall-*.yaml under reconstruction/archive/ so
+  # the next tofu-apply doesn't re-fire MODE=reinstall from stale files
   id-token: write
   pull-requests: write
 
@@ -64,14 +66,22 @@ jobs:
     env:
       CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
-      - name: Delete every cp* record on both managed zones
+      - name: Delete every cluster_dns-published record on both managed zones
+        # cluster_dns publishes:
+        #   cp.<zone>      — round-robin across CPs
+        #   cp-<N>.<zone>  — per-CP
+        #   prod.<zone>    — round-robin across LB-labelled nodes
+        # All of them must be deleted for the next apply to recreate
+        # cleanly — leftover records cause Cloudflare 400 "An identical
+        # record already exists" because tofu plans creates from empty
+        # state.
         run: |
           set -euo pipefail
           for ZONE_ID in e5a43681579acad9c15657ac21dbd66a 706bf604a333d866bb38c03bf643e79a ; do
             for TYPE in A AAAA ; do
               IDS=$(curl -fsSL -H "Authorization: Bearer $CF_TOKEN" \
                 "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records?type=$TYPE&per_page=200" \
-                | jq -r '.result[] | select(.name | test("^cp(-[0-9]+)?\\.")) | .id')
+                | jq -r '.result[] | select(.name | test("^(cp(-[0-9]+)?|prod)\\.")) | .id')
               for ID in $IDS ; do
                 curl -fsSL -X DELETE -H "Authorization: Bearer $CF_TOKEN" \
                   "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records/$ID" >/dev/null
@@ -214,11 +224,42 @@ jobs:
             echo "::endgroup::"
           done
 
+  # Move processed reset/reinstall request files under archive/ before
+  # the apply runs. Otherwise tofu's reconstruction.tf hash glob still
+  # sees them, and the per-node reinstall_request_hash stays non-empty
+  # → ensure-image fires MODE=reinstall on every node → re-wipes disks
+  # immediately after the state-wipe reset. Net: cluster never settles.
+  archive-requests:
+    needs: guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Move processed requests to archive/
+        run: |
+          set -euo pipefail
+          DIR=".github/reconstruction"
+          shopt -s nullglob
+          ACTIVE=("$DIR"/reset-*.yaml "$DIR"/reinstall-*.yaml)
+          if (( ${#ACTIVE[@]} == 0 )); then
+            echo "no active request files; nothing to archive"
+            exit 0
+          fi
+          mkdir -p "$DIR/archive"
+          for f in "${ACTIVE[@]}"; do
+            git mv "$f" "$DIR/archive/$(basename "$f")"
+          done
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "cluster-reset: archive processed reconstruction requests"
+          git push origin HEAD:main
+
   # Apply runs in-line so the reset is a single workflow run that
   # ends with a working cluster, not a wipe that leaves the operator
   # to chase a follow-up dispatch.
   apply:
-    needs: [clean-cloudflare, wipe-state, clean-contabo-images]
+    needs: [clean-cloudflare, wipe-state, clean-contabo-images, archive-requests]
     permissions:
       contents: read
       id-token: write

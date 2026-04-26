@@ -18,19 +18,21 @@ removed {
   }
 }
 
-# Tracks image_id (so a Talos version bump still rebuilds the
-# instance) and the per-node reinstall-request hash (so dropping a
-# new request file under .github/reconstruction/ recreates the node
-# from a fresh disk).
+# Tracks ONLY the per-node reinstall-request hash. A Talos version
+# bump intentionally does NOT trigger instance replacement here — we
+# want the same in-place upgrade story Contabo gets (talosctl upgrade
+# --image, no disk wipe, etcd survives). On OCI, source_details.source_id
+# isn't ForceNew, so the provider plans an in-place update on the
+# image OCID change but doesn't actually re-image a running disk;
+# talosctl handles the on-disk Talos version swap. The instance
+# state's source_id field drifts from the live boot image but
+# functionally the cluster keeps running.
 #
-# The OCI provider marks neither source_details.source_id nor
-# launch_options.* as ForceNew, so without this indirection tofu
-# would plan an in-place update that lands silently broken (e.g.
-# UpdateInstance accepts a launch_options change but doesn't rebuild
-# the VNIC, leaving the VM booted with the old NIC type).
+# The only path that recreates an OCI instance is now an explicit
+# reinstall request file under .github/reconstruction/ — same
+# semantics as Contabo's null_resource.ensure_image trigger.
 resource "terraform_data" "reinstall_marker" {
   triggers_replace = {
-    image_id               = var.image_id
     reinstall_request_hash = var.reinstall_request_hash
   }
 }
