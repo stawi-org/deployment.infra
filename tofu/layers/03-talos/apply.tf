@@ -120,6 +120,14 @@ resource "null_resource" "apply_node_config" {
       # against this value, so it MUST be a name/IP in machine.certSANs.
       NODE_IP   = local.per_node_apply_target[each.key]
       NODE_NAME = each.key
+      # Force talosctl's Go runtime to use the libc resolver
+      # (getaddrinfo). Pure-Go gRPC's dns resolver bypasses /etc/hosts
+      # and queries systemd-resolved (127.0.0.53) directly — so the
+      # /etc/hosts pinning we do for the IPv4-only runner has no
+      # effect, and talosctl keeps trying the cluster's real public
+      # IPv6 (which the runner can't reach) for cp-N.<zone> lookups.
+      # cgo's getaddrinfo respects /etc/hosts.
+      GODEBUG = "netdns=cgo"
       # Drives the script's failure-isolation policy: workers warn-and-
       # continue, controlplanes fail tofu. Keeps a single worker outage
       # from blocking apply progress on the rest of the cluster.
