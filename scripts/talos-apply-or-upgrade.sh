@@ -48,36 +48,42 @@ tc_file="$TALOSCONFIG_FILE"
 
 log() { printf '[%s] %s\n' "$NODE_NAME" "$*"; }
 
-# Pin NODE_IP into /etc/hosts at runtime if it's a DNS name we haven't
-# resolved already. The workflow's pre-resolve step runs ONCE before
-# tofu apply — for a fresh-state build the cluster_dns records don't
-# exist yet and pre-resolve finds nothing. Without /etc/hosts entries,
-# systemd-resolved → Cloudflare returns the cluster's real public IPv6
-# alongside the A record. gRPC/talosctl dials the IPv6 first and the
-# IPv4-only GitHub Actions runner kernel returns "network is
-# unreachable" — talosctl doesn't fall back to the A address.
+# Pin NODE_IP into /etc/hosts to the CURRENT NODE_IPV4 from tofu
+# state (passed by the provisioner). Always overwrites any stale
+# pin — the workflow's pre-resolve step ran ONCE at startup, before
+# layer 02 might have destroy+create'd an OCI instance and rotated
+# its ephemeral public IP. The pre-resolved /etc/hosts entry would
+# then point at the old IP; talosctl would dial it and time out
+# for the entire 5-min retry budget. By using tofu's authoritative
+# current-state IP and forcibly overwriting any stale entries,
+# every apply uses the live IP regardless of pre-resolve timing
+# or DNS propagation lag.
 #
-# Fix: pin both A AND a synthetic AAAA = ::ffff:<ipv4> so any AAAA
-# query returns an IPv4-mapped address, which the kernel routes via
-# IPv4. /etc/hosts takes precedence over DNS, so the real AAAA isn't
-# consulted from the runner.
+# We also pin a synthetic AAAA = ::ffff:<ipv4> so any AAAA query
+# returns an IPv4-mapped address (kernel routes via IPv4). This
+# avoids systemd-resolved returning the cluster's real public IPv6
+# from Cloudflare, which the IPv4-only GitHub Actions runner can't
+# reach. Combined with GODEBUG=netdns=cgo (set by the provisioner),
+# talosctl's resolver actually consults /etc/hosts — pure-Go gRPC
+# resolver bypasses it.
 pin_node_ip_to_etc_hosts() {
   case "$NODE_IP" in
     *[!0-9.]*) ;;     # contains non-digit-or-dot → looks like hostname
     *) return 0 ;;    # pure IPv4, nothing to pin
   esac
-  if grep -q " $NODE_IP\$" /etc/hosts 2>/dev/null; then
+  if [[ -z "${NODE_IPV4:-}" ]]; then
+    log "NODE_IPV4 unset; can't pin $NODE_IP — talosctl will fall through to systemd-resolved"
     return 0
   fi
-  local ip
-  ip=$(dig +short +time=5 +tries=2 @1.1.1.1 "$NODE_IP" A 2>/dev/null | head -n1)
-  if [[ -z "$ip" ]]; then
-    log "could not resolve A record for $NODE_IP via 1.1.1.1; talosctl will fall through to systemd-resolved"
-    return 0
+  # Drop any stale pin (could be the pre-resolve from before an
+  # OCI instance recreate). sed -i edits in place; the pattern
+  # matches lines whose hostname column equals NODE_IP exactly.
+  if grep -q "[[:space:]]${NODE_IP}\$" /etc/hosts 2>/dev/null; then
+    sudo sed -i "/[[:space:]]${NODE_IP}\$/d" /etc/hosts
   fi
-  log "pinning $NODE_IP -> $ip in /etc/hosts (also synthetic AAAA ::ffff:$ip)"
-  echo "$ip $NODE_IP"        | sudo tee -a /etc/hosts >/dev/null
-  echo "::ffff:$ip $NODE_IP" | sudo tee -a /etc/hosts >/dev/null
+  log "pinning $NODE_IP -> $NODE_IPV4 in /etc/hosts (also synthetic AAAA ::ffff:$NODE_IPV4)"
+  echo "$NODE_IPV4 $NODE_IP"        | sudo tee -a /etc/hosts >/dev/null
+  echo "::ffff:$NODE_IPV4 $NODE_IP" | sudo tee -a /etc/hosts >/dev/null
 }
 pin_node_ip_to_etc_hosts
 

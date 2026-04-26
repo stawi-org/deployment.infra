@@ -120,6 +120,14 @@ resource "null_resource" "apply_node_config" {
       # against this value, so it MUST be a name/IP in machine.certSANs.
       NODE_IP   = local.per_node_apply_target[each.key]
       NODE_NAME = each.key
+      # The CURRENT public IPv4 from tofu state (post-layer-02-apply,
+      # so it reflects an OCI ephemeral-IP rotation in the same apply
+      # run). Passed alongside NODE_IP so the script can re-pin
+      # /etc/hosts to the live IP — pre-resolve at workflow startup
+      # may have pinned the OLD IP before layer 02 recreated the OCI
+      # instance, and DNS propagation through 1.1.1.1 lags Cloudflare
+      # API by several minutes. NODE_IPV4 is tofu's authoritative view.
+      NODE_IPV4 = try(each.value.ipv4, "")
       # Force talosctl's Go runtime to use the libc resolver
       # (getaddrinfo). Pure-Go gRPC's dns resolver bypasses /etc/hosts
       # and queries systemd-resolved (127.0.0.53) directly — so the
