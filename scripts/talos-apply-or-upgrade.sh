@@ -192,11 +192,43 @@ do_apply() {
         return 0
       fi
       log "upgrading to $TARGET_VERSION"
-      talosctl --talosconfig "$tc_file" \
-        --endpoints "$NODE_IP" --nodes "$NODE_IP" upgrade \
-        --image "${INSTALLER_URL}:${TARGET_VERSION}" \
-        --wait --timeout 5m || return 1
-      log "upgrade complete"
+      # Talos's upgrade RPC takes a cluster-wide etcd mutex AND
+      # requires every etcd member to be healthy before it'll start
+      # another node's upgrade. With for_each on apply_node_config
+      # firing all 4 CP upgrades in parallel, exactly one acquires
+      # the mutex; the rest fail immediately with:
+      #   "failed to acquire upgrade mutex: Locked by another session"
+      #   "etcd member <id> is not healthy; all members must be
+      #    healthy to perform an upgrade"
+      # Retry these specific errors so upgrades naturally serialize
+      # — one CP completes its reboot+rejoin, mutex frees, etcd
+      # becomes healthy again, the next call gets in. 20 * 30s = 10
+      # min retry budget per node, more than enough for a couple of
+      # peers to upgrade ahead of us.
+      local up_out up_rc
+      for up_attempt in $(seq 1 20); do
+        up_out=$(talosctl --talosconfig "$tc_file" \
+          --endpoints "$NODE_IP" --nodes "$NODE_IP" upgrade \
+          --image "${INSTALLER_URL}:${TARGET_VERSION}" \
+          --wait --timeout 5m 2>&1)
+        up_rc=$?
+        if (( up_rc == 0 )); then
+          log "upgrade complete"
+          return 0
+        fi
+        if [[ "$up_out" == *"upgrade mutex"* \
+           || "$up_out" == *"is not healthy"* \
+           || "$up_out" == *"context deadline exceeded"* \
+           || "$up_out" == *"connection refused"* ]]; then
+          log "upgrade attempt $up_attempt/20: cluster busy ($(echo "$up_out" | head -1 | tail -c 100)), sleeping 30s"
+          sleep 30
+          continue
+        fi
+        log "::error::upgrade failed (rc=$up_rc): $(echo "$up_out" | head -3)"
+        return 1
+      done
+      log "::error::upgrade exhausted 20 retries; cluster did not free the mutex / become healthy in 10 min"
+      return 1
       ;;
 
     *)
