@@ -51,3 +51,63 @@ import {
   to       = module.oracle_account[split(":", each.key)[0]].module.node[split(":", each.key)[1]].oci_core_instance.this
   id       = each.value
 }
+
+# Account-level OCI resources that survive cluster-reset's R2-state
+# wipe (state goes; cloud objects don't): bastion + image bucket. Same
+# defensive pattern as instances — list by name in the account's
+# compartment/namespace and import only what's actually present.
+
+data "oci_bastion_bastions" "by_name" {
+  for_each                = toset(local.oracle_account_keys)
+  provider                = oci.account[each.key]
+  compartment_id          = try(local.oracle_auth_from_module[each.key].compartment_ocid, "")
+  name                    = "cluster-bastion-${each.key}"
+  bastion_lifecycle_state = "ACTIVE"
+}
+
+import {
+  for_each = {
+    for k in local.oracle_account_keys : k => one(data.oci_bastion_bastions.by_name[k].bastions)
+    if length(data.oci_bastion_bastions.by_name[k].bastions) > 0
+  }
+  to = module.oracle_account[each.key].oci_bastion_bastion.this
+  id = each.value.id
+}
+
+# Object Storage bucket. data.oci_objectstorage_namespace is queried
+# inside the module already; here we need it again for the import-side
+# bucket lookup.
+data "oci_objectstorage_namespace" "by_account" {
+  for_each       = toset(local.oracle_account_keys)
+  provider       = oci.account[each.key]
+  compartment_id = try(local.oracle_auth_from_module[each.key].compartment_ocid, "")
+}
+
+# data.oci_objectstorage_bucket errors if the bucket doesn't exist, so
+# use the list endpoint and pick by name.
+data "oci_objectstorage_bucket_summaries" "talos_images" {
+  for_each       = toset(local.oracle_account_keys)
+  provider       = oci.account[each.key]
+  compartment_id = try(local.oracle_auth_from_module[each.key].compartment_ocid, "")
+  namespace      = data.oci_objectstorage_namespace.by_account[each.key].namespace
+}
+
+locals {
+  # Per-account: existing talos-images-<acct> bucket if present, else null.
+  oracle_image_bucket_present = {
+    for acct in local.oracle_account_keys : acct => length([
+      for b in data.oci_objectstorage_bucket_summaries.talos_images[acct].bucket_summaries :
+      b if b.name == "talos-images-${acct}"
+    ]) > 0
+  }
+}
+
+import {
+  for_each = {
+    for k in local.oracle_account_keys : k => k
+    if try(local.oracle_image_bucket_present[k], false)
+  }
+  # Bucket import id format: n/<namespace>/b/<bucket-name>
+  to = module.oracle_account[each.key].oci_objectstorage_bucket.talos_images[0]
+  id = "n/${data.oci_objectstorage_namespace.by_account[each.key].namespace}/b/talos-images-${each.key}"
+}
