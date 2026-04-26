@@ -57,27 +57,33 @@ variable "cloudflare_api_token" {
 
 variable "cp_dns_zones" {
   type = list(object({
-    zone       = string
-    zone_id    = string
-    cp_label   = optional(string, "cp")
-    prod_label = optional(string, "prod")
+    zone         = string
+    zone_id      = string
+    cp_label     = optional(string, "cp")
+    worker_label = optional(string, "worker")
+    prod_label   = optional(string, "prod")
   }))
   default     = []
   description = <<-EOT
     Cloudflare zones to publish cluster DNS into, computed from every
-    controlplane node across every provider (Contabo + OCI + on-prem).
+    node across every provider (Contabo + OCI + on-prem).
 
     Per zone:
-      - <cp_label>.<zone>      round-robin A/AAAA across ALL CPs
-      - <cp_label>-<N>.<zone>  per-CP A/AAAA, 1-indexed by sorted node key
-      - <prod_label>.<zone>    round-robin A/AAAA across nodes carrying
-                               node.kubernetes.io/external-load-balancer="true";
-                               omitted when no nodes match
+      - <cp_label>.<zone>          round-robin A/AAAA across ALL CPs
+      - <cp_label>-<N>.<zone>      per-CP A/AAAA, 1-indexed by sorted node key
+      - <worker_label>-<N>.<zone>  per-worker A/AAAA for workers with a
+                                   public IP, 1-indexed by sorted node key
+      - <prod_label>.<zone>        round-robin A/AAAA across nodes carrying
+                                   node.kubernetes.io/external-load-balancer="true";
+                                   omitted when no nodes match
 
-    Defaults: cp_label="cp", prod_label="prod".
+    Defaults: cp_label="cp", worker_label="worker", prod_label="prod".
 
-    cp-* names are added to apiserver + talosd cert SANs locally. prod-*
-    aren't — they point at LB workers, not apiserver.
+    cp-* and worker-<N>.* names are added to apid + (CP only) apiserver
+    cert SANs locally so this layer's per-node apply path can dial
+    each node by a stable DNS name without depending on Talos's
+    on-NIC auto-SANs (which miss NAT'd public IPs like OCI's). prod-*
+    isn't in any SAN list — those point at LB workers, not apiserver.
     zone_id is passed directly (no Cloudflare API lookup), so a token
     scoped only to Zone:DNS:Edit is sufficient.
   EOT

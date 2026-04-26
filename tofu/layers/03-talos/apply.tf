@@ -52,13 +52,28 @@ locals {
     for k, v in local.controlplane_nodes : k => v.ipv4
   }
 
-  # Per-node dial target. CPs use their cp-N.<zone> DNS name (in cert
-  # SANs); workers fall through to ipv4 since there's no per-worker
-  # DNS yet. Workers without on-NIC public IPv4 (e.g. an OCI worker)
-  # would still hit the SAN problem — but the cluster has none today.
+  # Per-worker DNS target — same shape, same motivation as cp_apply_target.
+  # Anchors the apply path to a stable name so a NAT'd worker (OCI:
+  # public IPv4 on the NAT gateway, not the NIC, so not in Talos's
+  # auto-SAN list) can be reached without putting ephemeral IPs into
+  # cert SANs. Falls through to ipv4 only when no DNS zone is configured
+  # — that path keeps tests / minimal setups working but loses the
+  # NAT'd-IP coverage. dns.tf publishes the matching worker-N.<zone>
+  # A/AAAA records so the dial actually resolves.
+  worker_apply_target = length(var.cp_dns_zones) > 0 ? {
+    for i, k in local.worker_sorted_keys :
+    k => "${var.cp_dns_zones[0].worker_label}-${i + 1}.${var.cp_dns_zones[0].zone}"
+    } : {
+    for k, v in local.workers_with_public_ip : k => v.ipv4
+  }
+
+  # Per-node dial target. CPs use cp-N.<zone>, workers use worker-N.<zone>;
+  # both are in their respective cert SAN lists and both are republished
+  # to live IPs by cluster_dns on every apply. Falls through to ipv4
+  # only for the no-DNS-zone case (above).
   per_node_apply_target = {
     for k, v in local.direct_apply_nodes : k =>
-    try(local.cp_apply_target[k], v.ipv4)
+    try(local.cp_apply_target[k], try(local.worker_apply_target[k], v.ipv4))
   }
 
   installer_url    = "factory.talos.dev/installer/${talos_image_factory_schematic.this.id}"
