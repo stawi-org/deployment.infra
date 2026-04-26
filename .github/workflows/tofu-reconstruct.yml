@@ -23,8 +23,15 @@
 #   gh workflow run tofu-reconstruct.yml --ref main \
 #       -f operation=reinstall \
 #       -f scope=all \
-#       -f confirm=RECONSTRUCT \
+#       -f confirm=REINSTALL-DISKS \
 #       -f reason="Migrate off generation counters"
+#
+#   For a reset request:
+#       -f operation=reset -f confirm=RESET-WIPE-STATE
+#
+# The confirm literal is operation-specific so a dropdown fumble
+# (selecting the wrong operation but typing the muscle-memory
+# confirm) is caught before a request file lands.
 
 name: tofu-reconstruct
 on:
@@ -51,7 +58,7 @@ on:
         default: ''
         type: string
       confirm:
-        description: 'Type RECONSTRUCT verbatim to confirm.'
+        description: 'Operation-specific literal: RESET-WIPE-STATE for operation=reset, REINSTALL-DISKS for operation=reinstall. Long string is intentional — pairs with operation so a dropdown fumble is caught here.'
         required: true
         type: string
       reason:
@@ -78,14 +85,29 @@ jobs:
     steps:
       - name: Validate inputs
         run: |
-          if [[ "$CONFIRM" != "RECONSTRUCT" ]]; then
-            echo "::error::confirm input must be the literal string RECONSTRUCT. Got: $CONFIRM"
-            exit 1
-          fi
           if [[ "$OPERATION" != "reset" && "$OPERATION" != "reinstall" ]]; then
             echo "::error::operation must be reset or reinstall. Got: $OPERATION"
             exit 1
           fi
+          # Operation-specific confirm. Same string for both was a
+          # dropdown-fumble footgun: select the wrong operation, type
+          # the muscle-memory confirm, and the destructive flow runs
+          # with the wrong intent. Tying the literal to the operation
+          # forces the operator to read what they're confirming.
+          case "$OPERATION" in
+            reset)
+              if [[ "$CONFIRM" != "RESET-WIPE-STATE" ]]; then
+                echo "::error::operation=reset requires confirm=RESET-WIPE-STATE. Got: $CONFIRM"
+                exit 1
+              fi
+              ;;
+            reinstall)
+              if [[ "$CONFIRM" != "REINSTALL-DISKS" ]]; then
+                echo "::error::operation=reinstall requires confirm=REINSTALL-DISKS. Got: $CONFIRM"
+                exit 1
+              fi
+              ;;
+          esac
           if [[ "$OPERATION" == "reinstall" && "$SCOPE" == "selected" && -z "$NODES" ]]; then
             echo "::error::scope=selected requires a non-empty nodes list"
             exit 1

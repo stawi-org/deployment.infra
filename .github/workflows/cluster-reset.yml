@@ -21,21 +21,23 @@
 # Contabo reinstall via the reconstruction mechanism if the request
 # file persists), then layers 02/03/04 from empty state.
 #
-# Trigger:
-#   gh workflow run cluster-reset.yml --ref main -f confirm=RESET
-#   or merge an approved tofu-reconstruct PR that adds
-#   .github/reconstruction/reset-*.yaml on main.
+# Trigger: workflow_dispatch ONLY. Deliberately not auto-fired by
+# pushes of reset-*.yaml — merging a tofu-reconstruct request PR
+# is now purely an audit/review record. The destructive run requires
+# a separate explicit dispatch with the long confirm string. Reset
+# is the most expensive thing this repo can do and shouldn't be one
+# accidental dropdown click away.
+#
+# To reset:
+#   gh workflow run cluster-reset.yml --ref main \
+#       -f confirm=RESET-WIPE-STATE
 
 name: cluster-reset
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/reconstruction/reset-*.yaml'
   workflow_dispatch:
     inputs:
       confirm:
-        description: 'Type RESET verbatim to confirm.'
+        description: 'Type RESET-WIPE-STATE verbatim to confirm. Long string is intentional — reset wipes R2 state, every cp* / prod* DNS record, and every Talos custom Contabo image.'
         required: true
         type: string
 
@@ -54,11 +56,11 @@ jobs:
   guard:
     runs-on: ubuntu-latest
     env:
-      CONFIRM: ${{ github.event_name == 'workflow_dispatch' && inputs.confirm || 'RESET' }}
+      CONFIRM: ${{ inputs.confirm }}
     steps:
       - name: Validate confirm
         run: |
-          [[ "$CONFIRM" == "RESET" ]] || { echo "::error::confirm must be RESET"; exit 1; }
+          [[ "$CONFIRM" == "RESET-WIPE-STATE" ]] || { echo "::error::confirm must be RESET-WIPE-STATE (long literal — intentional, see workflow header)"; exit 1; }
 
   clean-cloudflare:
     needs: guard

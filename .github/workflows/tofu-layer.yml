@@ -221,9 +221,29 @@ jobs:
         env:
           AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        # Retry tofu init up to 3 times — provider signature/checksum
+        # fetches from github.com (releases assets) and registry.opentofu.org
+        # are flaky, observed 502 Bad Gateway on
+        # github.com/.../terraform-provider-sops/.../SHA256SUMS.sig that
+        # killed an entire reinstall apply chain. Transient; a retry
+        # 30s later succeeds.
         run: |
-          tofu init \
-            -backend-config="endpoints={s3=\"https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com\"}"
+          set +e
+          for attempt in 1 2 3; do
+            tofu init \
+              -backend-config="endpoints={s3=\"https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com\"}"
+            rc=$?
+            if [[ $rc -eq 0 ]]; then
+              break
+            fi
+            if [[ $attempt -lt 3 ]]; then
+              echo "::warning::tofu init failed (rc=$rc) — retrying in 30s (attempt $attempt/3)"
+              sleep 30
+              # Drop the partial .terraform dir so the retry redownloads cleanly
+              rm -rf .terraform
+            fi
+          done
+          exit "$rc"
 
       - name: Validate
         working-directory: tofu/layers/${{ inputs.layer }}
