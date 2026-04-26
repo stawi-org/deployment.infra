@@ -1,0 +1,62 @@
+# .github/workflows/recover-talos-bootstrap.yml
+#
+# One-shot recovery: forces talos_machine_bootstrap.this to be replaced
+# on the next apply, so the Bootstrap RPC fires and re-seeds etcd.
+#
+# When to use:
+#   - You wiped the cluster (operator-side) but tofu state still says
+#     bootstrap is done, so a normal tofu-apply leaves the cluster in
+#     "config applied, etcd empty, apiserver never starts."
+#   - kubectl/k8s-apiserver/talos diagnostic confirms etcd is empty on
+#     every CP and bootstrap.tf wasn't going to re-fire on its own.
+#
+# Effect: tofu replaces talos_machine_bootstrap.this. Destroy is a
+# no-op (the talos provider doesn't actually unbootstrap). Create
+# calls the Bootstrap RPC against the configured bootstrap node,
+# which seeds etcd. Apiserver starts ~1-2 min later.
+#
+# Trigger:
+#   gh workflow run recover-talos-bootstrap.yml --ref main \
+#       -f confirm=BOOTSTRAP
+
+name: recover-talos-bootstrap
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type BOOTSTRAP verbatim to confirm.'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+concurrency:
+  group: tofu-apply-production
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    env:
+      CONFIRM: ${{ inputs.confirm }}
+    steps:
+      - name: Validate confirm
+        run: |
+          [[ "$CONFIRM" == "BOOTSTRAP" ]] || { echo "::error::confirm must be BOOTSTRAP"; exit 1; }
+
+  apply-replace:
+    needs: guard
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    uses: ./.github/workflows/tofu-layer.yml
+    with:
+      layer: 03-talos
+      mode: apply
+      environment: production
+      extra_plan_args: -replace=talos_machine_bootstrap.this
+    secrets: inherit

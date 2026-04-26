@@ -3,9 +3,10 @@ name: tofu-layer
 on:
   workflow_call:
     inputs:
-      layer:          { required: true, type: string }
-      mode:           { required: true, type: string, description: "plan | apply" }
-      environment:    { required: false, type: string, default: "" }
+      layer:            { required: true, type: string }
+      mode:             { required: true, type: string, description: "plan | apply" }
+      environment:      { required: false, type: string, default: "" }
+      extra_plan_args:  { required: false, type: string, default: "", description: "Extra args appended to tofu plan (e.g. -replace=foo.bar). Recovery use only." }
     secrets:
       R2_ACCOUNT_ID:            { required: true }
       R2_ACCESS_KEY_ID:         { required: true }
@@ -232,6 +233,7 @@ jobs:
           TF_VAR_etcd_backup_r2_secret_access_key: ${{ secrets.ETCD_BACKUP_R2_SECRET_ACCESS_KEY }}
           TF_VAR_age_recipients:                   ${{ vars.SOPS_AGE_RECIPIENTS }}
           SOPS_AGE_KEY:                            ${{ secrets.SOPS_AGE_KEY }}
+          EXTRA_PLAN_ARGS:                         ${{ inputs.extra_plan_args }}
         # Downstream layers (02/03/04) read upstream remote state that doesn't
         # exist until the first apply lands on main. On a PR pre-bootstrap those
         # plans will fail with "No stored state was found" — that's expected, so
@@ -244,7 +246,8 @@ jobs:
         # by the tofu-apply-production concurrency group).
         run: |
           set +e
-          tofu plan -out=tfplan -input=false -lock=false
+          # shellcheck disable=SC2086 # intentional word-splitting on extra args
+          tofu plan -out=tfplan -input=false -lock=false ${EXTRA_PLAN_ARGS}
           rc=$?
           set -e
           if [ "$rc" -ne 0 ]; then

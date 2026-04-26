@@ -13,17 +13,17 @@ removed {
   }
 }
 
-# Import block: adopts the existing bootstrap into tofu state without
-# contacting Talos. Required because commit 13b5abf's OCI rename
-# changed bootstrap_trigger.input keys, which fired replace_triggered_by
-# and destroyed talos_machine_bootstrap.this from state. The cluster is
-# still bootstrapped (etcd data present on api-1) — this just puts
-# tofu's tracking record back. After the first apply following this
-# commit, the block is a no-op.
-import {
-  to = talos_machine_bootstrap.this
-  id = "machine_bootstrap"
-}
+# NOTE: a previous import block here adopted talos_machine_bootstrap
+# from a magic "machine_bootstrap" id without contacting Talos. That
+# was a one-shot recovery for commit 13b5abf and outlived its purpose
+# — it stuck tofu state into "bootstrapped" without verifying the
+# cluster, so a freshly-wiped cluster (state cleared by cluster-reset
+# + nodes back in maintenance) silently never re-bootstrapped, etcd
+# stayed empty, apiserver never came up.
+#
+# Removed. After a state-wipe reset, tofu now correctly plans a CREATE
+# for talos_machine_bootstrap.this, which calls the Bootstrap RPC and
+# seeds etcd.
 
 # Drop the legacy cluster_reinstall_marker from state without
 # destroying anything. The new resource below has a different name so
