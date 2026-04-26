@@ -12,8 +12,17 @@ permissions:
   id-token: write
   pull-requests: write
 
+# Concurrency is event-aware:
+#   - workflow_dispatch (operator runs tofu-apply directly): grab the
+#     real `tofu-apply-production` slot so two parallel dispatches
+#     can't apply at the same time.
+#   - workflow_call (parent reusable-workflow caller — cluster-reset,
+#     cluster-reinstall): the parent already holds `tofu-apply-production`.
+#     Use a unique per-run group so the child doesn't deadlock against
+#     its parent. Without this, the apply job silently never starts
+#     and the parent reports conclusion=failure with no apply log.
 concurrency:
-  group: tofu-apply-production
+  group: ${{ github.event_name == 'workflow_dispatch' && 'tofu-apply-production' || format('tofu-apply-child-{0}', github.run_id) }}
   cancel-in-progress: false
 
 jobs:
