@@ -96,12 +96,24 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq dnsutils
 
+          # Pin both A AND a synthetic AAAA = ::ffff:<ipv4> for each
+          # CP DNS name. The runner is IPv4-only — if AAAA is left to
+          # systemd-resolved → Cloudflare, the resolver returns the
+          # cluster's real public IPv6, talosctl/gRPC dials it, and
+          # the runner kernel returns "network is unreachable" because
+          # IPv6 isn't reachable on Azure-hosted runners. Pinning the
+          # IPv4-mapped IPv6 form (::ffff:x.x.x.x) in /etc/hosts gets
+          # the resolver to return that synthetic AAAA instead, which
+          # the kernel routes via IPv4. /etc/hosts entries take
+          # precedence over DNS, so the real cluster AAAA is never
+          # consulted from the runner.
           pin() {
             local host="$1"
             local ip
             ip=$(dig +short +time=5 +tries=2 @1.1.1.1 "$host" A | head -n1)
             if [[ -n "$ip" ]]; then
-              echo "$ip $host" | sudo tee -a /etc/hosts >/dev/null
+              echo "$ip $host"            | sudo tee -a /etc/hosts >/dev/null
+              echo "::ffff:$ip $host"     | sudo tee -a /etc/hosts >/dev/null
             else
               echo "::warning::no A record for $host on 1.1.1.1" >&2
             fi

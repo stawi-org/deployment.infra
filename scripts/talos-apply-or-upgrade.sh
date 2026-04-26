@@ -48,6 +48,39 @@ tc_file="$TALOSCONFIG_FILE"
 
 log() { printf '[%s] %s\n' "$NODE_NAME" "$*"; }
 
+# Pin NODE_IP into /etc/hosts at runtime if it's a DNS name we haven't
+# resolved already. The workflow's pre-resolve step runs ONCE before
+# tofu apply — for a fresh-state build the cluster_dns records don't
+# exist yet and pre-resolve finds nothing. Without /etc/hosts entries,
+# systemd-resolved → Cloudflare returns the cluster's real public IPv6
+# alongside the A record. gRPC/talosctl dials the IPv6 first and the
+# IPv4-only GitHub Actions runner kernel returns "network is
+# unreachable" — talosctl doesn't fall back to the A address.
+#
+# Fix: pin both A AND a synthetic AAAA = ::ffff:<ipv4> so any AAAA
+# query returns an IPv4-mapped address, which the kernel routes via
+# IPv4. /etc/hosts takes precedence over DNS, so the real AAAA isn't
+# consulted from the runner.
+pin_node_ip_to_etc_hosts() {
+  case "$NODE_IP" in
+    *[!0-9.]*) ;;     # contains non-digit-or-dot → looks like hostname
+    *) return 0 ;;    # pure IPv4, nothing to pin
+  esac
+  if grep -q " $NODE_IP\$" /etc/hosts 2>/dev/null; then
+    return 0
+  fi
+  local ip
+  ip=$(dig +short +time=5 +tries=2 @1.1.1.1 "$NODE_IP" A 2>/dev/null | head -n1)
+  if [[ -z "$ip" ]]; then
+    log "could not resolve A record for $NODE_IP via 1.1.1.1; talosctl will fall through to systemd-resolved"
+    return 0
+  fi
+  log "pinning $NODE_IP -> $ip in /etc/hosts (also synthetic AAAA ::ffff:$ip)"
+  echo "$ip $NODE_IP"        | sudo tee -a /etc/hosts >/dev/null
+  echo "::ffff:$ip $NODE_IP" | sudo tee -a /etc/hosts >/dev/null
+}
+pin_node_ip_to_etc_hosts
+
 # Detect node stage. --insecure works for maintenance-mode nodes; mTLS
 # is needed once the cluster CA is loaded. Try insecure first since
 # machinestatus is readable in both modes. 30s per probe — the previous
