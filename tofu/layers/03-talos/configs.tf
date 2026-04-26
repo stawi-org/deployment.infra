@@ -14,6 +14,59 @@
 #                       shared patches, suitable for on-prem/home-lab
 #                       machines joining via KubeSpan over outbound
 #                       internet. Published as an artifact.
+#
+# ---------------------------------------------------------------------
+# Audit: where each part of a CP machine config comes from
+# ---------------------------------------------------------------------
+# Critical security/identity material flowing into every CP config —
+# documented here so a future operator can verify a single rendered
+# config and trust the whole fleet.
+#
+#   PKI / tokens / cluster identity
+#     machine_secrets  ← layer 00 tfstate (data.terraform_remote_state
+#                        .secrets.outputs.machine_secrets). Layer 00 is
+#                        INTENTIONALLY never wiped — cluster-reset.yml
+#                        only purges layers 01/02/03 state. Same machine
+#                        CA, cluster CA, kube CA, bootstrap token, and
+#                        machine token are reused across every reinstall
+#                        so a freshly-wiped node rejoins the existing
+#                        cluster instead of forking a new trust root.
+#     cluster_name     ← var.cluster_name (terraform.tfvars default
+#                        "antinvestor-cluster"). Pinned per environment.
+#     cluster_endpoint ← var.cluster_endpoint ("https://cp.antinvestor
+#                        .com:6443"). MUST be a hostname that's also in
+#                        cp_cert_sans (precondition asserts this).
+#
+#   Cert SANs (apid + apiserver)
+#     local.cp_cert_sans  ← dns.tf, derived from var.cp_dns_zones:
+#                            cp.<zone>      (round-robin)
+#                            cp-1.<zone>..cp-N.<zone>  (per-CP, sorted
+#                            stably by node_key)
+#                          + var.extra_cert_sans (operator-supplied).
+#                          Same source of truth feeds Cloudflare DNS
+#                          records — change a zone, both DNS and SANs
+#                          update in one apply.
+#
+#   Dial target (how this layer's apply path talks to the node)
+#     local.per_node_apply_target[k]  ← apply.tf. For CPs this resolves
+#                                        to "cp-N.<first-zone>" using
+#                                        the same cp_sorted_keys ordering
+#                                        as cp_cert_sans, so the dial
+#                                        target is GUARANTEED to be in
+#                                        SANs (precondition asserts it
+#                                        too, defensively).
+#
+#   Installer image (Talos version pinning)
+#     talos_image_factory_schematic.this.id + var.talos_version  ← image.tf
+#                        + tofu/shared/versions.auto.tfvars.json
+#                        Combined into local.installer_image_patch below.
+#
+# Worker configs use the same machine_secrets / cluster_name /
+# cluster_endpoint, but DON'T set certSANs — workers don't run apiserver
+# or etcd, and Talos auto-includes their on-NIC IPs as apid SANs. Today's
+# worker dial targets are all on-NIC public IPv4 (Contabo workers); the
+# day we add a NAT'd worker (OCI), we'll need per-worker DNS + SANs too.
+# Tracked as a TODO in apply.tf's per_node_apply_target comment.
 
 locals {
   # Per-Contabo-node static IPv6 + kubelet nodeIP/validSubnets. Contabo
@@ -129,6 +182,39 @@ data "talos_machine_configuration" "cp" {
       }),
     ],
   )
+
+  # Identity invariants. Asserted at plan time so a stale endpoint /
+  # zone change can never produce a config whose certificates won't
+  # validate against the address the apply path dials. The precise
+  # failure modes these guard against:
+  #
+  #   1) cluster_endpoint hostname missing from cert SANs ⇒ kubectl
+  #      and the kube-apiserver-as-a-client (etcd peer dial, kubelet
+  #      bootstrap) get x509 SAN-mismatch errors. Cluster won't form.
+  #   2) Per-CP dial target (cp-N.<zone>) missing from cert SANs ⇒
+  #      this layer's own talosctl apply-config fails immediately;
+  #      apply path stalls or wedges.
+  #
+  # Both are silent until the apply hits the wire. Surface them at
+  # plan time instead so a misconfiguration shows up in the PR diff.
+  lifecycle {
+    precondition {
+      condition = contains(
+        local.cp_cert_sans,
+        regex("^https?://([^:/]+)", var.cluster_endpoint)[0],
+      )
+      error_message = "cluster_endpoint host (${var.cluster_endpoint}) is not in cp_cert_sans (${join(", ", local.cp_cert_sans)}). Update var.cp_dns_zones or var.extra_cert_sans, or change var.cluster_endpoint to a hostname that's already in SANs."
+    }
+    precondition {
+      # Either an IP (Talos auto-includes interface IPs as SANs and
+      # we accept that path), or an explicitly-listed SAN.
+      condition = (
+        can(regex("^[0-9.]+$", local.per_node_apply_target[each.key]))
+        || contains(local.cp_cert_sans, local.per_node_apply_target[each.key])
+      )
+      error_message = "per-node dial target for CP ${each.key} (${local.per_node_apply_target[each.key]}) is not in cp_cert_sans. cp_sorted_keys index drift between dns.tf and apply.tf."
+    }
+  }
 }
 
 data "talos_machine_configuration" "worker" {
