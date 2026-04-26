@@ -128,18 +128,6 @@ locals {
     file("${path.module}/../../shared/patches/timesync.yaml"),
     file("${path.module}/../../shared/patches/cluster-network.yaml"),
     local.installer_image_patch,
-    # worker apid certs need every worker-<N>.<zone> name in their SAN
-    # list so this layer's per-node apply can dial workers by a stable
-    # DNS name (NAT'd public IPs aren't on the NIC and so aren't in
-    # Talos's auto-SAN list). One shared list across all workers — same
-    # pattern as CPs above; small cert bloat (~one entry per worker)
-    # in exchange for a single SAN definition that doesn't need to be
-    # split per node.
-    yamlencode({
-      machine = {
-        certSANs = local.worker_cert_sans
-      }
-    }),
   ]
   worker_hostname_patches = {
     for k, _ in local.worker_nodes : k => <<-EOT
@@ -253,23 +241,6 @@ data "talos_machine_configuration" "worker" {
       }),
     ],
   )
-
-  # Mirror of the CP precondition above. Only check workers that this
-  # layer will actually try to dial (direct_apply_nodes filters out
-  # nodes without any public IP — those join via KubeSpan and aren't
-  # configured by this layer's apply path). For the rest, the dial
-  # target must either be an IP (Talos auto-SAN handles on-NIC IPs)
-  # or be in worker_cert_sans.
-  lifecycle {
-    precondition {
-      condition = (
-        !contains(keys(local.direct_apply_nodes), each.key)
-        || can(regex("^[0-9.]+$", local.per_node_apply_target[each.key]))
-        || contains(local.worker_cert_sans, local.per_node_apply_target[each.key])
-      )
-      error_message = "per-node dial target for worker ${each.key} (${try(local.per_node_apply_target[each.key], "<not in direct_apply_nodes>")}) is not in worker_cert_sans (${join(", ", local.worker_cert_sans)}). worker_sorted_keys index drift between dns.tf and apply.tf, or a NAT'd public IP not anchored to a worker-N.<zone> name."
-    }
-  }
 }
 
 # Platform-neutral worker config. Contains only the shared patches — no
