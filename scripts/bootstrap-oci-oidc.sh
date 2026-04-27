@@ -417,6 +417,85 @@ fi
 say "  group:   $GROUP_OCID"
 
 # =========================================================================
+# 3b. IDENTITY DOMAIN ADMINISTRATOR GRANT
+# =========================================================================
+# IAM policies (next section) cover the OCI control plane only — compute,
+# networking, storage, IAM-classic. They do NOT cover IDCS operations
+# (users, groups, OAuth apps, identity propagation trusts), which are
+# governed by a SEPARATE authorization layer: Identity Domain AppRoles.
+#
+# Without this grant the WIF principal can manage everything tofu
+# provisions but CAN'T self-heal its own group membership / re-run this
+# script remotely from CI — every IDCS API call returns 401 Forbidden.
+# Granting "Identity Domain Administrator" to the same group lets the
+# WIF principal call /admin/v1/Groups, /admin/v1/Users, etc., enabling
+# remote bootstrap repair without re-authenticating in OCI Cloud Shell.
+#
+# Privilege note: this is broad. The principal can now create/delete
+# IDCS users, modify groups, modify the trust that authenticates itself,
+# and modify policies. Use a narrower role ("User Administrator",
+# "Application Administrator", or a custom AppRole) if you want a
+# tighter blast radius — but you'll trade fewer self-heal scenarios
+# for more operator interventions.
+say "Ensuring '$GROUP_NAME' is granted Identity Domain Administrator"
+
+# Find the Administrator AppRole by display name. AppRoles are scoped
+# to a parent app (the Identity Domain admin app — its display name
+# varies across tenancies, so we filter on the role name instead).
+APPROLE_QUERY=$(printf '%s' "displayName eq \"Identity Domain Administrator\"" | jq -sRr @uri)
+APPROLE_LIST=$("${OCI_CLI[@]}" raw-request \
+  --target-uri "${DOMAIN_URL}/admin/v1/AppRoles?filter=${APPROLE_QUERY}" \
+  --http-method GET --output json 2>/dev/null || echo '{"data":{"Resources":[]}}')
+ADMIN_ROLE_OCID=$(jq -r '
+  (.data.Resources // .data.resources // [])[0].id // empty
+' <<<"$APPROLE_LIST")
+ADMIN_APP_OCID=$(jq -r '
+  (.data.Resources // .data.resources // [])[0].app.value // empty
+' <<<"$APPROLE_LIST")
+
+if [[ -z "$ADMIN_ROLE_OCID" || -z "$ADMIN_APP_OCID" ]]; then
+  warn "  Could not find 'Identity Domain Administrator' AppRole."
+  warn "  Skipping the grant. Self-heal from CI won't work; re-run this"
+  warn "  script in OCI Cloud Shell whenever IDCS objects need changes."
+else
+  # Idempotency check: list existing grants matching grantee + role.
+  GRANT_QUERY=$(printf '%s' "grantee.value eq \"$GROUP_OCID\" and appRole.value eq \"$ADMIN_ROLE_OCID\"" | jq -sRr @uri)
+  GRANT_LIST=$("${OCI_CLI[@]}" raw-request \
+    --target-uri "${DOMAIN_URL}/admin/v1/Grants?filter=${GRANT_QUERY}" \
+    --http-method GET --output json 2>/dev/null || echo '{"data":{"Resources":[]}}')
+  EXISTING_GRANT_OCID=$(jq -r '(.data.Resources // .data.resources // [])[0].id // empty' <<<"$GRANT_LIST")
+
+  if [[ -n "$EXISTING_GRANT_OCID" ]]; then
+    say "  ✓ grant already in place ($EXISTING_GRANT_OCID)"
+  else
+    say "  creating grant"
+    GRANT_BODY=$(cat <<JSON
+{
+  "schemas": ["urn:ietf:params:scim:schemas:oracle:idcs:Grant"],
+  "grantee": {"type": "Group", "value": "$GROUP_OCID"},
+  "app": {"value": "$ADMIN_APP_OCID"},
+  "appRole": {"value": "$ADMIN_ROLE_OCID"},
+  "grantMechanism": "ADMINISTRATOR_TO_GROUP"
+}
+JSON
+)
+    GRANT_RESP=$("${OCI_CLI[@]}" raw-request \
+      --target-uri "${DOMAIN_URL}/admin/v1/Grants" \
+      --http-method POST --request-body "$GRANT_BODY" --output json 2>&1 || true)
+    NEW_GRANT_OCID=$(jq -r '.data.id // empty' <<<"$GRANT_RESP" 2>/dev/null || echo "")
+    if [[ -z "$NEW_GRANT_OCID" ]]; then
+      warn "  Grant create did not return an OCID; raw response:"
+      printf '%s\n' "$GRANT_RESP" | head -c 800 >&2
+      warn "  Continuing — but self-heal from CI may not work until you grant"
+      warn "  '$GROUP_NAME' the Identity Domain Administrator role manually:"
+      warn "    Identity Domain → Default → Oracle Cloud Services → Domain Administration → Application roles → Identity Domain Administrator → Manage → Assigned groups → +Add → $GROUP_NAME"
+    else
+      say "  ✓ granted ($NEW_GRANT_OCID)"
+    fi
+  fi
+fi
+
+# =========================================================================
 # 4. IAM POLICY
 # =========================================================================
 say "Ensuring IAM policy '$POLICY_NAME'"
