@@ -19,14 +19,17 @@ variable "nodes" {
     annotations = optional(map(string), {})
     # 0-based index into the tenancy's availability_domains list (as
     # returned by OCI's identity API, stable per tenancy and ordered by
-    # AD ordinal). Default 1 = "second AD" — combined with the clamp
-    # in main.tf's per_node_ad, this resolves to AD-2 in any region
-    # with ≥2 ADs, and falls back to AD-1 in single-AD regions. AD-2
-    # is consistently present across OCI regions (unlike AD-3 which
-    # only exists in tier-1 regions like Frankfurt/London/Ashburn) and
-    # is typically less contested than AD-1 for A1.Flex Always Free.
-    # Set to 0 to pin to AD-1, 2 to prefer AD-3 where available.
-    availability_domain_index = optional(number, 1)
+    # AD ordinal). Default 0 = "first AD" — works in every region
+    # (including single-AD regions where it's the only option). AD-2
+    # and AD-3 are typically less contested for A1.Flex Always Free in
+    # multi-AD regions, but some Always Free tenancies appear to only
+    # have IAM/instance-launch access to AD-1 — defaulting to 0 makes
+    # the first-time onboard succeed across the broadest range of
+    # tenancies. Existing instances with their AD pinned in tfstate
+    # are protected by lifecycle.ignore_changes — they don't migrate
+    # when this default changes. Operators can set 1 or 2 explicitly
+    # to spread off AD-1 once they've confirmed multi-AD access.
+    availability_domain_index = optional(number, 0)
   }))
   validation {
     condition = alltrue([
