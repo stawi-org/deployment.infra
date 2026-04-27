@@ -94,6 +94,14 @@ resource "oci_core_instance" "this" {
 
   lifecycle {
     replace_triggered_by = [terraform_data.reinstall_marker]
+    # availability_domain is resolved by the parent module's capacity
+    # probe (oracle-account-infra/main.tf). It picks the AD with the
+    # most current capacity, so the value can drift between plans even
+    # without operator intent — without this, a capacity shift in
+    # another AD would destroy+create a working instance to "move" it.
+    # Ignore so the chosen-at-create AD sticks for the instance lifetime;
+    # explicit reinstall is the only path that re-rolls AD selection.
+    ignore_changes = [availability_domain]
   }
 }
 

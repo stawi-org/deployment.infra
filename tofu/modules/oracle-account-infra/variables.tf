@@ -24,7 +24,7 @@ variable "nodes" {
     # A1.Flex capacity (a regular OCI condition). Out-of-range values
     # are clamped to the last available AD so single-AD regions stay
     # functional even if you forget to drop the field.
-    ad_index = optional(number, 0)
+    availability_domain_index = optional(number, 0)
   }))
   validation {
     condition = alltrue([
@@ -34,9 +34,9 @@ variable "nodes" {
   }
   validation {
     condition = alltrue([
-      for _, node in var.nodes : node.ad_index >= 0
+      for _, node in var.nodes : node.availability_domain_index >= 0
     ])
-    error_message = "ad_index must be >= 0 (0-based index into the tenancy's availability_domains list)."
+    error_message = "availability_domain_index must be >= 0 (0-based index into the tenancy's availability_domains list)."
   }
 }
 
