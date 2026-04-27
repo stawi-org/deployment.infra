@@ -17,12 +17,26 @@ variable "nodes" {
     memory_gb   = number
     labels      = optional(map(string), {})
     annotations = optional(map(string), {})
+    # 0-based index into the tenancy's availability_domains list (as
+    # returned by OCI's identity API, stable per tenancy and ordered by
+    # AD ordinal). Default 0 keeps the legacy "first AD" behavior.
+    # Use this to spread nodes across ADs when one AD is starved of
+    # A1.Flex capacity (a regular OCI condition). Out-of-range values
+    # are clamped to the last available AD so single-AD regions stay
+    # functional even if you forget to drop the field.
+    ad_index = optional(number, 0)
   }))
   validation {
     condition = alltrue([
       for _, node in var.nodes : contains(["controlplane", "worker"], node.role)
     ])
     error_message = "OCI node role must be 'controlplane' or 'worker'."
+  }
+  validation {
+    condition = alltrue([
+      for _, node in var.nodes : node.ad_index >= 0
+    ])
+    error_message = "ad_index must be >= 0 (0-based index into the tenancy's availability_domains list)."
   }
 }
 

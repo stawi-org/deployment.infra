@@ -21,7 +21,7 @@ module "node" {
   image_id            = local.image_ocid
   compartment_ocid    = var.compartment_ocid
   assign_ipv6         = var.enable_ipv6
-  availability_domain = local.ad_0
+  availability_domain = local.per_node_ad[each.key]
   labels              = merge(var.labels, each.value.labels)
   annotations         = merge(var.annotations, each.value.annotations)
   bastion_id          = oci_bastion_bastion.this.id
