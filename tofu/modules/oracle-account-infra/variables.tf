@@ -19,12 +19,14 @@ variable "nodes" {
     annotations = optional(map(string), {})
     # 0-based index into the tenancy's availability_domains list (as
     # returned by OCI's identity API, stable per tenancy and ordered by
-    # AD ordinal). Default 0 keeps the legacy "first AD" behavior.
-    # Use this to spread nodes across ADs when one AD is starved of
-    # A1.Flex capacity (a regular OCI condition). Out-of-range values
-    # are clamped to the last available AD so single-AD regions stay
-    # functional even if you forget to drop the field.
-    availability_domain_index = optional(number, 0)
+    # AD ordinal). Default 2 = "newest AD" — combined with the clamp
+    # below (in main.tf's per_node_ad), this resolves to AD-3 in
+    # 3-AD regions (Frankfurt, London, Ashburn, etc.), AD-2 in 2-AD
+    # regions, and AD-1 in single-AD regions. The newest AD is
+    # typically less contested for A1.Flex Always Free than AD-1, so
+    # this default lands more nodes on the first try without operator
+    # tuning. Set to 0 explicitly to pin to the oldest AD.
+    availability_domain_index = optional(number, 2)
   }))
   validation {
     condition = alltrue([
