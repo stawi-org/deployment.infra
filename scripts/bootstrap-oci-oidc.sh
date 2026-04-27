@@ -371,24 +371,29 @@ if [[ -z "$GROUP_OCID" ]]; then
     --display-name "$GROUP_NAME" \
     --members "[{\"type\":\"User\",\"value\":\"$USER_OCID\"}]" \
     --output json | jq -r '.data.id')
-else
-  # SCIM marks Group.members as returned=request — default GETs omit it.
-  # Without --attributes members the membership check ALWAYS sees length=0
-  # and 'add' runs every time. Worse, repeated 'adds' via the high-level
-  # CLI subcommand can silently no-op against IDCS, leaving the user
-  # outside the group while the script reports success — which manifests
-  # later as 404-NotAuthorizedOrNotFound on every CreateImage / CreateVcn.
-  is_member() {
-    "${OCI_CLI[@]}" identity-domains group get "${ID_ENDPOINT[@]}" --group-id "$GROUP_OCID" \
-      --attributes "members" --output json 2>/dev/null \
-      | jq -e --arg u "$USER_OCID" '.data.members // [] | any(.value==$u)' >/dev/null
-  }
-  if ! is_member; then
-    say "  adding service user (group missing user; patching)"
-    # Use raw-request so the JSON body reaches IDCS verbatim — the high-level
-    # `group patch` subcommand has been observed to drop the operation
-    # silently against some IDCS versions.
-    PATCH_BODY=$(cat <<JSON
+fi
+
+# Membership verification + self-heal. SCIM marks Group.members as
+# returned=request — default GETs omit it. Without --attributes members
+# the membership check ALWAYS sees length=0 and 'add' runs every time.
+# Worse, both `group create --members` AND `group patch` via the high-
+# level CLI subcommand have been observed to silently no-op against
+# IDCS — IDCS accepts the request and returns success, but the
+# membership doesn't actually persist. The user ends up outside the
+# group while the script reports success, and every subsequent
+# LaunchInstance / CreateImage / CreateVcn returns
+# 404-NotAuthorizedOrNotFound. So we always verify post-create AND
+# post-update; if missing, repair via raw SCIM PATCH (which reaches
+# IDCS verbatim, sidestepping the high-level subcommand's drop bug).
+is_member() {
+  "${OCI_CLI[@]}" identity-domains group get "${ID_ENDPOINT[@]}" --group-id "$GROUP_OCID" \
+    --attributes "members" --output json 2>/dev/null \
+    | jq -e --arg u "$USER_OCID" '.data.members // [] | any(.value==$u)' >/dev/null
+}
+
+if ! is_member; then
+  say "  adding service user (group missing user; patching via raw SCIM)"
+  PATCH_BODY=$(cat <<JSON
 {
   "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
   "Operations": [
@@ -397,18 +402,17 @@ else
 }
 JSON
 )
-    PATCH_RESP=$("${OCI_CLI[@]}" raw-request \
-      --target-uri "${DOMAIN_URL}/admin/v1/Groups/${GROUP_OCID}" \
-      --http-method PATCH --request-body "$PATCH_BODY" --output json 2>&1 || true)
-    if ! is_member; then
-      warn "  PATCH did not establish membership; raw response:"
-      printf '%s\n' "$PATCH_RESP" | head -c 800 >&2
-      die "Aborting — group membership PATCH silently failed."
-    fi
-    say "  ✓ user is now a member of $GROUP_NAME"
-  else
-    say "  ✓ user already a member of $GROUP_NAME"
+  PATCH_RESP=$("${OCI_CLI[@]}" raw-request \
+    --target-uri "${DOMAIN_URL}/admin/v1/Groups/${GROUP_OCID}" \
+    --http-method PATCH --request-body "$PATCH_BODY" --output json 2>&1 || true)
+  if ! is_member; then
+    warn "  PATCH did not establish membership; raw response:"
+    printf '%s\n' "$PATCH_RESP" | head -c 800 >&2
+    die "Aborting — group membership PATCH silently failed. Establish membership manually in OCI Console (Identity Domain → Groups → $GROUP_NAME → Users → +Add user → $SERVICE_USER_NAME) and re-run."
   fi
+  say "  ✓ user is now a member of $GROUP_NAME"
+else
+  say "  ✓ user is a member of $GROUP_NAME"
 fi
 say "  group:   $GROUP_OCID"
 
