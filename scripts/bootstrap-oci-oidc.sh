@@ -458,8 +458,10 @@ if [[ -z "$ADMIN_ROLE_OCID" || -z "$ADMIN_APP_OCID" ]]; then
   warn "  Skipping the grant. Self-heal from CI won't work; re-run this"
   warn "  script in OCI Cloud Shell whenever IDCS objects need changes."
 else
-  # Idempotency check: list existing grants matching grantee + role.
-  GRANT_QUERY=$(printf '%s' "grantee.value eq \"$GROUP_OCID\" and appRole.value eq \"$ADMIN_ROLE_OCID\"" | jq -sRr @uri)
+  # Idempotency check: list existing grants matching grantee + the
+  # entitlement value (the AppRole OCID lives inside entitlement, NOT
+  # as a top-level appRole field — that's an IDCS schema quirk).
+  GRANT_QUERY=$(printf '%s' "grantee.value eq \"$GROUP_OCID\" and entitlement.attributeValue eq \"$ADMIN_ROLE_OCID\"" | jq -sRr @uri)
   GRANT_LIST=$("${OCI_CLI[@]}" raw-request \
     --target-uri "${DOMAIN_URL}/admin/v1/Grants?filter=${GRANT_QUERY}" \
     --http-method GET --output json 2>/dev/null || echo '{"data":{"Resources":[]}}')
@@ -469,12 +471,20 @@ else
     say "  ✓ grant already in place ($EXISTING_GRANT_OCID)"
   else
     say "  creating grant"
+    # IDCS Grant schema for ADMINISTRATOR_TO_GROUP requires the role
+    # OCID to be passed inside `entitlement` with attributeName="appRoles"
+    # and attributeValue=<role_ocid>. The intuitive top-level `appRole`
+    # field is silently ignored and the API returns a 400 with
+    # "entitlement attributeName is null or empty".
     GRANT_BODY=$(cat <<JSON
 {
   "schemas": ["urn:ietf:params:scim:schemas:oracle:idcs:Grant"],
   "grantee": {"type": "Group", "value": "$GROUP_OCID"},
   "app": {"value": "$ADMIN_APP_OCID"},
-  "appRole": {"value": "$ADMIN_ROLE_OCID"},
+  "entitlement": {
+    "attributeName": "appRoles",
+    "attributeValue": "$ADMIN_ROLE_OCID"
+  },
   "grantMechanism": "ADMINISTRATOR_TO_GROUP"
 }
 JSON
