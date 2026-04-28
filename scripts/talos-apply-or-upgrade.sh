@@ -214,9 +214,15 @@ do_apply() {
 
       local up_out up_rc
       for up_attempt in $(seq 1 20); do
+        # --progress=ascii: Talos v1.13's LifecycleService streams
+        # actor-keyed progress to stdout; ascii output is the most
+        # CI-log-friendly format (one update per line, no terminal
+        # control codes). Older talosctl ignores the flag silently
+        # so this stays compatible with cross-version bootstraps.
         up_out=$(talosctl --talosconfig "$tc_file" \
           --endpoints "$NODE_IP" --nodes "$NODE_IP" upgrade \
           --image "${INSTALLER_URL}:${TARGET_VERSION}" \
+          --progress=ascii \
           --wait --timeout 5m 2>&1)
         up_rc=$?
         if (( up_rc == 0 )); then

@@ -7,18 +7,31 @@
 #
 # /112 is the max service CIDR size for IPv6 in Kubernetes.
 #
-# CNI: Talos's built-in Flannel. Starting with Talos v1.13.0, this
-# bundle ships an embedded NetworkPolicy controller (kube-router-style
-# enforcement via iptables) — standard k8s NetworkPolicy resources
-# applied via Flux are honored cluster-wide without an extra CNI
-# (Cilium / Calico) layer. No CNI override needed here; Talos defaults
-# to flannel and the v1.13 update is the policy enforcement.
+# CNI: Talos's built-in Flannel. Starting with Talos v1.13.0, Flannel
+# can OPT IN to NetworkPolicy enforcement by deploying
+# kube-network-policies alongside flanneld — see the cluster.network.cni
+# block below. Without the explicit kubeNetworkPoliciesEnabled flag,
+# NetworkPolicy resources are silently no-ops; with it on, standard
+# k8s NetworkPolicy is enforced cluster-wide via iptables, no extra
+# CNI (Cilium / Calico) layer needed.
 
 cluster:
   # Allow workloads on control-plane nodes. Cluster is small (3 CPs, few
   # workers), so spreading pods across CPs saves capacity.
   allowSchedulingOnControlPlanes: true
   network:
+    cni:
+      name: flannel
+      flannel:
+        # Talos v1.13 ships kube-network-policies as a deployable
+        # alongside Flannel; flipping this on installs it automatically
+        # so standard k8s NetworkPolicy resources are enforced cluster-
+        # wide via iptables. Without this opt-in, NetworkPolicy resources
+        # apply to nothing — kube-network-policies isn't there to read
+        # them. Enabling here means the deployment.manifests repo can
+        # ship default-deny baselines + per-namespace allow rules and
+        # have them honored from day 1.
+        kubeNetworkPoliciesEnabled: true
     podSubnets:
       - fd00:10:244::/48
       - 10.244.0.0/16
