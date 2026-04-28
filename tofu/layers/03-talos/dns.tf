@@ -149,47 +149,60 @@ data "cloudflare_dns_records" "existing_per_zone" {
 }
 
 locals {
-  # Fast index of cp_dns_zones by zone_id and zone (suffix).
+  # Fast index of cp_dns_zones by zone_id.
   zones_by_id = { for z in var.cp_dns_zones : z.zone_id => z }
 
-  # Replicates the module's local.flat keying ("<name>/<type>/<content>")
-  # without going through a module output — that would put the import
-  # block in a cycle with the module's own resource (any reference
-  # from a root-level import block to the module-it-targets's outputs
-  # closes the loop on module-close). Computed at root from the same
-  # records map the module receives.
-  cluster_dns_flat_per_zone = {
-    for zone, recs in local.cluster_dns_records_per_zone : zone => merge([
-      for rname, cfg in recs : merge(
-        { for ip in cfg.ipv4 : "${rname}/A/${ip}" => true },
-        { for ip in cfg.ipv6 : "${rname}/AAAA/${ip}" => true },
-      )
-    ]...)
-  }
+  # Intended records expanded into one record per (zone, name, type,
+  # content) tuple, with both the resource flat_key (used to address
+  # the resource — must match the module's local.flat keying exactly)
+  # AND a canonical_key (IPv6 normalised via cidrhost) for matching
+  # against CF's as-returned content. AAAA content drift between tofu
+  # state (expanded "2a02:c207:2272:7782:0000:0000:0000:0001") and
+  # CF storage (compressed "2a02:c207:2272:7782::1") makes flat-key
+  # equality alone unreliable; canonicalising both sides via cidrhost
+  # gives the lookup a stable spelling.
+  cluster_dns_intended_records = merge([
+    for zone, recs in local.cluster_dns_records_per_zone : {
+      for entry in flatten([
+        for rname, cfg in recs : concat(
+          [for ip in cfg.ipv4 : {
+            zone          = zone
+            flat_key      = "${rname}/A/${ip}"
+            canonical_key = "${rname}/A/${ip}"
+          }],
+          [for ip in cfg.ipv6 : {
+            zone          = zone
+            flat_key      = "${rname}/AAAA/${ip}"
+            canonical_key = "${rname}/AAAA/${cidrhost("${ip}/128", 0)}"
+          }],
+        )
+      ]) : "${entry.zone}::${entry.flat_key}" => entry
+    }
+  ]...)
 
-  # Index existing CF records by the same "<zone>::<flat-key>" composite
-  # key, normalising name from FQDN ("cp-1.antinvestor.com") to the leaf
-  # ("cp-1") so the two key spaces line up.
-  existing_records_by_zone_flat_key = merge([
+  # Existing CF records indexed by canonical key. cidrhost is a no-op
+  # for IPv4 and yields the canonical compressed form for IPv6, which
+  # matches the canonical_key shape above. On any data-source error
+  # try() coerces the failure to an empty list — to_import becomes {}
+  # and the import block is a no-op.
+  existing_records_by_zone_canonical_key = merge([
     for zone_id, dns in data.cloudflare_dns_records.existing_per_zone : {
       for r in try(dns.result, []) :
-      "${local.zones_by_id[zone_id].zone}::${trimsuffix(r.name, ".${local.zones_by_id[zone_id].zone}")}/${r.type}/${r.content}" => r.id
+      "${local.zones_by_id[zone_id].zone}::${trimsuffix(r.name, ".${local.zones_by_id[zone_id].zone}")}/${r.type}/${r.type == "AAAA" ? cidrhost("${r.content}/128", 0) : r.content}" => r.id
     }
   ]...)
 
-  # Final import set: intersection of "intended" (cluster_dns_flat_per_zone)
-  # and "exists in CF" (existing_records_by_zone_flat_key).
-  cluster_dns_to_import = merge([
-    for zone, flat in local.cluster_dns_flat_per_zone : {
-      for flat_key, _ in flat :
-      "${zone}::${flat_key}" => {
-        zone      = zone
-        flat_key  = flat_key
-        record_id = local.existing_records_by_zone_flat_key["${zone}::${flat_key}"]
-      }
-      if contains(keys(local.existing_records_by_zone_flat_key), "${zone}::${flat_key}")
+  # Final import set: every intended record whose canonical key has a
+  # match in CF, addressed back through the resource's flat_key.
+  cluster_dns_to_import = {
+    for k, v in local.cluster_dns_intended_records :
+    k => {
+      zone      = v.zone
+      flat_key  = v.flat_key
+      record_id = local.existing_records_by_zone_canonical_key["${v.zone}::${v.canonical_key}"]
     }
-  ]...)
+    if contains(keys(local.existing_records_by_zone_canonical_key), "${v.zone}::${v.canonical_key}")
+  }
 }
 
 import {
