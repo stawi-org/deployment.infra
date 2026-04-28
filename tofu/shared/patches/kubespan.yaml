@@ -1,13 +1,17 @@
 ---
 # tofu/shared/patches/kubespan.yaml
 #
-# KubeSpan configuration as a Talos v1.13+ standalone document. This
-# replaces the legacy inline `machine.network.kubespan` block (still
-# accepted by v1.13 for backwards compat, but the dedicated document
-# is the idiomatic shape going forward — easier to extend with future
-# fields, doesn't crowd the machine document, surfaces a typed
-# resource the CLI / controllers can introspect via
-# `talosctl get kubespanconfig`).
+# KubeSpan configuration as a strategic merge patch on the legacy
+# inline `machine.network.kubespan` block. Talos v1.13 introduced
+# a standalone `KubeSpanConfig` multi-doc kind for this, but the
+# Talos v1.13.0 oracle-arm64 qcow2's maintenance-mode parser
+# rejects that kind ("KubeSpanConfig" "v1alpha1": not registered)
+# despite the qcow2's OS-release reporting v1.13.0 — a likely
+# build-pipeline lag where maintenance-mode binaries are built
+# from an earlier point in the v1.13 release lifecycle than the
+# installed-Talos binary that runs after first reboot. The inline
+# form is still accepted by v1.13.0 (deprecation, not removal),
+# and works in both maintenance-mode and running-mode parsers.
 #
 # KubeSpan: WireGuard mesh for low-ops cross-provider connectivity.
 # Contabo public, OCI public, on-prem behind NAT — all peer up via
@@ -19,17 +23,17 @@
 # Outbound responses got eaten by the dead tunnel. Guard is now
 # threefold:
 #   1. cluster.discovery.registries.service is explicitly enabled
-#      (see cluster-network.yaml's discovery block) so peers find
-#      each other via Sidero's discovery.talos.dev.
-#   2. Re-enabling only after at least one stable peer exists means
-#      a newly-booted node has somewhere to handshake to.
-#   3. advertiseKubernetesNetworks left at default (false) — the
-#      kubespan interface only gets pod/service traffic, never
-#      carries the default route for general internet egress.
-apiVersion: v1alpha1
-kind: KubeSpanConfig
-enabled: true
-# advertiseKubernetesNetworks defaults to false; pinned explicitly
-# so a future operator reading this knows the past-incident reason
-# without having to grep commit history.
-advertiseKubernetesNetworks: false
+#      (see common.yaml's discovery block) so peers find each
+#      other via Sidero's discovery.talos.dev.
+#   2. Re-enabling only after at least one stable peer exists
+#      means a newly-booted node has somewhere to handshake to.
+#   3. advertiseKubernetesNetworks left at false — the kubespan
+#      interface only gets pod/service traffic, never carries the
+#      default route for general internet egress.
+machine:
+  network:
+    kubespan:
+      enabled: true
+      # Pinned explicitly so a future operator reading this knows
+      # the past-incident reason without having to grep history.
+      advertiseKubernetesNetworks: false
