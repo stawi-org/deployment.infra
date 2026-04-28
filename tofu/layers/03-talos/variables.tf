@@ -94,3 +94,9 @@ variable "admin_cidrs" {
   default     = []
   description = "Optional operator-supplied CIDRs (IPv4 or IPv6) allowed to reach Talos API (:50000) in addition to GitHub Actions runner ranges. kube-apiserver (:6443) stays open and is gated by auth, not network ACLs."
 }
+
+variable "omni_siderolink_url" {
+  type        = string
+  default     = ""
+  description = "Full siderolink URL injected into the schematic kernel cmdline, e.g. https://cp.antinvestor.com?jointoken=<token>. Empty string omits the arg (Phase A transitional; non-empty after Phase B cutover). Must match the value used in layers 01 and 02 so the schematic_id is stable across layers."
+}

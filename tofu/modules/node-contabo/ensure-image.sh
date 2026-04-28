@@ -116,9 +116,9 @@ do_provision() {
     # against the still-old disk. With a malformed userData (e.g. bare
     # "#talos"), Contabo rejects HTTP 400 "Invalid yaml format".
     # What works: a minimal valid cloud-config YAML document. Talos
-    # itself ignores cloud-init, so the content doesn't matter — we
-    # just need bytes that pass Contabo's YAML validator. The "users: []"
-    # line gives it explicit content so even strict validators accept.
+    # itself ignores cloud-init entirely — the siderolink.api kernel arg
+    # is baked into the boot image via the Image Factory schematic
+    # (schematic.yaml.tftpl), not via userData.
     USER_DATA_JSON=$(jq -Rs '.' <<<$'#cloud-config\nusers: []\n')
     echo "issuing PUT /compute/instances/${INSTANCE_ID} with imageId=${TARGET_IMAGE_ID}"
     RESP=$(curl -sS -w $'\nHTTP_%{http_code}' -X PUT \

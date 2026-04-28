@@ -88,3 +88,9 @@ variable "per_node_reinstall_request_hash" {
   default     = {}
   description = "Per-node-key SHA1 of the latest applicable reinstall-request file from .github/reconstruction/, or \"\" if none. Computed by layer 02's reconstruction.tf — drives terraform_data.reinstall_marker.triggers_replace and (via replace_triggered_by) destroy+create of the OCI instance for in-scope nodes."
 }
+
+variable "omni_siderolink_url" {
+  type        = string
+  default     = ""
+  description = "Full siderolink URL injected into the boot cmdline, e.g. https://cp.antinvestor.com?jointoken=<token>. Empty string disables (transitional during the migration; non-empty after Phase A lands)."
+}

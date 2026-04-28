@@ -43,7 +43,9 @@ resource "terraform_data" "image_generation" {
 }
 
 resource "talos_image_factory_schematic" "this" {
-  schematic = file("${var.shared_patches_dir}/../schematic.yaml")
+  schematic = templatefile("${var.shared_patches_dir}/../schematic.yaml.tftpl", {
+    siderolink_url = var.omni_siderolink_url
+  })
 }
 
 data "talos_image_factory_urls" "this" {

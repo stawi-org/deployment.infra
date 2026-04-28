@@ -1,6 +1,8 @@
 # tofu/layers/01-contabo-infra/image.tf
 resource "talos_image_factory_schematic" "this" {
-  schematic = file("${path.module}/../../shared/schematic.yaml")
+  schematic = templatefile("${path.module}/../../shared/schematic.yaml.tftpl", {
+    siderolink_url = var.omni_siderolink_url
+  })
 }
 
 data "talos_image_factory_urls" "this" {

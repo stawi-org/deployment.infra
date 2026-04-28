@@ -44,3 +44,9 @@ variable "local_inventory_dir" {
   default     = "/tmp/inventory"
   description = "Local directory where the workflow syncs R2 production/inventory/ before plan. Module reads use this; writes go directly to R2."
 }
+
+variable "omni_siderolink_url" {
+  type        = string
+  default     = ""
+  description = "Full siderolink URL injected into the boot cmdline, e.g. https://cp.antinvestor.com?jointoken=<token>. Empty string disables (transitional during the migration; non-empty after Phase A lands)."
+}
