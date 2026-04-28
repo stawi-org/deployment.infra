@@ -229,6 +229,17 @@ jobs:
         env:
           AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          # Required at init too — 02-oracle-infra's provider "oci"
+          # block has `for_each = local.oci_provider_accounts`, which
+          # transitively depends on var.account_key. Tofu evaluates
+          # provider configuration at init to decide which provider
+          # plugins to install, so the variable must be set even
+          # though init normally doesn't read input variables. Without
+          # this, init errors with "Unable to compute static value:
+          # local.oracle_account_keys depends on var.account_key
+          # which is not available". Harmless on layers that don't
+          # declare the variable (Tofu ignores unrecognized TF_VAR_*).
+          TF_VAR_account_key:    ${{ inputs.account }}
         # Retry tofu init up to 3 times — provider signature/checksum
         # fetches from github.com (releases assets) and registry.opentofu.org
         # are flaky, observed 502 Bad Gateway on
@@ -273,6 +284,10 @@ jobs:
 
       - name: Validate
         working-directory: tofu/layers/${{ inputs.layer }}
+        env:
+          # Same reason as the Init step — provider for_each depends on
+          # var.account_key, and validate evaluates provider config.
+          TF_VAR_account_key: ${{ inputs.account }}
         run: tofu validate
 
       - name: Plan
