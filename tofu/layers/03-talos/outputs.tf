@@ -1,5 +1,13 @@
 # tofu/layers/03-talos/outputs.tf
-data "talos_cluster_kubeconfig" "this" {
+#
+# kubeconfig is a `resource`, not a `data` source. The data variant is
+# deprecated in talos provider 0.11+ ("will be removed in the next
+# minor release"). The resource variant retrieves the same kubeconfig
+# but lives in tfstate and auto-regenerates when its certificate's
+# time to expiry drops below 1 month — matching `talosctl get
+# kubeconfig --force` semantics without the operator having to remember
+# to run anything.
+resource "talos_cluster_kubeconfig" "this" {
   # null_resource.wait_apiserver gates this on /healthz = ok, so the
   # kubeconfig we emit is guaranteed to hit a warm apiserver. Without
   # that gate, downstream layer 04-flux connect-refuses on 6443 because
@@ -27,7 +35,7 @@ data "talos_client_configuration" "this" {
 output "kubeconfig" {
   description = "Structured kubeconfig client configuration (host, ca_certificate, client_certificate, client_key). Consumed by layer 04."
   value = merge(
-    data.talos_cluster_kubeconfig.this.kubernetes_client_configuration,
+    talos_cluster_kubeconfig.this.kubernetes_client_configuration,
     { host = var.cluster_endpoint },
   )
   sensitive = true
@@ -36,13 +44,13 @@ output "kubeconfig" {
 # Raw YAML kubeconfig — for operators who need to `kubectl --kubeconfig <file>`.
 output "kubeconfig_raw" {
   description = "Raw YAML kubeconfig string. Write to disk for operator use."
-  value       = data.talos_cluster_kubeconfig.this.kubeconfig_raw
+  value       = talos_cluster_kubeconfig.this.kubeconfig_raw
   sensitive   = true
 }
 
 output "kubernetes_endpoint" {
   description = "Kubernetes API endpoint URL (scheme://host:port)."
-  value       = data.talos_cluster_kubeconfig.this.kubernetes_client_configuration.host
+  value       = talos_cluster_kubeconfig.this.kubernetes_client_configuration.host
 }
 
 output "talosconfig" {
