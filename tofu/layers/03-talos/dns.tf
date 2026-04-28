@@ -78,35 +78,131 @@ locals {
   ))
 }
 
+# Records map per zone, lifted to a root-level local so the import
+# block below can derive flat-keys from the same source without
+# routing through module.cluster_dns outputs (any reference to module
+# outputs from an import block targeting that same module's resources
+# produces a tofu cycle: module → outputs → root local → import →
+# module's resource → module-close).
+locals {
+  cluster_dns_records_per_zone = {
+    for z in var.cp_dns_zones : z.zone => merge(
+      # cp.<zone> — round-robin across every CP
+      {
+        (z.cp_label) = {
+          ipv4 = local.cp_all_ipv4
+          ipv6 = local.cp_all_ipv6
+        }
+      },
+      # cp-<N>.<zone> — per-CP
+      {
+        for idx, rec in local.cp_indexed_records :
+        "${z.cp_label}-${idx}" => rec
+      },
+      # prod.<zone> — round-robin across LB-labelled nodes (if any)
+      local.lb_has_any ? {
+        (z.prod_label) = {
+          ipv4 = local.lb_all_ipv4
+          ipv6 = local.lb_all_ipv6
+        }
+      } : {},
+    )
+  }
+}
+
 module "cluster_dns" {
   for_each = { for z in var.cp_dns_zones : z.zone => z }
 
   source      = "../../modules/cloudflare-dns"
   zone_id     = each.value.zone_id
   zone_suffix = each.value.zone
-
-  records = merge(
-    # cp.<zone> — round-robin across every CP
-    {
-      (each.value.cp_label) = {
-        ipv4 = local.cp_all_ipv4
-        ipv6 = local.cp_all_ipv6
-      }
-    },
-    # cp-<N>.<zone> — per-CP
-    {
-      for idx, rec in local.cp_indexed_records :
-      "${each.value.cp_label}-${idx}" => rec
-    },
-    # prod.<zone> — round-robin across LB-labelled nodes (if any)
-    local.lb_has_any ? {
-      (each.value.prod_label) = {
-        ipv4 = local.lb_all_ipv4
-        ipv6 = local.lb_all_ipv6
-      }
-    } : {},
-  )
+  records     = local.cluster_dns_records_per_zone[each.value.zone]
 
   proxied = false # Raw TCP required for talosctl (50000) and apiserver (6443).
   ttl     = 60    # Short so node replacements propagate quickly.
+}
+
+# ---------------------------------------------------------------------
+# Cloudflare drift adoption.
+# ---------------------------------------------------------------------
+# When a record already exists in Cloudflare but isn't in tofu state
+# (e.g. partial-apply failure, state-clear, operator-created record
+# that happens to match what the module wants to manage), tofu's
+# create attempt POSTs an identical record and CF returns 400
+# "An identical record already exists". The two stawi.org prod/AAAA
+# records that surfaced this whole class of failure motivated the
+# self-heal below.
+#
+# Both the data source and the import block live at the root because:
+#   - import blocks aren't allowed in child modules.
+#   - The data source can't live in the child module either: its
+#     output flowing into a root-level import that targets the
+#     module's own resource produces a tofu cycle
+#     (module.cluster_dns ↔ module.cluster_dns (close)).
+# Putting both at root breaks the cycle: the data source has no
+# dependency on the module's resources, and the import block reads
+# only root-locals + module outputs (flat_keys, zone_id) that don't
+# transit the resource.
+data "cloudflare_dns_records" "existing_per_zone" {
+  for_each = { for z in var.cp_dns_zones : z.zone_id => z }
+  zone_id  = each.key
+}
+
+locals {
+  # Fast index of cp_dns_zones by zone_id and zone (suffix).
+  zones_by_id = { for z in var.cp_dns_zones : z.zone_id => z }
+
+  # Replicates the module's local.flat keying ("<name>/<type>/<content>")
+  # without going through a module output — that would put the import
+  # block in a cycle with the module's own resource (any reference
+  # from a root-level import block to the module-it-targets's outputs
+  # closes the loop on module-close). Computed at root from the same
+  # records map the module receives.
+  cluster_dns_flat_per_zone = {
+    for zone, recs in local.cluster_dns_records_per_zone : zone => merge([
+      for rname, cfg in recs : merge(
+        { for ip in cfg.ipv4 : "${rname}/A/${ip}" => true },
+        { for ip in cfg.ipv6 : "${rname}/AAAA/${ip}" => true },
+      )
+    ]...)
+  }
+
+  # Index existing CF records by the same "<zone>::<flat-key>" composite
+  # key, normalising name from FQDN ("cp-1.antinvestor.com") to the leaf
+  # ("cp-1") so the two key spaces line up.
+  existing_records_by_zone_flat_key = merge([
+    for zone_id, dns in data.cloudflare_dns_records.existing_per_zone : {
+      for r in try(dns.result, []) :
+      "${local.zones_by_id[zone_id].zone}::${trimsuffix(r.name, ".${local.zones_by_id[zone_id].zone}")}/${r.type}/${r.content}" => r.id
+    }
+  ]...)
+
+  # Final import set: intersection of "intended" (cluster_dns_flat_per_zone)
+  # and "exists in CF" (existing_records_by_zone_flat_key).
+  cluster_dns_to_import = merge([
+    for zone, flat in local.cluster_dns_flat_per_zone : {
+      for flat_key, _ in flat :
+      "${zone}::${flat_key}" => {
+        zone      = zone
+        flat_key  = flat_key
+        record_id = local.existing_records_by_zone_flat_key["${zone}::${flat_key}"]
+      }
+      if contains(keys(local.existing_records_by_zone_flat_key), "${zone}::${flat_key}")
+    }
+  ]...)
+}
+
+import {
+  for_each = local.cluster_dns_to_import
+  to       = module.cluster_dns[each.value.zone].cloudflare_dns_record.this[each.value.flat_key]
+  # Cloudflare resource-import id format: "<zone_id>/<record_id>".
+  # zone_id sourced directly from var (NOT from module output) to keep
+  # the import block out of the module-close cycle.
+  id = "${local.zones_by_id_to_zone_id[each.value.zone]}/${each.value.record_id}"
+}
+
+locals {
+  # Reverse index: zone_suffix → zone_id, used by the import block's
+  # `id` so we don't reference module outputs.
+  zones_by_id_to_zone_id = { for z in var.cp_dns_zones : z.zone => z.zone_id }
 }

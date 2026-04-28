@@ -29,3 +29,11 @@ resource "cloudflare_dns_record" "this" {
   ttl     = var.ttl
   proxied = var.proxied
 }
+
+# NOTE: drift adoption (data "cloudflare_dns_records" + import block)
+# lives at the root caller, not here. Putting it inside this module
+# produces a tofu cycle: any reference from a root-level import block
+# to module-it-targets's outputs closes the loop on module-close. The
+# caller replicates the (name, type, content) keying using the same
+# var.records map it already passes to this module — see the import
+# block in the caller's dns.tf.
