@@ -18,19 +18,24 @@ removed {
   }
 }
 
-# Tracks ONLY the per-node reinstall-request hash. A Talos version
-# bump intentionally does NOT trigger instance replacement here — we
-# want the same in-place upgrade story Contabo gets (talosctl upgrade
-# --image, no disk wipe, etcd survives). On OCI, source_details.source_id
-# isn't ForceNew, so the provider plans an in-place update on the
-# image OCID change but doesn't actually re-image a running disk;
-# talosctl handles the on-disk Talos version swap. The instance
-# state's source_id field drifts from the live boot image but
-# functionally the cluster keeps running.
+# Tracks the per-node reinstall-request hash — the only path that
+# destroys+creates an OCI instance. Talos version bumps and image
+# OCID changes intentionally do NOT trigger instance replacement
+# here: we want the same in-place upgrade story Contabo gets
+# (talosctl upgrade --image, no disk wipe, etcd survives), and OCI
+# imaging semantics make any other choice fragile. source_details
+# is in lifecycle.ignore_changes below — image OCID drift on the
+# instance is by design.
 #
-# The only path that recreates an OCI instance is now an explicit
-# reinstall request file under .github/reconstruction/ — same
-# semantics as Contabo's null_resource.ensure_image trigger.
+# Why image OCID drift is acceptable: an instance's boot volume
+# is forked from the source image at CreateInstance time and is
+# fully independent thereafter. Tofu trying to "migrate" a running
+# instance onto a new image OCID via UpdateInstance is rejected by
+# OCI whenever the new image's launchOptions differ from the
+# running instance's (400-InvalidParameter, "Boot volume type ...
+# not compatible") — so the in-place update isn't a real OCI
+# operation, just a tofu state-only edit at best. Re-rolling
+# instances onto a new image is the reinstall-request file's job.
 resource "terraform_data" "reinstall_marker" {
   triggers_replace = {
     reinstall_request_hash = var.reinstall_request_hash
@@ -94,14 +99,27 @@ resource "oci_core_instance" "this" {
 
   lifecycle {
     replace_triggered_by = [terraform_data.reinstall_marker]
-    # availability_domain is resolved by the parent module's capacity
-    # probe (oracle-account-infra/main.tf). It picks the AD with the
-    # most current capacity, so the value can drift between plans even
-    # without operator intent — without this, a capacity shift in
-    # another AD would destroy+create a working instance to "move" it.
-    # Ignore so the chosen-at-create AD sticks for the instance lifetime;
-    # explicit reinstall is the only path that re-rolls AD selection.
-    ignore_changes = [availability_domain]
+    ignore_changes = [
+      # availability_domain is resolved by the parent module's capacity
+      # probe (oracle-account-infra/main.tf). It picks the AD with the
+      # most current capacity, so the value can drift between plans
+      # even without operator intent — without this, a capacity shift
+      # in another AD would destroy+create a working instance to "move"
+      # it. Ignore so the chosen-at-create AD sticks for the instance
+      # lifetime; explicit reinstall is the only path that re-rolls AD
+      # selection.
+      availability_domain,
+      # source_details (boot image + boot_volume_size) drift on every
+      # image rebuild — a new oci_core_image OCID lands in source_id
+      # but the running instance can't actually migrate to it (OCI
+      # rejects cross-launchOptions UpdateInstance with 400-Invalid
+      # Parameter "Boot volume type ... not compatible"). Re-rolling
+      # an instance onto a new image is the reinstall-request file's
+      # job — that path destroys+creates and gets the new image
+      # cleanly. Without this ignore_changes, every image bump
+      # crashes apply for accounts with running instances.
+      source_details,
+    ]
   }
 }
 
