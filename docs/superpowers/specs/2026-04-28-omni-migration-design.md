@@ -2,8 +2,12 @@
 
 > **Status:** Design proposal — awaiting approval before implementation plan.
 > **Date:** 2026-04-28
-> **Cluster name (new):** `stawi-cluster`
+> **Cluster name (new, Omni-managed):** `stawi-cluster`
+> **Omni host:** `cluster-omni-contabo` (single Contabo VPS, Ubuntu 24.04, NOT a cluster)
 > **Cluster name (old, retired post-cutover):** `antinvestor-cluster`
+> **Omni licensing posture:** BSL self-hosted, non-production use (option iii)
+> until org generates revenue justifying a Sidero support contract or a
+> migration to SaaS.
 
 ## Goal
 
@@ -18,58 +22,90 @@ Operating goal after migration: **adding a node = editing `nodes.yaml`**. Provis
 ## Architecture
 
 ```
-                   PUBLIC INTERNET
-                          │
-              ┌───────────┴───────────┐
-              │   Cloudflare anycast  │
-              │                       │
-              │   cp.antinvestor.com  │  (orange-cloud A/AAAA)
-              │   cp.stawi.org        │  (orange-cloud A/AAAA)
-              │                       │
-              └───────────┬───────────┘
-                          │  CF Tunnel (outbound from Omni host;
-                          │  no inbound port on the Contabo VM)
-                          ▼
-        ┌──────────────────────────────────────┐
-        │  cluster-omni-contabo                │
-        │  (was contabo-bwire-node-3)          │
-        │                                      │
-        │  • Ubuntu 24.04 LTS Minimal          │
-        │  • omni server (systemd unit)        │
-        │  • cloudflared (systemd unit) —      │
-        │    HTTPS to omni:443, UDP to         │
-        │    siderolink-agent service port     │
-        │  • embedded etcd for omni state      │
-        │  • backup CronJob: hourly snap → R2  │
-        │                                      │
-        │  Public IP: present, all inbound     │
-        │  iptables-DROPped. CF tunnel is the  │
-        │  only ingress.                       │
-        └──────────────────────────────────────┘
-                          ▲
-                          │ SideroLink (always-outbound from cluster
-                          │ nodes; works behind NAT, no inbound port
-                          │ required on any cluster node)
-                          │
-        ┌─────────────────┼──────────────────────┐
-        │                 │                      │
-        ▼                 ▼                      ▼
-   contabo-bwire-      oci-* / tindase /     (future nodes)
-   node-{1,2}          on-prem-*             same recipe
-   (Talos +            (Talos +              (Talos +
-    siderolink-         siderolink-           siderolink-
-    agent ext)          agent ext)            agent ext)
+                      PUBLIC INTERNET
+                            │
+                ┌───────────┴───────────┐
+                │   Cloudflare anycast  │
+                │   cp.antinvestor.com  │  (orange-cloud A/AAAA)
+                │   cp.stawi.org        │  (orange-cloud A/AAAA)
+                └───────────┬───────────┘
+                            │ CF Tunnel (outbound only;
+                            │ no inbound port on the VM)
+                            ▼
+        ┌──────────────────────────────────────────────────┐
+        │  cluster-omni-contabo                            │
+        │  (was contabo-bwire-node-3)                      │
+        │                                                  │
+        │  Single Contabo VPS. Ubuntu 24.04 LTS Minimal    │
+        │  from Contabo's official image catalog. NO ssh   │
+        │  shell logins ever — all configuration lives     │
+        │  in the tofu-rendered cloud-init drop-in below.  │
+        │                                                  │
+        │  cloud-init (idempotent, source of truth):       │
+        │    • install Docker engine + compose plugin      │
+        │    • render /etc/omni/docker-compose.yaml        │
+        │    • render systemd units:                       │
+        │        - omni-stack.service       (compose up)   │
+        │        - omni-backup.{service,timer} (hourly →R2)│
+        │        - cloudflared.service      (tunnel agent) │
+        │    • render /etc/omni/.env (sopsed at rest in    │
+        │      this repo, decrypted at provision time)     │
+        │    • iptables/nftables: DROP all inbound except  │
+        │      established/related; CF Tunnel is outbound  │
+        │      only and is the sole control-plane ingress  │
+        │    • unattended-upgrades on, security patches    │
+        │      auto-installed                              │
+        │                                                  │
+        │  Containers (managed by docker-compose):         │
+        │    • ghcr.io/siderolabs/omni:<pinned>            │
+        │    • ghcr.io/dexidp/dex:<pinned>                 │
+        │    • cloudflare/cloudflared:<pinned>             │
+        │                                                  │
+        │  Persistent state on /var/lib/omni:              │
+        │    • Omni's sqlite store                         │
+        │    • Dex config + state                          │
+        │    Hourly snapshot → R2 via systemd timer        │
+        └──────────────────────────────────────────────────┘
+                            ▲
+                            │ SideroLink (always-outbound from
+                            │ stawi-cluster nodes; no inbound
+                            │ ports anywhere)
+                            │
+            ┌───────────────┼─────────────────┐
+            ▼               ▼                 ▼
+       contabo-bwire-   oci-* (OCI)      tindase (on-prem)
+       node-{1,2}       VMs              VM
+       Talos +          Talos +          Talos +
+       siderolink-      siderolink-      siderolink-
+       agent            agent            agent
+                — members of stawi-cluster —
+                  managed entirely by Omni
 ```
 
 ### Component summary
 
 | Component | Where | What |
 |---|---|---|
-| Omni server | `cluster-omni-contabo` | Stateful service, embedded etcd, GitHub OIDC, exposes API + UI |
-| Cloudflare Tunnel | same VM | Outbound-only HTTPS+UDP relay, hides Omni's IP |
-| Talos cluster | Contabo + OCI + on-prem | Boots Omni-aware images, dials home, never accepts inbound directly |
-| Tofu provisioning | unchanged for VMs | Still creates VPSes/instances; just stops generating Talos config |
-| Operator | laptop / CI | `omnictl` (CLI) and browser → CF → Omni; kubeconfig delivered with OIDC binding |
+| `cluster-omni-contabo` | Single Contabo VPS, Ubuntu 24.04 LTS | Plain VM (NOT a k8s cluster). All config from tofu-rendered cloud-init; idempotent; no SSH-driven setup |
+| Omni container | docker-compose on the VM | API + UI; sqlite-backed; pinned image, upgrades = bump version in tofu and re-apply |
+| Dex container | docker-compose on the VM | OIDC proxy; brokers `stawi-org` GitHub App auth into Omni |
+| cloudflared container | docker-compose on the VM | Outbound-only CF Tunnel; the only ingress to the VM |
+| Backup systemd timer | on the VM | Hourly: `sqlite3 .backup` + `rclone copy` to R2 |
+| `stawi-cluster` (multi-node) | Contabo + OCI + on-prem | Production cluster; nodes boot Talos+siderolink-agent, register with Omni |
+| Tofu | provisions VPSes/instances + the omni-host VM via cloud-init | No more Talos config rendering; one entry in inventory per node |
+| Operator + CI | laptop, GH Actions | `omnictl` and browser → CF → Omni; kubeconfig delivered with OIDC binding |
+
+### Why "plain VM with cloud-init", not Ubuntu-and-SSH-in-to-configure
+
+The earlier objection ("don't configure Ubuntu 24.04 manually") was about the operational shape — bespoke commands run by hand, drifty state, tribal knowledge. This design avoids that entirely:
+
+- **Single source of truth.** Every byte of config is in `tofu/modules/omni-host/cloud-init.yaml.tftpl`. Reading the tofu repo tells you exactly what's running on the VM.
+- **Disposable.** `tofu destroy && tofu apply` rebuilds the VM bit-for-bit from declarative state. Recovery from corruption is "snapshot the sqlite DB → reprovision → restore snapshot".
+- **No SSH access path needed for ops.** SSH is allowed *only* during cloud-init (to inject the initial config), then either denied entirely or restricted to operator break-glass key.
+- **Pinned image versions.** Container tags pinned by digest in tofu vars; updates are a deliberate `talos_version`-style bump.
+- **Automatic security patches.** `unattended-upgrades` keeps the base OS current without operator intervention.
+
+This is the simplest production-grade setup that doesn't reach for k8s. K8s-on-the-omni-host is on the roadmap if HA Omni becomes worth the complexity; not today.
 
 ## Authentication
 
@@ -109,8 +145,8 @@ Restore path: stand up a fresh omni-server VM, `omnictl etcd restore <snapshot>`
 | `tofu/layers/02-oracle-infra/` | **stays** — same pattern; the `.oci`-archive metadata work from PR #23 carries over verbatim |
 | `tofu/layers/02-onprem-infra/` | **stays** — same |
 | `tofu/layers/03-talos/` | **delete entirely** — no more `data.talos_machine_configuration`, no `talos_machine_configuration_apply`, no `talos_machine_bootstrap`, no per-node config artifacts, no DNS pinning, no firewall patches |
-| `tofu/layers/03-omni-cluster/` | **new (~80 lines)** — uses the [terraform-provider-omni](https://github.com/siderolabs/terraform-provider-omni) to declare the `stawi-cluster` template (talos_version, kubernetes_version, CNI, machine-class assignment rules, role labels) |
-| `tofu/layers/04-flux/` | **stays** — pulls kubeconfig from `tofu/layers/03-omni-cluster` instead of `03-talos` |
+| `tofu/layers/03-omni-cluster/` | **new (~80 lines)** — uses the [terraform-provider-omni](https://github.com/siderolabs/terraform-provider-omni) to declare the `stawi-cluster` template (talos_version, kubernetes_version, CNI, machine-class assignment rules, role labels). Depends on the omni-host being up. |
+| `tofu/layers/04-flux/` | **stays** — pulls kubeconfig from `tofu/layers/03-omni-cluster` (Omni issues it after the cluster bootstraps) instead of from `03-talos` |
 | `tofu/shared/schematic.yaml` | gain `siderolabs/siderolink-agent` system extension |
 | `tofu/shared/patches/*.yaml` | most → expressed as **Omni cluster config patches** instead of tofu-rendered patches; `kubespan.yaml` deleted (SideroLink replaces KubeSpan) |
 | `tofu/modules/node-contabo/`, `node-oracle/`, `node-onprem/` | gain `omni_siderolink_url` variable; stops needing per-node Talos config files |
@@ -167,7 +203,7 @@ The existing cluster is already partially down (OCI nodes stuck in maintenance, 
 1. **Stage the new schematic + tofu code** (no destructive change yet):
    - Add `siderolabs/siderolink-agent` to `tofu/shared/schematic.yaml`.
    - Bump `force_image_generation` (Contabo + OCI) so the next apply rebuilds images.
-   - Land the new tofu modules: `omni-host` (plain-Linux Contabo VPS recipe), `00-omni-server` layer, `03-omni-cluster` layer (the Omni cluster template, which depends on Omni being up — its `tofu apply` runs *after* step 4).
+   - Land the new tofu module: `omni-host` (Ubuntu Contabo VPS + tofu-rendered cloud-init that brings up the omni/dex/cloudflared docker-compose stack on first boot), the `00-omni-server` layer that instantiates it, and the `03-omni-cluster` layer (the Omni cluster template via terraform-provider-omni; its `tofu apply` runs *after* step 4 once Omni is reachable).
    - Plumb `omni_siderolink_url` through `node-contabo`, `node-oracle`, `node-onprem`. Don't apply yet.
 2. **Pre-flip Cloudflare DNS** for `cp.antinvestor.com` and `cp.stawi.org` from gray-cloud A/AAAA (today: round-robin over Contabo CP public IPs) to orange-cloud A/AAAA targeting CF Tunnel ID. The tunnel doesn't exist yet, so the names temporarily resolve to a 502 from CF — that's fine; the old cluster is being torn down anyway.
 3. **Tear down `antinvestor-cluster`**: drop tofu state for `00-talos-secrets`, `03-talos`. Contabo CPs continue to run Talos but are unmanaged; etcd quorum stays intact briefly. (Don't drain workloads yet — Flux on those nodes will be wiped in step 6.)
