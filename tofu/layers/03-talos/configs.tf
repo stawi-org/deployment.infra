@@ -237,16 +237,23 @@ data "talos_machine_configuration" "worker" {
 
   config_patches = concat(
     local.shared_worker_patches,
-    # apid (:50000) ingress allow-list: cloud workers (Contabo / OCI)
-    # have a public IPv4 routable from GH Actions and from operator
-    # workstations, so the patch's GH-Actions+admin_cidrs allow-list is
-    # the right defense. On-prem workers join via outbound KubeSpan
-    # and are reached for talosctl management on the operator's local
-    # network — applying the same allow-list would block the operator
-    # without adding any meaningful security (the on-prem node has no
-    # public exposure to begin with). Skip the patch when role/provider
-    # is on-prem.
-    try(each.value.provider, "") == "onprem" ? [] : [local.firewall_talos_api_patch],
+    # apid (:50000) ingress allow-list. Applied only to workers whose
+    # apid endpoint is publicly reachable AND part of routine
+    # GitHub-Actions-driven flows (Contabo, today). Skipped for:
+    #   * onprem  — joins via outbound KubeSpan, reached for talosctl
+    #               on the operator's local network. Public exposure
+    #               is zero to begin with; locking apid to GH-Actions
+    #               CIDRs would block the operator without any gain.
+    #   * oracle  — OCI workers live in the per-account VCN behind
+    #               OCI's network model; the operator wants direct
+    #               local talosctl (via bastion port-forward or via
+    #               the ephemeral public IPv4) without GH-Actions-
+    #               only restriction. mTLS at apid is the load-bearing
+    #               defense — an attacker without the cluster CA-
+    #               signed client cert gets nothing — so the CIDR
+    #               allow-list was redundant and operationally
+    #               annoying. Cluster CPs (Contabo) keep the patch.
+    contains(["onprem", "oracle"], try(each.value.provider, "")) ? [] : [local.firewall_talos_api_patch],
     # Same per-Contabo-node patch as CPs above. Workers without a
     # contabo_net_params entry (OCI / onprem) fall through.
     try([templatefile("${path.module}/../../shared/patches/node-contabo.tftpl", local.contabo_net_params[each.key])], []),
