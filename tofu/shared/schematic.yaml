@@ -9,3 +9,4 @@ customization:
     officialExtensions:
       # Include useful extensions for networking diagnostics
       - siderolabs/util-linux-tools
+      - siderolabs/siderolink-agent

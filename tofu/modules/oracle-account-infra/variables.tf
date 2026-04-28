@@ -60,7 +60,7 @@ variable "annotations" {
 variable "talos_version" { type = string }
 variable "force_image_generation" {
   type        = number
-  default     = 0
+  default     = 11
   description = "Bump to force a new Oracle Talos custom image even when the Talos version is unchanged."
 }
 variable "shared_patches_dir" { type = string }
