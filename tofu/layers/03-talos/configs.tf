@@ -112,6 +112,7 @@ locals {
     file("${path.module}/../../shared/patches/resolvers.yaml"),
     file("${path.module}/../../shared/patches/timesync.yaml"),
     file("${path.module}/../../shared/patches/cluster-network.yaml"),
+    file("${path.module}/../../shared/patches/kubespan.yaml"),
     local.installer_image_patch,
     yamlencode({
       machine = {
@@ -126,6 +127,7 @@ locals {
     file("${path.module}/../../shared/patches/resolvers.yaml"),
     file("${path.module}/../../shared/patches/timesync.yaml"),
     file("${path.module}/../../shared/patches/cluster-network.yaml"),
+    file("${path.module}/../../shared/patches/kubespan.yaml"),
     local.installer_image_patch,
     # NOTE: firewall_talos_api_patch (apid :50000 ingress allow-list)
     # is appended per-node in the worker config_patches block below

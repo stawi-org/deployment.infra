@@ -6,6 +6,13 @@
 # cluster identity + PKI continues to work.
 #
 # /112 is the max service CIDR size for IPv6 in Kubernetes.
+#
+# CNI: Talos's built-in Flannel. Starting with Talos v1.13.0, this
+# bundle ships an embedded NetworkPolicy controller (kube-router-style
+# enforcement via iptables) — standard k8s NetworkPolicy resources
+# applied via Flux are honored cluster-wide without an extra CNI
+# (Cilium / Calico) layer. No CNI override needed here; Talos defaults
+# to flannel and the v1.13 update is the policy enforcement.
 
 cluster:
   # Allow workloads on control-plane nodes. Cluster is small (3 CPs, few
