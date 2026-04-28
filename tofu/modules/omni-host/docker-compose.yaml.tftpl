@@ -1,0 +1,41 @@
+# Rendered by tofu and dropped at /etc/omni/docker-compose.yaml.
+# Pinned tags only — bumping the version is a deliberate tofu var change.
+version: "3.9"
+services:
+  omni:
+    image: ghcr.io/siderolabs/omni:${omni_version}
+    container_name: omni
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - /var/lib/omni:/var/lib/omni
+      - /etc/omni/omni.env:/etc/omni/omni.env:ro
+    env_file:
+      - /etc/omni/omni.env
+    command:
+      - --account-id=$${OMNI_ACCOUNT_ID}
+      - --name=${omni_account_name}
+      - --advertised-api-url=https://${siderolink_api_advertised_host}
+      - --siderolink-api-advertised-url=https://${siderolink_api_advertised_host}
+      - --machine-api-bind-addr=0.0.0.0:8090
+      - --siderolink-wireguard-advertised-addr=$${OMNI_PUBLIC_IP}:50180
+      - --auth-auth0-enabled=false
+      - --auth-saml-enabled=false
+      - --siderolink-disable-last-endpoint=false
+
+  dex:
+    image: ghcr.io/dexidp/dex:${dex_version}
+    container_name: dex
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - /etc/dex/config.yaml:/etc/dex/config.yaml:ro
+
+  cloudflared:
+    image: cloudflare/cloudflared:${cloudflared_version}
+    container_name: cloudflared
+    restart: unless-stopped
+    network_mode: host
+    command: tunnel --no-autoupdate run
+    env_file:
+      - /etc/cloudflared/cloudflared.env
