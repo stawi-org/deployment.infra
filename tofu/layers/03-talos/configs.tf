@@ -122,12 +122,19 @@ locals {
   shared_worker_patches = [
     file("${path.module}/../../shared/patches/common.yaml"),
     file("${path.module}/../../shared/patches/network.yaml"),
-    local.firewall_talos_api_patch,
     file("${path.module}/../../shared/patches/storage.yaml"),
     file("${path.module}/../../shared/patches/resolvers.yaml"),
     file("${path.module}/../../shared/patches/timesync.yaml"),
     file("${path.module}/../../shared/patches/cluster-network.yaml"),
     local.installer_image_patch,
+    # NOTE: firewall_talos_api_patch (apid :50000 ingress allow-list)
+    # is appended per-node in the worker config_patches block below
+    # rather than included here. On-prem nodes are accessed locally
+    # by the operator on-site and don't have a public IPv4 the
+    # GitHub Actions allow-list would help with anyway — locking
+    # them down to GH Actions runner ranges only blocks the operator
+    # without adding security. CP and cloud-worker nodes still get
+    # the patch.
   ]
   worker_hostname_patches = {
     for k, _ in local.worker_nodes : k => <<-EOT
@@ -228,6 +235,16 @@ data "talos_machine_configuration" "worker" {
 
   config_patches = concat(
     local.shared_worker_patches,
+    # apid (:50000) ingress allow-list: cloud workers (Contabo / OCI)
+    # have a public IPv4 routable from GH Actions and from operator
+    # workstations, so the patch's GH-Actions+admin_cidrs allow-list is
+    # the right defense. On-prem workers join via outbound KubeSpan
+    # and are reached for talosctl management on the operator's local
+    # network — applying the same allow-list would block the operator
+    # without adding any meaningful security (the on-prem node has no
+    # public exposure to begin with). Skip the patch when role/provider
+    # is on-prem.
+    try(each.value.provider, "") == "onprem" ? [] : [local.firewall_talos_api_patch],
     # Same per-Contabo-node patch as CPs above. Workers without a
     # contabo_net_params entry (OCI / onprem) fall through.
     try([templatefile("${path.module}/../../shared/patches/node-contabo.tftpl", local.contabo_net_params[each.key])], []),
