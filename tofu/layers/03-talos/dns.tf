@@ -219,3 +219,25 @@ locals {
   # `id` so we don't reference module outputs.
   zones_by_id_to_zone_id = { for z in var.cp_dns_zones : z.zone => z.zone_id }
 }
+
+# Diagnostic outputs surfaced as `tofu output` for debugging the
+# import-block lookup when CF returns an "identical record already
+# exists" error despite the self-heal being in place. Lists the
+# computed intended-canonical-keys, the existing CF-canonical-keys,
+# and the intersection. Mismatches here pinpoint whether the data
+# source missed records (nothing in existing) or the canonical-form
+# computation differs across sides (entries in both but no overlap).
+output "_debug_dns_intended_canonical_keys" {
+  description = "Intended cloudflare records keyed by canonical lookup form. Should match the keys in _debug_dns_existing_canonical_keys for any record that already exists in CF."
+  value       = { for k, v in local.cluster_dns_intended_records : k => "${v.zone}::${v.canonical_key}" }
+}
+
+output "_debug_dns_existing_canonical_keys" {
+  description = "Existing CF records keyed by canonical lookup form. If empty, the cloudflare_dns_records data source returned nothing (auth scope / pagination / API issue) and the self-heal can't run."
+  value       = local.existing_records_by_zone_canonical_key
+}
+
+output "_debug_dns_to_import" {
+  description = "Resolved import set. Empty when no overlap was found between intended and existing — but a CF 'identical record exists' error proves overlap actually exists, indicating a canonical-key normalization bug."
+  value       = local.cluster_dns_to_import
+}
