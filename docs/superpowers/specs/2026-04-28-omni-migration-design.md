@@ -160,16 +160,31 @@ Reset/reinstall: button in Omni UI, or `omnictl machine reset oci-bwire-node-2`.
 
 ## Cutover sequence
 
-The repo currently has a partially-healthy cluster (3 Contabo nodes joined, OCI nodes stuck in maintenance). The cutover doesn't try to in-place adopt the existing cluster — Omni issues fresh secrets and CA, so adoption isn't possible across that boundary. **Greenfield** is the path.
+**No new hardware.** Existing Contabo VPSes + OCI instances + on-prem VM are reimaged in place. Cost: a one-time downtime window from the moment node-3's reinstall begins until `stawi-cluster` has etcd quorum + apiserver — expected 30–90 min if nothing surprises us.
 
-1. **Stand up Omni at temporary `omni-tmp.antinvestor.com`** — orange-cloud, CF tunnel. Provision cluster-omni-contabo as a *new* small Contabo VPS (NOT yet repurposing node-3; that comes after the old cluster is gone). Install Omni, configure OIDC, generate cluster join token for `stawi-cluster`.
-2. **Build the Omni-aware schematic.** Image factory rebuilds with `siderolink-agent` extension; `force_image_generation` bumps to invalidate gen10.
-3. **Provision the `stawi-cluster` greenfield** alongside the old cluster: 2 new Contabo VPSes (CP duty), OCI VMs (re-imaged), on-prem VM. They boot the new schematic, dial home to Omni, get assigned to `stawi-cluster`.
-4. **Migrate Flux GitOps state pointer** from old cluster's API to new. Workloads redeploy on the new cluster. Verify everything.
-5. **Decommission `antinvestor-cluster`** — destroy old VMs, drop tofu state for layer 00-talos-secrets and 03-talos.
-6. **Repoint `cp.antinvestor.com` and `cp.stawi.org`** orange-cloud entries from `omni-tmp` to the new canonical Omni endpoint. (Actually: easier to start them pointing at the new endpoint from step 1 once `stawi-cluster` is up.)
-7. **Repurpose old contabo-bwire-node-3** into the eventual `cluster-omni-contabo`. (Alternative: retire it. Keep the temp Omni VPS as the permanent one. Saves the cutover step. **My pick.**)
-8. **Retire `omni-tmp.antinvestor.com`** DNS + tunnel.
+The existing cluster is already partially down (OCI nodes stuck in maintenance, several PRs of debug today). Tearing it down hard is not a meaningful regression.
+
+1. **Stage the new schematic + tofu code** (no destructive change yet):
+   - Add `siderolabs/siderolink-agent` to `tofu/shared/schematic.yaml`.
+   - Bump `force_image_generation` (Contabo + OCI) so the next apply rebuilds images.
+   - Land the new tofu modules: `omni-host` (plain-Linux Contabo VPS recipe), `00-omni-server` layer, `03-omni-cluster` layer (the Omni cluster template, which depends on Omni being up — its `tofu apply` runs *after* step 4).
+   - Plumb `omni_siderolink_url` through `node-contabo`, `node-oracle`, `node-onprem`. Don't apply yet.
+2. **Pre-flip Cloudflare DNS** for `cp.antinvestor.com` and `cp.stawi.org` from gray-cloud A/AAAA (today: round-robin over Contabo CP public IPs) to orange-cloud A/AAAA targeting CF Tunnel ID. The tunnel doesn't exist yet, so the names temporarily resolve to a 502 from CF — that's fine; the old cluster is being torn down anyway.
+3. **Tear down `antinvestor-cluster`**: drop tofu state for `00-talos-secrets`, `03-talos`. Contabo CPs continue to run Talos but are unmanaged; etcd quorum stays intact briefly. (Don't drain workloads yet — Flux on those nodes will be wiped in step 6.)
+4. **Reinstall contabo-bwire-node-3 → cluster-omni-contabo** via Contabo's API: switch the OS image from Talos (current) to Ubuntu 24.04 LTS Minimal (or Alpine), apply cloud-init that:
+   - installs `omni` server (systemd unit, omni binary from siderolabs releases),
+   - installs `cloudflared` (systemd unit, registers a new tunnel under the existing Cloudflare account),
+   - tells `cloudflared` to expose `:443` (HTTPS for Omni UI/API) and the SideroLink UDP port,
+   - configures GitHub OIDC against `stawi-org`,
+   - sets up the hourly etcd-snapshot CronJob targeting R2,
+   - drops iptables to DENY all inbound except localhost.
+5. **Verify** `https://cp.antinvestor.com` resolves, GitHub OIDC login works, Omni dashboard loads. Generate the `stawi-cluster` join token; record under SOPS in inventory.
+6. **Reinstall the rest** with the new Talos+siderolink-agent image. Order is: 2 Contabo CPs → OCI workers → on-prem. Each reinstall is the existing `force_reinstall_generation` / `reinstall-request-file` path; the new user_data adds `siderolink.api=https://cp.antinvestor.com?jointoken=<token>` to the kernel cmdline. Each VM, on first boot, dials home, registers as a Machine, gets auto-allocated to `stawi-cluster`, gets its config pushed by Omni.
+7. **Apply `03-omni-cluster`**: defines the cluster template, role assignments, machine class rules. Omni rolls the cluster up; etcd bootstraps; kube-apiserver Ready.
+8. **Repoint Flux** to `stawi-cluster`. Workloads redeploy. Verify.
+9. **Cleanup PR**: delete `00-talos-secrets/`, `03-talos/`, `cluster-{reset,reinstall}.yml`, `tofu-reconstruct.yml`, `node-recovery.yml`, `cluster-health.yml` (replace with a one-liner curl), `talos-apply-or-upgrade.sh`, `cluster-health.sh`, KubeSpan patch.
+
+Downtime window covers steps 3–7. No production user traffic flows through the cluster currently (nothing deployed beyond a hello workload), so this is safe.
 
 ## Risks + mitigations
 
@@ -186,7 +201,7 @@ The repo currently has a partially-healthy cluster (3 Contabo nodes joined, OCI 
 
 - **HA Omni** — single instance to start. Etcd backups cover disaster recovery; HA is a follow-up.
 - **Multiple clusters** — `stawi-cluster` only. Multi-cluster is a future Omni feature once volume justifies it.
-- **In-place adoption** of the existing `antinvestor-cluster` — won't try. Greenfield + workload migration via Flux.
+- **In-place adoption** of the existing `antinvestor-cluster` — won't try. Fresh cluster identity (`stawi-cluster`) on the same hardware via reimage.
 - **Self-hosted vs SaaS comparison** — locked on self-hosted given the answer in the conversation.
 - **WireGuard-bastion / cluster-bastion VPN design** from earlier in the conversation — separate project; Omni's SideroLink covers operator-to-cluster connectivity for cluster ops; the bastion-for-talosctl use-case largely goes away. The home-egress-VPN piece is still relevant but unrelated to this design.
 
@@ -204,14 +219,7 @@ Per implementation phase:
 
 ## Open questions
 
-**One sub-decision worth surfacing before plan-writing:**
-
-You said *"install Omni on one of the contabo nodes and rename `contabo-bwire-node-3`"*. The cutover sequence above doesn't directly do that — it provisions a fresh Omni VPS first (so the new cluster has somewhere to register), then the old node-3 either:
-
-- **(a) gets repurposed** into the permanent Omni host after the old cluster is gone (your stated intent — saves a VPS but adds a delicate step 7 where Omni's CF tunnel hostname temporarily moves between two VMs), or
-- **(b) gets retired**, and the temporary Omni VPS becomes the permanent one (~€4/mo for a Contabo VPS-S forever; simpler cutover; node-3 just goes away with the rest of `antinvestor-cluster`).
-
-I'd lean **(b)** for simplicity, but **(a)** is what you literally asked for. Your call.
+None. All decisions locked, in-place reimage on existing hardware confirmed.
 
 ## What I'd write next
 
@@ -221,7 +229,7 @@ If approved, an implementation plan under `docs/superpowers/plans/2026-04-28-omn
 - Task 2: Bump schematic with `siderolink-agent` extension, regenerate images per provider
 - Task 3: Define `stawi-cluster` template via terraform-provider-omni in new layer 03-omni-cluster
 - Task 4: Add `omni_siderolink_url` plumbing through node modules, drop machine-config rendering
-- Task 5: Provision new cluster nodes (greenfield)
+- Task 5: Reimage existing cluster nodes (Contabo CPs, OCI workers, on-prem) onto the new schematic; nodes register with Omni and join `stawi-cluster`
 - Task 6: Migrate Flux GitOps pointer
 - Task 7: Decommission `antinvestor-cluster`
 - Task 8: Final DNS flip + retire omni-tmp
