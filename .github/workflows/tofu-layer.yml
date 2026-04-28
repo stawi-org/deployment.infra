@@ -305,7 +305,76 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           TF_VAR_age_recipients: ${{ vars.SOPS_AGE_RECIPIENTS }}
           SOPS_AGE_KEY:          ${{ secrets.SOPS_AGE_KEY }}
-        run: tofu apply -input=false -auto-approve tfplan
+          LAYER:                 ${{ inputs.layer }}
+        run: |
+          set -uo pipefail
+          # Stream tofu output to console + capture for post-mortem
+          # classification of any failures.
+          : >/tmp/apply.log
+          if tofu apply -input=false -auto-approve tfplan 2>&1 | tee /tmp/apply.log; then
+            exit 0
+          fi
+          rc=${PIPESTATUS[0]}
+
+          # Worker-isolation post-mortem applies only to 02-oracle-infra.
+          # Contabo (layer 01) and Talos (layer 03) already implement
+          # worker warn-and-continue inside their own provisioner scripts
+          # (modules/node-contabo/ensure-image.sh, scripts/talos-apply-or-
+          # upgrade.sh). The oracle layer uses tofu's native oci provider
+          # whose error model is fail-the-apply binary, so we have to
+          # decide soft-vs-hard fail here at the workflow level.
+          if [[ "$LAYER" != "02-oracle-infra" ]]; then
+            exit "$rc"
+          fi
+
+          # Pull the addresses of failed oci_core_instance.this resources
+          # out of tofu's error output. Format:
+          #   "  with module.oracle_account[\"<acct>\"].module.node[\"<key>\"].oci_core_instance.this,"
+          mapfile -t failed_addrs < <(
+            grep -oE 'module\.oracle_account\["[^"]+"\]\.module\.node\["[^"]+"\]\.oci_core_instance\.this' /tmp/apply.log \
+              | sort -u
+          )
+
+          # Count total tofu error blocks (each starts with `╷`). If
+          # there are more error blocks than instance-create errors, the
+          # remainder are on non-instance resources (VCN, bastion,
+          # image, image bucket, etc.) — those gate everything
+          # downstream and can't be soft-failed.
+          err_total=$(grep -c '^╷' /tmp/apply.log || true)
+          err_instance=${#failed_addrs[@]}
+
+          if (( err_instance == 0 )); then
+            echo "::error::Apply failed without any oci_core_instance.this errors. Hard-failing."
+            exit "$rc"
+          fi
+          if (( err_total > err_instance )); then
+            echo "::error::Mixed errors detected ($err_total total error blocks, $err_instance on instances). Non-instance failures gate downstream layers; hard-failing."
+            exit "$rc"
+          fi
+
+          # Every failure is on an instance. Classify by role using the
+          # already-synced /tmp/inventory/oracle/<acct>/nodes.yaml.
+          declare -a worker_keys=() cp_keys=()
+          for addr in "${failed_addrs[@]}"; do
+            acct=$(sed -E 's/.*oracle_account\["([^"]+)"\].*/\1/' <<<"$addr")
+            node_key=$(sed -E 's/.*node\["([^"]+)"\].*/\1/' <<<"$addr")
+            role=$(yq -r ".nodes.\"$node_key\".role" \
+              "/tmp/inventory/oracle/$acct/nodes.yaml" 2>/dev/null || true)
+            [[ -z "$role" || "$role" == "null" ]] && role="worker"
+            if [[ "$role" == "controlplane" ]]; then
+              cp_keys+=("$acct/$node_key")
+            else
+              worker_keys+=("$acct/$node_key")
+            fi
+          done
+
+          if (( ${#cp_keys[@]} > 0 )); then
+            echo "::error::Control-plane create failure(s): ${cp_keys[*]}. CP failures gate cluster quorum; hard-failing."
+            exit "$rc"
+          fi
+
+          echo "::warning::Worker-only create failure(s): ${worker_keys[*]}. Continuing per worker-isolation policy — affected workers absent from tfstate, downstream layers will skip them."
+          exit 0
 
       # When a local-exec provisioner has sensitive env vars, Terraform
       # suppresses its stdout/stderr entirely — which makes it
