@@ -50,7 +50,13 @@ permissions:
 
 concurrency:
   group: tofu-apply-production
-  cancel-in-progress: false
+  # A reset is a deliberate, confirmed wipe — any in-flight tofu-apply
+  # in the same group is by definition stale once the operator has
+  # decided to nuke and rebuild. Cancel it on dispatch so we don't
+  # queue behind a stuck apply. Risk is bounded: cluster-reset's guard
+  # job already requires RESET-WIPE-STATE typed exactly, so this isn't
+  # something an accidental dispatch can fire.
+  cancel-in-progress: true
 
 jobs:
   guard:
