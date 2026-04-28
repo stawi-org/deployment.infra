@@ -4,7 +4,7 @@ terraform {
   required_providers {
     talos = {
       source  = "siderolabs/talos"
-      version = "0.11.0-beta.1"
+      version = "0.11.0"
     }
     oci = {
       source  = "oracle/oci"
