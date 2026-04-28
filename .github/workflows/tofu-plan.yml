@@ -40,15 +40,38 @@ jobs:
     with: { layer: 01-contabo-infra, mode: plan }
     secrets: inherit
     needs: secrets
+  # Oracle plans are matrixed per-account to mirror tofu-apply.yml — same
+  # reasoning, same per-account-state shape, so plan diffs are scoped to
+  # one account at a time.
+  read-oracle-accounts:
+    needs: secrets
+    runs-on: ubuntu-latest
+    outputs:
+      accounts: ${{ steps.read.outputs.accounts }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: read
+        run: |
+          set -euo pipefail
+          accounts=$(yq -o=json '.oracle' tofu/shared/accounts.yaml | jq -c .)
+          echo "accounts=$accounts" >> "$GITHUB_OUTPUT"
+          echo "::notice::oracle accounts: $accounts"
   oracle-infra:
     permissions:
       contents: read
       id-token: write
       pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        account: ${{ fromJson(needs.read-oracle-accounts.outputs.accounts) }}
     uses: ./.github/workflows/tofu-layer.yml
-    with: { layer: 02-oracle-infra, mode: plan }
+    with:
+      layer: 02-oracle-infra
+      account: ${{ matrix.account }}
+      mode: plan
     secrets: inherit
-    needs: secrets
+    needs: read-oracle-accounts
   onprem-infra:
     permissions:
       contents: read
@@ -63,6 +86,10 @@ jobs:
       contents: read
       id-token: write
       pull-requests: write
+    # Mirror tofu-apply.yml's failure-isolation semantics: a failed
+    # oracle matrix cell shouldn't block the talos plan as long as the
+    # connectivity-backbone layers planned cleanly.
+    if: always() && needs.contabo-infra.result == 'success' && needs.onprem-infra.result == 'success'
     uses: ./.github/workflows/tofu-layer.yml
     with: { layer: 03-talos, mode: plan }
     secrets: inherit

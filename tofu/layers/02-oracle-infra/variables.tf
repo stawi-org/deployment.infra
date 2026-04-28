@@ -5,6 +5,16 @@ variable "r2_account_id" {
   description = "Cloudflare R2 account ID. Used to construct the S3-compatible endpoint for cross-layer terraform_remote_state reads."
 }
 
+variable "account_key" {
+  type        = string
+  description = "Oracle account key this layer instance manages. Each oracle account gets its own state file (production/02-oracle-infra-<account_key>.tfstate); the workflow runs accounts as a fail-fast=false matrix so one account's failure can't block the others. Must be a member of `oracle:` in tofu/shared/accounts.yaml."
+
+  validation {
+    condition     = contains(yamldecode(file("${path.module}/../../shared/accounts.yaml")).oracle, var.account_key)
+    error_message = "account_key must be listed under `oracle:` in tofu/shared/accounts.yaml. A typo here would silently produce an empty layer; failing plan is the safer default."
+  }
+}
+
 variable "talos_version" {
   type = string
 }

@@ -51,15 +51,42 @@ jobs:
       environment: production
     secrets: inherit
 
-  oracle-infra:
+  # Oracle has per-account state files (production/02-oracle-infra-<acct>.tfstate).
+  # Run each account as its own matrix cell with fail-fast=false so a single
+  # account's apply failure (OCI Out-of-Host-Capacity, missing IAM policy,
+  # tenancy-level outage) can't cancel siblings or block downstream layers
+  # whose nodes live in healthy accounts. The set of accounts comes from
+  # tofu/shared/accounts.yaml — single source of truth.
+  read-oracle-accounts:
     needs: secrets
+    runs-on: ubuntu-latest
+    outputs:
+      accounts: ${{ steps.read.outputs.accounts }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: read
+        run: |
+          set -euo pipefail
+          # yq's @json output already collapses to one line per node; pipe
+          # through jq -c for safety (compact, no trailing newline).
+          accounts=$(yq -o=json '.oracle' tofu/shared/accounts.yaml | jq -c .)
+          echo "accounts=$accounts" >> "$GITHUB_OUTPUT"
+          echo "::notice::oracle accounts: $accounts"
+
+  oracle-infra:
+    needs: read-oracle-accounts
     permissions:
       contents: read
       id-token: write
       pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        account: ${{ fromJson(needs.read-oracle-accounts.outputs.accounts) }}
     uses: ./.github/workflows/tofu-layer.yml
     with:
       layer: 02-oracle-infra
+      account: ${{ matrix.account }}
       mode: apply
       environment: production
     secrets: inherit
@@ -79,6 +106,14 @@ jobs:
 
   talos:
     needs: [contabo-infra, oracle-infra, onprem-infra]
+    # Worker-account isolation: a failed oracle matrix cell (e.g. OOC,
+    # missing IAM policy in one tenancy) marks the oracle-infra parent
+    # job as failed, which by default would block layer 03. Override
+    # with always() so talos proceeds as long as the connectivity-
+    # backbone layers (contabo CPs, onprem) succeeded; oracle workers
+    # whose state never landed simply won't appear in the merged nodes
+    # map and are skipped by the talos apply naturally.
+    if: always() && needs.contabo-infra.result == 'success' && needs.onprem-infra.result == 'success'
     permissions:
       contents: read
       id-token: write

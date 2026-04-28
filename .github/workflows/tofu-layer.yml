@@ -7,6 +7,7 @@ on:
       mode:             { required: true, type: string, description: "plan | apply" }
       environment:      { required: false, type: string, default: "" }
       extra_plan_args:  { required: false, type: string, default: "", description: "Extra args appended to tofu plan (e.g. -replace=foo.bar). Recovery use only." }
+      account:          { required: false, type: string, default: "", description: "Account key for per-account-state layers (currently 02-oracle-infra). When non-empty, the Init step overrides the backend key to production/<layer>-<account>.tfstate and TF_VAR_account_key is exported so the layer's variable validation accepts the run." }
     secrets:
       R2_ACCOUNT_ID:            { required: true }
       R2_ACCESS_KEY_ID:         { required: true }
@@ -209,7 +210,14 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           AWS_EC2_METADATA_DISABLED: "true"
         run: |
-          LOCK_KEY="production/${{ inputs.layer }}.tfstate.tflock"
+          # Per-account-state layers (02-oracle-infra today) split state
+          # by account. Match the partial-backend key the Init step
+          # builds so we clear the right lock object.
+          if [[ -n "${{ inputs.account }}" && "${{ inputs.layer }}" == "02-oracle-infra" ]]; then
+            LOCK_KEY="production/${{ inputs.layer }}-${{ inputs.account }}.tfstate.tflock"
+          else
+            LOCK_KEY="production/${{ inputs.layer }}.tfstate.tflock"
+          fi
           # R2 requires a real AWS region name in the CLI even though R2 ignores it.
           aws s3 rm "s3://cluster-tofu-state/${LOCK_KEY}" \
             --endpoint-url "https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com" \
@@ -227,11 +235,29 @@ jobs:
         # github.com/.../terraform-provider-sops/.../SHA256SUMS.sig that
         # killed an entire reinstall apply chain. Transient; a retry
         # 30s later succeeds.
+        #
+        # 02-oracle-infra is a partial backend (no `key` in backend.tf):
+        # this step supplies key=production/02-oracle-infra-<account>.tfstate
+        # via -backend-config so each oracle account has its own state
+        # file. -reconfigure is required because the on-runner
+        # .terraform/terraform.tfstate (cached from the previous matrix
+        # cell, if any) holds a different backend key. Other layers fall
+        # through to the original single-key behavior.
         run: |
           set +e
+          if [[ -n "${{ inputs.account }}" && "${{ inputs.layer }}" == "02-oracle-infra" ]]; then
+            backend_args=(
+              -backend-config="key=production/02-oracle-infra-${{ inputs.account }}.tfstate"
+              -reconfigure
+            )
+          else
+            backend_args=()
+          fi
           for attempt in 1 2 3; do
             tofu init \
-              -backend-config="endpoints={s3=\"https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com\"}"
+              -input=false \
+              -backend-config="endpoints={s3=\"https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com\"}" \
+              "${backend_args[@]}"
             rc=$?
             if [[ $rc -eq 0 ]]; then
               break
@@ -264,6 +290,11 @@ jobs:
           TF_VAR_etcd_backup_r2_access_key_id:     ${{ secrets.ETCD_BACKUP_R2_ACCESS_KEY_ID }}
           TF_VAR_etcd_backup_r2_secret_access_key: ${{ secrets.ETCD_BACKUP_R2_SECRET_ACCESS_KEY }}
           TF_VAR_age_recipients:                   ${{ vars.SOPS_AGE_RECIPIENTS }}
+          # 02-oracle-infra reads var.account_key to scope its
+          # for_each maps to a single account; harmless on layers that
+          # don't declare the variable (Terraform ignores unrecognized
+          # TF_VAR_*).
+          TF_VAR_account_key:                      ${{ inputs.account }}
           SOPS_AGE_KEY:                            ${{ secrets.SOPS_AGE_KEY }}
           EXTRA_PLAN_ARGS:                         ${{ inputs.extra_plan_args }}
         # Downstream layers (02/03/04) read upstream remote state that doesn't
@@ -290,10 +321,15 @@ jobs:
             exit $rc
           fi
 
+      # actions/upload-artifact@v4+ refuses duplicate names in a single
+      # workflow run. With the per-account oracle matrix, every matrix
+      # cell uploads its plan; suffix the artifact name with the account
+      # when present so cells don't collide. tofu-plan-regression.yml
+      # downloads with a glob so account-suffixed names still match.
       - uses: actions/upload-artifact@v6
         if: inputs.mode == 'plan' || inputs.mode == 'apply'
         with:
-          name: tfplan-${{ inputs.layer }}
+          name: tfplan-${{ inputs.layer }}${{ inputs.account != '' && format('-{0}', inputs.account) || '' }}
           path: tofu/layers/${{ inputs.layer }}/tfplan
           retention-days: 30
 
@@ -304,6 +340,7 @@ jobs:
           AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           TF_VAR_age_recipients: ${{ vars.SOPS_AGE_RECIPIENTS }}
+          TF_VAR_account_key:    ${{ inputs.account }}
           SOPS_AGE_KEY:          ${{ secrets.SOPS_AGE_KEY }}
           LAYER:                 ${{ inputs.layer }}
         run: |

@@ -31,11 +31,16 @@ data "terraform_remote_state" "contabo" {
   }
 }
 
+# Oracle layer is per-account: each entry in accounts.yaml's `oracle:`
+# list owns its own state file, so the matrix workflow can fail-isolate
+# one account from the others. Read each one and merge their `nodes`
+# outputs into the single map layer 03 already expects.
 data "terraform_remote_state" "oracle" {
-  backend = "s3"
+  for_each = toset(yamldecode(file("${path.module}/../../shared/accounts.yaml")).oracle)
+  backend  = "s3"
   config = {
     bucket                      = "cluster-tofu-state"
-    key                         = "production/02-oracle-infra.tfstate"
+    key                         = "production/02-oracle-infra-${each.key}.tfstate"
     region                      = "auto"
     endpoints                   = { s3 = "https://${var.r2_account_id}.r2.cloudflarestorage.com" }
     use_path_style              = true
@@ -45,6 +50,16 @@ data "terraform_remote_state" "oracle" {
     skip_requesting_account_id  = true
     skip_s3_checksum            = true
   }
+}
+
+locals {
+  # Fold per-account oracle states' `nodes` outputs into a single map
+  # so the rest of layer 03 (which expects one merged oracle nodes map)
+  # is unaffected by the per-account state split.
+  oracle_outputs_nodes = merge([
+    for k, s in data.terraform_remote_state.oracle :
+    try(s.outputs.nodes, {})
+  ]...)
 }
 
 data "terraform_remote_state" "onprem" {
@@ -71,7 +86,7 @@ locals {
   # and derived labels/annotations with the cross-layer contract shape.
   _raw_nodes = merge(
     try(data.terraform_remote_state.contabo.outputs.nodes, {}),
-    try(data.terraform_remote_state.oracle.outputs.nodes, {}),
+    local.oracle_outputs_nodes,
     try(data.terraform_remote_state.onprem.outputs.nodes, {}),
   )
 

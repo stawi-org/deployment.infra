@@ -101,16 +101,46 @@ jobs:
       AWS_EC2_METADATA_DISABLED: "true"
       R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
     steps:
+      - uses: actions/checkout@v5
+      - name: Install yq
+        run: |
+          set -euo pipefail
+          YQ_VER="v4.46.1"
+          curl -fsSL -o /tmp/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VER}/yq_linux_amd64"
+          sudo install -m 0755 /tmp/yq /usr/local/bin/yq
       - name: Delete R2 state objects for layers 01, 02, 03, 04
+        # 02-oracle-infra now keeps one tfstate per oracle account
+        # (production/02-oracle-infra-<acct>.tfstate). Iterate accounts.yaml
+        # so reset wipes every per-account state file (and locks/backups).
+        # The historical single-key path is also deleted defensively in
+        # case a stale legacy state exists from before the per-account
+        # split — harmless when absent.
         run: |
           set -euo pipefail
           ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          for LAYER in 01-contabo-infra 02-oracle-infra 02-onprem-infra 03-talos 04-flux ; do
-            for OBJ in "production/${LAYER}.tfstate" "production/${LAYER}.tfstate.tflock" "production/${LAYER}.tfstate.backup" ; do
-              aws s3 rm "s3://cluster-tofu-state/$OBJ" --endpoint-url "$ENDPOINT" --region us-east-1 2>&1 \
+
+          delete_state() {
+            local key="$1"
+            for suffix in "" ".tflock" ".backup" ; do
+              aws s3 rm "s3://cluster-tofu-state/${key}${suffix}" \
+                --endpoint-url "$ENDPOINT" --region us-east-1 2>&1 \
                 | grep -v "NoSuchKey\|^$" || true
             done
+          }
+
+          for LAYER in 01-contabo-infra 02-onprem-infra 03-talos 04-flux ; do
+            delete_state "production/${LAYER}.tfstate"
           done
+
+          # Per-account oracle state files.
+          ORACLE_ACCOUNTS=$(yq -r '.oracle[]' tofu/shared/accounts.yaml)
+          for ACCT in $ORACLE_ACCOUNTS ; do
+            delete_state "production/02-oracle-infra-${ACCT}.tfstate"
+          done
+
+          # Legacy single-key oracle state — best-effort cleanup.
+          delete_state "production/02-oracle-infra.tfstate"
+
           aws s3 ls "s3://cluster-tofu-state/production/" --endpoint-url "$ENDPOINT" --region us-east-1
 
   clean-contabo-images:

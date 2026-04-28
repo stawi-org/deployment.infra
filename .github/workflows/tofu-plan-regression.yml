@@ -18,18 +18,34 @@ jobs:
         layer: [01-contabo-infra, 02-oracle-infra, 02-onprem-infra, 03-talos]
     steps:
       - uses: actions/checkout@v5
+      # 02-oracle-infra uploads one tfplan per oracle account
+      # (tfplan-02-oracle-infra-<acct>); other layers upload a single
+      # tfplan-<layer>. Glob with `*` so the regression check covers
+      # every per-account artifact for oracle while staying a single
+      # download for the others.
       - uses: actions/download-artifact@v6
         with:
-          pattern: tfplan-${{ matrix.layer }}
+          pattern: tfplan-${{ matrix.layer }}*
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Assert zero resource diffs
         run: |
-          tofu show -json "tfplan-${{ matrix.layer }}/tfplan" > plan.json
-          n=$(jq '[.resource_changes[] | select(.change.actions != ["no-op"] and .change.actions != ["read"])] | length' plan.json)
-          echo "::notice::layer=${{ matrix.layer }} non-noop-diffs=$n"
-          if [ "$n" -ne 0 ]; then
-            jq '.resource_changes[] | select(.change.actions != ["no-op"] and .change.actions != ["read"]) | {address,actions:.change.actions}' plan.json
-            echo "::error::layer ${{ matrix.layer }} proposes $n changes on a steady-state plan"
+          set -euo pipefail
+          shopt -s nullglob
+          plans=(tfplan-${{ matrix.layer }}*/tfplan)
+          if (( ${#plans[@]} == 0 )); then
+            echo "::error::no tfplan artifact found for ${{ matrix.layer }}"
             exit 1
           fi
+          rc=0
+          for p in "${plans[@]}" ; do
+            tofu show -json "$p" > plan.json
+            n=$(jq '[.resource_changes[] | select(.change.actions != ["no-op"] and .change.actions != ["read"])] | length' plan.json)
+            echo "::notice::artifact=$p non-noop-diffs=$n"
+            if [ "$n" -ne 0 ]; then
+              jq '.resource_changes[] | select(.change.actions != ["no-op"] and .change.actions != ["read"]) | {address,actions:.change.actions}' plan.json
+              echo "::error::$p proposes $n changes on a steady-state plan"
+              rc=1
+            fi
+          done
+          exit "$rc"

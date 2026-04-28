@@ -9,12 +9,20 @@
 
 locals {
   accounts_manifest = yamldecode(file("${path.module}/../../shared/accounts.yaml"))
+
+  # Per-account state: this layer instance manages exactly one oracle
+  # account, scoped by var.account_key. The downstream for_each blocks
+  # (modules, providers, imports, writers) iterate over
+  # local.oracle_account_keys, so they keep working unchanged — just
+  # with a single entry. Resource addresses (module.oracle_account["bwire"]
+  # etc.) stay valid for existing state.
+  oracle_account_keys = [var.account_key]
 }
 
 # node-state: R2-backed inventory read. Populated initially by
 # scripts/seed-inventory.sh; kept in sync by this layer's writers.
 module "oracle_account_state" {
-  for_each            = toset(local.accounts_manifest.oracle)
+  for_each            = toset(local.oracle_account_keys)
   source              = "../../modules/node-state"
   provider_name       = "oracle"
   account             = each.key
@@ -23,8 +31,6 @@ module "oracle_account_state" {
 }
 
 locals {
-  oracle_account_keys = local.accounts_manifest.oracle
-
   oracle_auth_from_module = {
     for k, mod in module.oracle_account_state : k => try(mod.auth.auth, null)
   }
