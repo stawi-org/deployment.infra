@@ -1,0 +1,59 @@
+# omni/templates/stawi-cluster.yaml
+#
+# Sidero Omni cluster template for stawi-cluster.
+# Apply with:
+#   omnictl cluster template sync -f omni/templates/stawi-cluster.yaml
+#
+# Multi-document YAML — Omni's `Cluster` kind plus per-machine-set kinds
+# (`ControlPlane`, `Workers`). Auto-allocation by `matchLabels` so the
+# operator never has to enumerate machine UUIDs explicitly: a machine
+# that registers with `role: controlplane` (set in the Talos config
+# patch under `machine.nodeLabels`) gets pulled into the controlplane
+# set automatically.
+#
+# Versions track tofu/shared/versions.auto.tfvars.json. Bumping either
+# version here is the deliberate cluster-wide upgrade mechanism — Omni
+# rolls nodes one at a time honoring PodDisruptionBudgets.
+#
+# Patches under `patches:` are applied on top of Omni's auto-generated
+# config for every machine in the relevant set. Cluster-wide patches go
+# at the top level; CP-only patches under `ControlPlane`; worker-only
+# under `Workers`.
+
+kind: Cluster
+name: stawi-cluster
+kubernetes:
+  version: v1.35.2
+talos:
+  version: v1.13.0
+features:
+  enableWorkloadProxy: true
+patches:
+  - name: allow-scheduling-on-controlplanes
+    inline:
+      cluster:
+        allowSchedulingOnControlPlanes: true
+  - name: cluster-network
+    inline:
+      cluster:
+        network:
+          cni:
+            name: flannel
+          podSubnets:
+            - fd00:10:244::/48
+            - 10.244.0.0/16
+          serviceSubnets:
+            - fd00:10:96::/112
+            - 10.96.0.0/12
+---
+kind: ControlPlane
+machineClass:
+  name: controlplane
+  matchLabels:
+    role: controlplane
+---
+kind: Workers
+machineClass:
+  name: workers
+  matchLabels:
+    role: worker
