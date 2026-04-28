@@ -205,6 +205,13 @@ do_apply() {
       # becomes healthy again, the next call gets in. 20 * 30s = 10
       # min retry budget per node, more than enough for a couple of
       # peers to upgrade ahead of us.
+      # Helper: query the live server version. Empty string if unreachable.
+      probe_server_version() {
+        talosctl --talosconfig "$tc_file" \
+          --endpoints "$NODE_IP" --nodes "$NODE_IP" version 2>/dev/null \
+          | awk '$1=="Server:"{f=1;next} f && $1=="Tag:"{print $2; exit}'
+      }
+
       local up_out up_rc
       for up_attempt in $(seq 1 20); do
         up_out=$(talosctl --talosconfig "$tc_file" \
@@ -216,15 +223,47 @@ do_apply() {
           log "upgrade complete"
           return 0
         fi
+
+        # talosctl client newer than the server can hit two non-fatal
+        # rc=1 paths that still leave the upgrade succeeding on-node:
+        #   1. "New upgrade API is not available, falling back to legacy"
+        #      — legacy upgrade RPC doesn't return actor IDs, talosctl's
+        #      --wait times out with rc=1 even on success.
+        #   2. The on-node reboot mid-upgrade drops the talosctl
+        #      connection ("connection refused" / "context deadline
+        #      exceeded") before the --wait poll completes.
+        # Both manifest as "upgrade failed" but the disk is already
+        # being re-imaged. Probe the server version after each rc=1 —
+        # if it matches the target, the upgrade actually succeeded
+        # and we should return 0. Give the node up to 5 min to come
+        # back from the reboot before declaring the version probe
+        # final, since legacy upgrades reboot mid-call.
+        log "upgrade attempt $up_attempt/20: rc=$up_rc — probing server version (post-reboot may be in flight)"
+        local probed=""
+        for probe_attempt in $(seq 1 30); do
+          probed=$(probe_server_version)
+          if [[ "$probed" == "$TARGET_VERSION" ]]; then
+            log "post-rc=$up_rc probe: server is at $TARGET_VERSION — treating as success"
+            return 0
+          fi
+          if [[ -n "$probed" ]]; then
+            log "  probe $probe_attempt/30: server is at $probed (target $TARGET_VERSION) — waiting"
+          else
+            log "  probe $probe_attempt/30: server unreachable (post-reboot still booting?) — waiting"
+          fi
+          sleep 10
+        done
+
         if [[ "$up_out" == *"upgrade mutex"* \
            || "$up_out" == *"is not healthy"* \
            || "$up_out" == *"context deadline exceeded"* \
-           || "$up_out" == *"connection refused"* ]]; then
-          log "upgrade attempt $up_attempt/20: cluster busy ($(echo "$up_out" | head -1 | tail -c 100)), sleeping 30s"
+           || "$up_out" == *"connection refused"* \
+           || "$up_out" == *"falling back to legacy"* ]]; then
+          log "upgrade attempt $up_attempt/20: still on $probed (target $TARGET_VERSION); cluster busy or fallback in progress, sleeping 30s for next retry"
           sleep 30
           continue
         fi
-        log "::error::upgrade failed (rc=$up_rc): $(echo "$up_out" | head -3)"
+        log "::error::upgrade failed (rc=$up_rc), server still at $probed: $(echo "$up_out" | head -3)"
         return 1
       done
       log "::error::upgrade exhausted 20 retries; cluster did not free the mutex / become healthy in 10 min"
