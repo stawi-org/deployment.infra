@@ -43,7 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install talosctl
+      - name: Install talosctl + yq
         run: |
           set -euo pipefail
           TALOS_VERSION=$(jq -r '.talos_version' tofu/shared/versions.auto.tfvars.json)
@@ -51,6 +51,11 @@ jobs:
             -o /usr/local/bin/talosctl
           chmod +x /usr/local/bin/talosctl
           talosctl version --client
+          # yq is needed by node-recovery.sh to enumerate per-account
+          # tfstate paths from tofu/shared/accounts.yaml.
+          YQ_VER="v4.46.1"
+          curl -fsSL -o /tmp/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VER}/yq_linux_amd64"
+          sudo install -m 0755 /tmp/yq /usr/local/bin/yq
 
       - name: Run recovery action
         run: scripts/node-recovery.sh

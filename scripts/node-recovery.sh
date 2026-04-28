@@ -23,24 +23,38 @@ BUCKET="cluster-tofu-state"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-# ----- Pull the three tfstates we need -------------------------------
-for key in production/01-contabo-infra.tfstate \
-           production/02-oracle-infra.tfstate \
-           production/03-talos.tfstate; do
+# ----- Pull the per-account infra tfstates + the talos tfstate --------
+# All three infra layers (contabo, oracle, onprem) are per-account: each
+# account in tofu/shared/accounts.yaml owns its own state file
+# (production/<layer>-<account>.tfstate). Enumerate via the manifest so
+# we read every account's nodes; missing/unreadable state files are
+# tolerated (e.g. account onboarded but never applied).
+mapfile -t INFRA_KEYS < <(
+  yq -r '
+    [
+      ([.contabo[]] | map("production/01-contabo-infra-" + . + ".tfstate")),
+      ([.oracle[]]  | map("production/02-oracle-infra-"  + . + ".tfstate")),
+      ([.onprem[]]  | map("production/02-onprem-infra-"  + . + ".tfstate"))
+    ] | flatten | .[]
+  ' tofu/shared/accounts.yaml 2>/dev/null
+)
+for key in "${INFRA_KEYS[@]}" production/03-talos.tfstate; do
   aws s3 cp "s3://${BUCKET}/${key}" "$tmp/$(basename "$key")" \
     --endpoint-url "$R2_ENDPOINT" --region us-east-1 >/dev/null 2>&1 || true
 done
 
 # ----- Resolve the node's (provider, ipv4, private_ipv4, provider_data) -
-NODE_JSON=$(python3 - <<PY "$tmp" "$NODE_KEY"
+# The infra-layer state filenames are per-account; iterate every
+# downloaded tfstate looking for the node_key in outputs.nodes.value.
+NODE_JSON=$(python3 - <<'PY' "$tmp" "$NODE_KEY"
 import json, sys, pathlib
-tmp, key = sys.argv[1], sys.argv[2]
+tmp_dir, key = sys.argv[1], sys.argv[2]
 found = None
-for f in ("01-contabo-infra.tfstate", "02-oracle-infra.tfstate"):
-    p = pathlib.Path(tmp) / f
-    if not p.exists():
+for p in sorted(pathlib.Path(tmp_dir).glob("0[12]-*-infra-*.tfstate")):
+    try:
+        doc = json.loads(p.read_text())
+    except Exception:
         continue
-    doc = json.loads(p.read_text())
     nodes = (doc.get("outputs", {}) or {}).get("nodes", {}).get("value", {}) or {}
     if key in nodes:
         n = nodes[key]

@@ -33,9 +33,21 @@ echo "::endgroup::"
 
 echo "::group::Resolve inventory node names (tfstate outputs.nodes)"
 INVENTORY=()
-for tfstate in production/01-contabo-infra.tfstate \
-               production/02-oracle-infra.tfstate \
-               production/02-onprem-infra.tfstate; do
+# All three infra layers are now per-account: each account in
+# tofu/shared/accounts.yaml owns its own state file
+# (production/<layer>-<account>.tfstate). Enumerate via the manifest
+# so we read every account's nodes; missing/unreadable state files
+# are skipped (e.g. account onboarded but never applied).
+mapfile -t TFSTATE_KEYS < <(
+  yq -r '
+    [
+      ([.contabo[]] | map("production/01-contabo-infra-" + . + ".tfstate")),
+      ([.oracle[]]  | map("production/02-oracle-infra-"  + . + ".tfstate")),
+      ([.onprem[]]  | map("production/02-onprem-infra-"  + . + ".tfstate"))
+    ] | flatten | .[]
+  ' tofu/shared/accounts.yaml 2>/dev/null
+)
+for tfstate in "${TFSTATE_KEYS[@]}"; do
   f="$tmp/$(basename "$tfstate")"
   aws s3 cp "s3://${BUCKET}/${tfstate}" "$f" \
     --endpoint-url "$R2_ENDPOINT" --region us-east-1 >/dev/null 2>&1 || continue

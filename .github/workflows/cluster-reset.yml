@@ -109,12 +109,12 @@ jobs:
           curl -fsSL -o /tmp/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VER}/yq_linux_amd64"
           sudo install -m 0755 /tmp/yq /usr/local/bin/yq
       - name: Delete R2 state objects for layers 01, 02, 03, 04
-        # 02-oracle-infra now keeps one tfstate per oracle account
-        # (production/02-oracle-infra-<acct>.tfstate). Iterate accounts.yaml
-        # so reset wipes every per-account state file (and locks/backups).
-        # The historical single-key path is also deleted defensively in
-        # case a stale legacy state exists from before the per-account
-        # split — harmless when absent.
+        # 01-contabo-infra, 02-oracle-infra and 02-onprem-infra now keep
+        # one tfstate per account (production/<layer>-<acct>.tfstate).
+        # Iterate accounts.yaml so reset wipes every per-account state
+        # file (and locks/backups). The historical single-key paths are
+        # also deleted defensively in case a stale legacy state exists
+        # from before the per-account split — harmless when absent.
         run: |
           set -euo pipefail
           ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
@@ -128,18 +128,22 @@ jobs:
             done
           }
 
-          for LAYER in 01-contabo-infra 02-onprem-infra 03-talos 04-flux ; do
+          # Single-state layers.
+          for LAYER in 03-talos 04-flux ; do
             delete_state "production/${LAYER}.tfstate"
           done
 
-          # Per-account oracle state files.
-          ORACLE_ACCOUNTS=$(yq -r '.oracle[]' tofu/shared/accounts.yaml)
-          for ACCT in $ORACLE_ACCOUNTS ; do
-            delete_state "production/02-oracle-infra-${ACCT}.tfstate"
+          # Per-account state files for each per-account-state layer.
+          for PROVIDER_LAYER in "contabo:01-contabo-infra" "oracle:02-oracle-infra" "onprem:02-onprem-infra" ; do
+            PROVIDER="${PROVIDER_LAYER%%:*}"
+            LAYER="${PROVIDER_LAYER##*:}"
+            ACCOUNTS=$(yq -r ".${PROVIDER}[]" tofu/shared/accounts.yaml)
+            for ACCT in $ACCOUNTS ; do
+              delete_state "production/${LAYER}-${ACCT}.tfstate"
+            done
+            # Legacy single-key path — best-effort cleanup.
+            delete_state "production/${LAYER}.tfstate"
           done
-
-          # Legacy single-key oracle state — best-effort cleanup.
-          delete_state "production/02-oracle-infra.tfstate"
 
           aws s3 ls "s3://cluster-tofu-state/production/" --endpoint-url "$ENDPOINT" --region us-east-1
 

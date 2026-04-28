@@ -7,7 +7,7 @@ on:
       mode:             { required: true, type: string, description: "plan | apply" }
       environment:      { required: false, type: string, default: "" }
       extra_plan_args:  { required: false, type: string, default: "", description: "Extra args appended to tofu plan (e.g. -replace=foo.bar). Recovery use only." }
-      account:          { required: false, type: string, default: "", description: "Account key for per-account-state layers (currently 02-oracle-infra). When non-empty, the Init step overrides the backend key to production/<layer>-<account>.tfstate and TF_VAR_account_key is exported so the layer's variable validation accepts the run." }
+      account:          { required: false, type: string, default: "", description: "Account key for per-account-state layers (01-contabo-infra, 02-oracle-infra, 02-onprem-infra). When non-empty, the Init step overrides the backend key to production/<layer>-<account>.tfstate and TF_VAR_account_key is exported so the layer's variable validation accepts the run." }
     secrets:
       R2_ACCOUNT_ID:            { required: true }
       R2_ACCESS_KEY_ID:         { required: true }
@@ -210,14 +210,22 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           AWS_EC2_METADATA_DISABLED: "true"
         run: |
-          # Per-account-state layers (02-oracle-infra today) split state
-          # by account. Match the partial-backend key the Init step
-          # builds so we clear the right lock object.
-          if [[ -n "${{ inputs.account }}" && "${{ inputs.layer }}" == "02-oracle-infra" ]]; then
-            LOCK_KEY="production/${{ inputs.layer }}-${{ inputs.account }}.tfstate.tflock"
-          else
-            LOCK_KEY="production/${{ inputs.layer }}.tfstate.tflock"
-          fi
+          # Per-account-state layers (01-contabo-infra, 02-oracle-infra,
+          # 02-onprem-infra) split state by account. Match the partial-
+          # backend key the Init step builds so we clear the right lock
+          # object.
+          case "${{ inputs.layer }}" in
+            01-contabo-infra|02-oracle-infra|02-onprem-infra)
+              if [[ -n "${{ inputs.account }}" ]]; then
+                LOCK_KEY="production/${{ inputs.layer }}-${{ inputs.account }}.tfstate.tflock"
+              else
+                LOCK_KEY="production/${{ inputs.layer }}.tfstate.tflock"
+              fi
+              ;;
+            *)
+              LOCK_KEY="production/${{ inputs.layer }}.tfstate.tflock"
+              ;;
+          esac
           # R2 requires a real AWS region name in the CLI even though R2 ignores it.
           aws s3 rm "s3://cluster-tofu-state/${LOCK_KEY}" \
             --endpoint-url "https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com" \
@@ -229,16 +237,17 @@ jobs:
         env:
           AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          # Required at init too — 02-oracle-infra's provider "oci"
-          # block has `for_each = local.oci_provider_accounts`, which
-          # transitively depends on var.account_key. Tofu evaluates
-          # provider configuration at init to decide which provider
-          # plugins to install, so the variable must be set even
-          # though init normally doesn't read input variables. Without
-          # this, init errors with "Unable to compute static value:
-          # local.oracle_account_keys depends on var.account_key
-          # which is not available". Harmless on layers that don't
-          # declare the variable (Tofu ignores unrecognized TF_VAR_*).
+          # Required at init too — per-account-state layers
+          # (01-contabo-infra, 02-oracle-infra, 02-onprem-infra) have
+          # provider/module for_each blocks that transitively depend
+          # on var.account_key. Tofu evaluates provider configuration
+          # at init to decide which provider plugins to install, so
+          # the variable must be set even though init normally doesn't
+          # read input variables. Without this, init errors with
+          # "Unable to compute static value: local.<provider>_account_keys
+          # depends on var.account_key which is not available".
+          # Harmless on layers that don't declare the variable (Tofu
+          # ignores unrecognized TF_VAR_*).
           TF_VAR_account_key:    ${{ inputs.account }}
         # Retry tofu init up to 3 times — provider signature/checksum
         # fetches from github.com (releases assets) and registry.opentofu.org
@@ -247,23 +256,31 @@ jobs:
         # killed an entire reinstall apply chain. Transient; a retry
         # 30s later succeeds.
         #
-        # 02-oracle-infra is a partial backend (no `key` in backend.tf):
-        # this step supplies key=production/02-oracle-infra-<account>.tfstate
-        # via -backend-config so each oracle account has its own state
-        # file. -reconfigure is required because the on-runner
-        # .terraform/terraform.tfstate (cached from the previous matrix
-        # cell, if any) holds a different backend key. Other layers fall
-        # through to the original single-key behavior.
+        # 01-contabo-infra, 02-oracle-infra and 02-onprem-infra are
+        # partial backends (no `key` in backend.tf): this step supplies
+        # key=production/<layer>-<account>.tfstate via -backend-config
+        # so each account has its own state file. -reconfigure is
+        # required because the on-runner .terraform/terraform.tfstate
+        # (cached from the previous matrix cell, if any) holds a
+        # different backend key. Other layers fall through to the
+        # original single-key behavior.
         run: |
           set +e
-          if [[ -n "${{ inputs.account }}" && "${{ inputs.layer }}" == "02-oracle-infra" ]]; then
-            backend_args=(
-              -backend-config="key=production/02-oracle-infra-${{ inputs.account }}.tfstate"
-              -reconfigure
-            )
-          else
-            backend_args=()
-          fi
+          case "${{ inputs.layer }}" in
+            01-contabo-infra|02-oracle-infra|02-onprem-infra)
+              if [[ -n "${{ inputs.account }}" ]]; then
+                backend_args=(
+                  -backend-config="key=production/${{ inputs.layer }}-${{ inputs.account }}.tfstate"
+                  -reconfigure
+                )
+              else
+                backend_args=()
+              fi
+              ;;
+            *)
+              backend_args=()
+              ;;
+          esac
           for attempt in 1 2 3; do
             tofu init \
               -input=false \
@@ -305,7 +322,8 @@ jobs:
           TF_VAR_etcd_backup_r2_access_key_id:     ${{ secrets.ETCD_BACKUP_R2_ACCESS_KEY_ID }}
           TF_VAR_etcd_backup_r2_secret_access_key: ${{ secrets.ETCD_BACKUP_R2_SECRET_ACCESS_KEY }}
           TF_VAR_age_recipients:                   ${{ vars.SOPS_AGE_RECIPIENTS }}
-          # 02-oracle-infra reads var.account_key to scope its
+          # Per-account-state layers (01-contabo-infra, 02-oracle-infra,
+          # 02-onprem-infra) read var.account_key to scope their
           # for_each maps to a single account; harmless on layers that
           # don't declare the variable (Terraform ignores unrecognized
           # TF_VAR_*).

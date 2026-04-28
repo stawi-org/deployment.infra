@@ -38,13 +38,17 @@ removed {
 }
 
 # Re-fire the Bootstrap RPC when EVERY Contabo CP was just wiped.
-# Layer 01's cluster_reinstall_marker is the SHA1 of all scope=all
-# reconstruction reinstall requests; when it drifts, every Contabo CP
-# is mid-reinstall in parallel and etcd needs to be seeded again.
-# Per-node (scope=selected) requests deliberately don't change this
-# marker — those add a healthy node to a quorate cluster instead.
+# Layer 01's cluster_reinstall_marker (per-account: SHA1 of all
+# scope=all reconstruction reinstall requests for that account) is
+# folded across contabo accounts in main.tf via
+# local.contabo_cluster_reinstall_marker — lexicographically-largest
+# hash wins so any account flipping its marker flips this aggregate.
+# When it drifts, every Contabo CP is mid-reinstall in parallel and
+# etcd needs to be seeded again. Per-node (scope=selected) requests
+# deliberately don't change this marker — those add a healthy node
+# to a quorate cluster instead.
 resource "terraform_data" "cluster_wide_reinstall_marker" {
-  triggers_replace = data.terraform_remote_state.contabo.outputs.cluster_reinstall_marker
+  triggers_replace = local.contabo_cluster_reinstall_marker
 }
 
 resource "talos_machine_bootstrap" "this" {

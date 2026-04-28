@@ -38,25 +38,45 @@ jobs:
       environment: production
     secrets: inherit
 
-  contabo-infra:
+  # All three infra layers (contabo, oracle, onprem) keep one tfstate per
+  # account. Run each account as its own matrix cell with fail-fast=false
+  # so a single account's apply failure (Contabo OAuth blip, OCI Out-of-
+  # Host-Capacity, missing IAM policy, tenancy outage, R2 sync hiccup,
+  # decryption issue) can't cancel siblings or block downstream layers
+  # whose nodes live in healthy accounts. The set of accounts comes from
+  # tofu/shared/accounts.yaml — single source of truth.
+  read-contabo-accounts:
     needs: secrets
+    runs-on: ubuntu-latest
+    outputs:
+      accounts: ${{ steps.read.outputs.accounts }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: read
+        run: |
+          set -euo pipefail
+          accounts=$(yq -o=json '.contabo' tofu/shared/accounts.yaml | jq -c .)
+          echo "accounts=$accounts" >> "$GITHUB_OUTPUT"
+          echo "::notice::contabo accounts: $accounts"
+
+  contabo-infra:
+    needs: read-contabo-accounts
     permissions:
       contents: read
       id-token: write
       pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        account: ${{ fromJson(needs.read-contabo-accounts.outputs.accounts) }}
     uses: ./.github/workflows/tofu-layer.yml
     with:
       layer: 01-contabo-infra
+      account: ${{ matrix.account }}
       mode: apply
       environment: production
     secrets: inherit
 
-  # Oracle has per-account state files (production/02-oracle-infra-<acct>.tfstate).
-  # Run each account as its own matrix cell with fail-fast=false so a single
-  # account's apply failure (OCI Out-of-Host-Capacity, missing IAM policy,
-  # tenancy-level outage) can't cancel siblings or block downstream layers
-  # whose nodes live in healthy accounts. The set of accounts comes from
-  # tofu/shared/accounts.yaml — single source of truth.
   read-oracle-accounts:
     needs: secrets
     runs-on: ubuntu-latest
@@ -91,29 +111,56 @@ jobs:
       environment: production
     secrets: inherit
 
-  onprem-infra:
+  read-onprem-accounts:
     needs: secrets
+    runs-on: ubuntu-latest
+    outputs:
+      accounts: ${{ steps.read.outputs.accounts }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: read
+        run: |
+          set -euo pipefail
+          accounts=$(yq -o=json '.onprem' tofu/shared/accounts.yaml | jq -c .)
+          echo "accounts=$accounts" >> "$GITHUB_OUTPUT"
+          echo "::notice::onprem accounts: $accounts"
+
+  onprem-infra:
+    needs: read-onprem-accounts
     permissions:
       contents: read
       id-token: write
       pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        account: ${{ fromJson(needs.read-onprem-accounts.outputs.accounts) }}
     uses: ./.github/workflows/tofu-layer.yml
     with:
       layer: 02-onprem-infra
+      account: ${{ matrix.account }}
       mode: apply
       environment: production
     secrets: inherit
 
   talos:
     needs: [contabo-infra, oracle-infra, onprem-infra]
-    # Worker-account isolation: a failed oracle matrix cell (e.g. OOC,
-    # missing IAM policy in one tenancy) marks the oracle-infra parent
-    # job as failed, which by default would block layer 03. Override
-    # with always() so talos proceeds as long as the connectivity-
-    # backbone layers (contabo CPs, onprem) succeeded; oracle workers
-    # whose state never landed simply won't appear in the merged nodes
-    # map and are skipped by the talos apply naturally.
-    if: always() && needs.contabo-infra.result == 'success' && needs.onprem-infra.result == 'success'
+    # Per-account isolation across all three providers: each infra layer
+    # is now a fail-fast=false matrix, so `needs.X.result == 'success'`
+    # would block talos unless EVERY cell succeeded. That's the wrong
+    # semantic for our goal — we want talos to proceed when at least
+    # one cell completed without an explicit cancel.
+    #
+    # contabo: provides CPs and quorum, so we still need at least one
+    #   cell to have produced a state file. The aggregate matrix result
+    #   is 'success' only when every cell wins, but != 'cancelled'
+    #   trips when at least one cell ran and the matrix wasn't manually
+    #   cancelled. The downstream cluster-health check catches an
+    #   actual quorum loss if the surviving CPs aren't enough.
+    # oracle / onprem: workers (and occasional CPs); per-cell failures
+    #   simply remove that account's nodes from the merged map and
+    #   talos skips them naturally. Same != 'cancelled' gate.
+    if: always() && needs.contabo-infra.result != 'cancelled' && needs.oracle-infra.result != 'cancelled' && needs.onprem-infra.result != 'cancelled'
     permissions:
       contents: read
       id-token: write

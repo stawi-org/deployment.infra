@@ -36,8 +36,14 @@ module "contabo_account_state" {
 }
 
 locals {
-  # Enumerated from the shared accounts.yaml manifest (Task 14).
-  contabo_account_keys_from_state = local.accounts_manifest.contabo
+  # Per-account state: this layer instance manages exactly one contabo
+  # account, scoped by var.account_key. The downstream for_each blocks
+  # (modules, providers, imports, writers) iterate over
+  # local.contabo_account_keys_from_state, so they keep working unchanged
+  # — just with a single entry. Resource addresses
+  # (module.contabo_account_state["bwire"], module.nodes["contabo-bwire-node-1"],
+  # etc.) stay valid for existing state.
+  contabo_account_keys_from_state = [var.account_key]
 
   # Outputs of the module, per account — used by later tasks.
   contabo_auth_from_module = {

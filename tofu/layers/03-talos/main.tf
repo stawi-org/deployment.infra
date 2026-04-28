@@ -15,11 +15,17 @@ data "terraform_remote_state" "secrets" {
   }
 }
 
+# All three infra layers (contabo, oracle, onprem) are per-account:
+# each entry in accounts.yaml's `<provider>:` list owns its own state
+# file, so the matrix workflow can fail-isolate one account from the
+# others. Read each one and merge their `nodes` outputs into the
+# single map layer 03 already expects.
 data "terraform_remote_state" "contabo" {
-  backend = "s3"
+  for_each = toset(yamldecode(file("${path.module}/../../shared/accounts.yaml")).contabo)
+  backend  = "s3"
   config = {
     bucket                      = "cluster-tofu-state"
-    key                         = "production/01-contabo-infra.tfstate"
+    key                         = "production/01-contabo-infra-${each.key}.tfstate"
     region                      = "auto"
     endpoints                   = { s3 = "https://${var.r2_account_id}.r2.cloudflarestorage.com" }
     use_path_style              = true
@@ -31,10 +37,31 @@ data "terraform_remote_state" "contabo" {
   }
 }
 
-# Oracle layer is per-account: each entry in accounts.yaml's `oracle:`
-# list owns its own state file, so the matrix workflow can fail-isolate
-# one account from the others. Read each one and merge their `nodes`
-# outputs into the single map layer 03 already expects.
+locals {
+  # Fold per-account contabo states' `nodes` outputs into a single map
+  # so the rest of layer 03 (which expects one merged contabo nodes
+  # map) is unaffected by the per-account state split.
+  contabo_outputs_nodes = merge([
+    for k, s in data.terraform_remote_state.contabo :
+    try(s.outputs.nodes, {})
+  ]...)
+
+  # Cluster-wide reinstall marker: with N contabo accounts each
+  # publishing their own scope=all reinstall request hash, the talos
+  # bootstrap re-fire trigger needs ONE deterministic value. Pick the
+  # lexicographically-largest non-empty hash across accounts (sha1 hex
+  # sort is stable). All accounts contribute their reinstall-request
+  # signals — any account flipping its hash flips this aggregate too,
+  # which is the desired "re-bootstrap when ANY contabo account just
+  # got wiped cluster-wide" semantic. Empty string when no account
+  # reports a marker.
+  _contabo_reinstall_markers = compact([
+    for k, s in data.terraform_remote_state.contabo :
+    try(s.outputs.cluster_reinstall_marker, "")
+  ])
+  contabo_cluster_reinstall_marker = length(local._contabo_reinstall_markers) > 0 ? sort(local._contabo_reinstall_markers)[length(local._contabo_reinstall_markers) - 1] : ""
+}
+
 data "terraform_remote_state" "oracle" {
   for_each = toset(yamldecode(file("${path.module}/../../shared/accounts.yaml")).oracle)
   backend  = "s3"
@@ -63,10 +90,11 @@ locals {
 }
 
 data "terraform_remote_state" "onprem" {
-  backend = "s3"
+  for_each = toset(yamldecode(file("${path.module}/../../shared/accounts.yaml")).onprem)
+  backend  = "s3"
   config = {
     bucket                      = "cluster-tofu-state"
-    key                         = "production/02-onprem-infra.tfstate"
+    key                         = "production/02-onprem-infra-${each.key}.tfstate"
     region                      = "auto"
     endpoints                   = { s3 = "https://${var.r2_account_id}.r2.cloudflarestorage.com" }
     use_path_style              = true
@@ -78,6 +106,15 @@ data "terraform_remote_state" "onprem" {
   }
 }
 
+locals {
+  # Same per-account merge as the others — single map keyed by node
+  # name across all on-prem accounts.
+  onprem_outputs_nodes = merge([
+    for k, s in data.terraform_remote_state.onprem :
+    try(s.outputs.nodes, {})
+  ]...)
+}
+
 
 locals {
   # Upstream nodes come from each infra layer's tfstate.outputs.nodes —
@@ -85,9 +122,9 @@ locals {
   # output already contains provider, role, ipv4, ipv6, image_apply_generation
   # and derived labels/annotations with the cross-layer contract shape.
   _raw_nodes = merge(
-    try(data.terraform_remote_state.contabo.outputs.nodes, {}),
+    local.contabo_outputs_nodes,
     local.oracle_outputs_nodes,
-    try(data.terraform_remote_state.onprem.outputs.nodes, {}),
+    local.onprem_outputs_nodes,
   )
 
   # Each layer's tfstate output already carries derived_labels,

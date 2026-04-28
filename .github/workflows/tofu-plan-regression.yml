@@ -18,11 +18,11 @@ jobs:
         layer: [01-contabo-infra, 02-oracle-infra, 02-onprem-infra, 03-talos]
     steps:
       - uses: actions/checkout@v5
-      # 02-oracle-infra uploads one tfplan per oracle account
-      # (tfplan-02-oracle-infra-<acct>); other layers upload a single
-      # tfplan-<layer>. Glob with `*` so the regression check covers
-      # every per-account artifact for oracle while staying a single
-      # download for the others.
+      # The three per-account-state layers (01-contabo-infra,
+      # 02-oracle-infra, 02-onprem-infra) upload one tfplan per account
+      # (tfplan-<layer>-<acct>); 03-talos uploads a single tfplan-<layer>.
+      # Glob with `*` so the regression check covers every per-account
+      # artifact while staying a single download for 03-talos.
       - uses: actions/download-artifact@v6
         with:
           pattern: tfplan-${{ matrix.layer }}*

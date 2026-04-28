@@ -20,10 +20,15 @@ jobs:
       R2_ENDPOINT:              https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
     steps:
       - uses: actions/checkout@v5
-      - name: Install kubectl
+      - name: Install kubectl + yq
         run: |
           set -euo pipefail
           curl -fsSLO https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl
           sudo install -m 0755 kubectl /usr/local/bin/kubectl
+          # yq is needed by cluster-prune-nodes.sh to enumerate per-account
+          # tfstate paths from tofu/shared/accounts.yaml.
+          YQ_VER="v4.46.1"
+          curl -fsSL -o /tmp/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VER}/yq_linux_amd64"
+          sudo install -m 0755 /tmp/yq /usr/local/bin/yq
       - name: Prune stale Node objects
         run: scripts/cluster-prune-nodes.sh

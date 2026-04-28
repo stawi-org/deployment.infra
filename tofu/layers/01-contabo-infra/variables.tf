@@ -1,4 +1,14 @@
 # tofu/layers/01-contabo-infra/variables.tf
+variable "account_key" {
+  type        = string
+  description = "Contabo account key this layer instance manages. Each contabo account gets its own state file (production/01-contabo-infra-<account_key>.tfstate); the workflow runs accounts as a fail-fast=false matrix so one account's failure can't block the others. Must be a member of `contabo:` in tofu/shared/accounts.yaml."
+
+  validation {
+    condition     = contains(yamldecode(file("${path.module}/../../shared/accounts.yaml")).contabo, var.account_key)
+    error_message = "account_key must be listed under `contabo:` in tofu/shared/accounts.yaml. A typo here would silently produce an empty layer; failing plan is the safer default."
+  }
+}
+
 variable "talos_version" {
   type = string
 }

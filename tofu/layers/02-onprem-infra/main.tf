@@ -1,10 +1,6 @@
 # tofu/layers/02-onprem-infra/main.tf
-locals {
-  accounts_manifest = yamldecode(file("${path.module}/../../shared/accounts.yaml"))
-}
-
 module "onprem_account_state" {
-  for_each            = toset(local.accounts_manifest.onprem)
+  for_each            = toset(local.onprem_account_keys)
   source              = "../../modules/node-state"
   provider_name       = "onprem"
   account             = each.key
@@ -13,7 +9,13 @@ module "onprem_account_state" {
 }
 
 locals {
-  onprem_account_keys = local.accounts_manifest.onprem
+  # Per-account state: this layer instance manages exactly one on-prem
+  # account, scoped by var.account_key. The downstream for_each blocks
+  # iterate over local.onprem_account_keys, so they keep working
+  # unchanged — just with a single entry. Resource addresses
+  # (module.onprem_account_state["tindase"], etc.) stay valid for
+  # existing state.
+  onprem_account_keys = [var.account_key]
   onprem_nodes_from_module = {
     for k, mod in module.onprem_account_state : k => try(mod.nodes.nodes, {})
   }
