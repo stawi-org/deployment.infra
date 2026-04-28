@@ -10,6 +10,7 @@
 terraform {
   backend "s3" {
     bucket = "cluster-tofu-state"
+    region = "auto"
     # endpoints.s3 provided at init time via -backend-config
     use_path_style              = true
     skip_credentials_validation = true
@@ -18,5 +19,6 @@ terraform {
     skip_requesting_account_id  = true
     skip_s3_checksum            = true
     use_lockfile                = true
+    encrypt                     = true
   }
 }
