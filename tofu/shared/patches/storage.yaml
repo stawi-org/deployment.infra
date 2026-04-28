@@ -21,13 +21,19 @@ provisioning:
     match: system_disk
   minSize: 3GiB
   maxSize: 4GiB
----
 
+---
+# TopoLVM PV partition: consumes ALL remaining disk on every node.
+# Mounted at /var/mnt/topolvm-data; the topolvm-vg-bootstrap DaemonSet
+# creates a loopback file inside it that becomes the LVM PV for vg-data.
+# This is the ONLY user volume — local-path-provisioner is retired.
 apiVersion: v1alpha1
 kind: UserVolumeConfig
-name: local-path-provisioner
+name: topolvm-data
 provisioning:
   diskSelector:
     match: system_disk
-  minSize: 50GB
+  minSize: 30GB
   grow: true
+filesystem:
+  type: xfs
