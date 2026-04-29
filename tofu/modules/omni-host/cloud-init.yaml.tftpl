@@ -328,10 +328,16 @@ write_files:
     permissions: "0755"
     content: |
       #!/usr/bin/env bash
+      # Trap is the load-bearing line: if anything between `systemctl stop`
+      # and the explicit start fails (disk full during tar, R2 transient
+      # error during ls, etc.), the EXIT trap still brings omni-stack
+      # back up. Without it, a one-off backup glitch would silently leave
+      # Omni offline until the operator notices.
       set -euo pipefail
+      trap 'systemctl is-active --quiet omni-stack.service || systemctl start omni-stack.service' EXIT
       set -a; source /etc/omni/r2.env; set +a
       ts=$(date -u +%%Y%%m%%dT%%H%%M%%SZ)
-      tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+      tmp=$(mktemp -d); trap 'rm -rf "$tmp"; systemctl is-active --quiet omni-stack.service || systemctl start omni-stack.service' EXIT
       echo "[omni-backup] stopping omni-stack for consistent snapshot"
       systemctl stop omni-stack.service
       tar -czf "$tmp/omni-$ts.tar.gz" -C /var/lib omni
@@ -516,7 +522,6 @@ runcmd:
   # it. Owning the host dir as 1001:1001 lets the container write
   # without --user=root or chmod 0777.
   - install -d -o 1001 -g 1001 -m 0700 /var/lib/dex
-  - install -d -o root -g root -m 0700 /var/lib/nginx
   - systemctl daemon-reload
   - systemctl enable --now nftables.service
   - systemctl enable --now fail2ban.service
