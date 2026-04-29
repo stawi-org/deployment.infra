@@ -33,7 +33,6 @@ locals {
     "${path.module}/cloud-init.yaml.tftpl",
     {
       name                           = var.name
-      ssh_authorized_keys            = var.ssh_authorized_keys
       docker_compose_yaml            = local.docker_compose_yaml
       omni_account_id                = random_uuid.omni_account_id.result
       dex_omni_client_secret         = random_password.dex_omni_client_secret.result
@@ -63,12 +62,12 @@ resource "contabo_instance" "this" {
   # cloud-init runs once at first boot; re-applying user_data does NOT
   # re-run cloud-init on the live VM. Tofu plan will silently swallow
   # any template-variable changes (omni_version, dex_version,
-  # cloudflare_tunnel_token, ssh_authorized_keys, etc.) without
-  # visible diff.
+  # cloudflare_tunnel_token, etc.) without visible diff.
   #
   # To push config changes to a running host, choose:
-  #   - Minor (bump container tags / rotate env): SSH in via Contabo
-  #     console, edit /etc/omni/{docker-compose.yaml,*.env}, then
+  #   - Minor (bump container tags / rotate env): log in via Contabo
+  #     serial console (root password from Contabo dashboard), edit
+  #     /etc/omni/{docker-compose.yaml,*.env}, then
   #     `systemctl restart omni-stack.service`.
   #   - Major (OS / packages / cloud-init structure): `tofu taint
   #     module.omni_host.contabo_instance.this` then `tofu apply` to

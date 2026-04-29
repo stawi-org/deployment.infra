@@ -24,12 +24,6 @@ variable "cloudflare_zone_id_stawi" {
   description = "Cloudflare zone ID for stawi.org."
 }
 
-variable "ssh_authorized_keys" {
-  type        = list(string)
-  description = "SSH public keys for cloud-init bootstrap + break-glass via Contabo console. Public keys are not secrets — set the value in tofu/layers/00-omni-server/terraform.tfvars (committed to repo)."
-  default     = []
-}
-
 variable "contabo_ubuntu_24_04_image_id" {
   type        = string
   description = "Contabo image ID for Ubuntu 24.04 LTS Minimal. Look up once via the Contabo API and pin in terraform.tfvars; image IDs are stable per Contabo's catalog. Not sensitive — public catalog data."

@@ -11,7 +11,6 @@ module "h" {
   source = "${MODULE_SRC}"
   name = "test"
   contabo_image_id = "ubuntu-24.04"
-  ssh_authorized_keys = ["ssh-ed25519 AAA test"]
   omni_version = "v1.4.6"
   dex_version = "v2.41.1"
   cloudflared_version = "2025.10.1"

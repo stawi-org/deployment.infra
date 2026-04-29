@@ -79,7 +79,6 @@ module "omni_host" {
 
   name                           = "cluster-omni-contabo"
   contabo_image_id               = var.contabo_ubuntu_24_04_image_id
-  ssh_authorized_keys            = var.ssh_authorized_keys
   omni_version                   = var.omni_version
   dex_version                    = var.dex_version
   cloudflared_version            = var.cloudflared_version

@@ -2,15 +2,11 @@
 hostname: ${name}
 fqdn: ${name}
 
-users:
-  - name: opadmin
-    groups: [sudo]
-    shell: /bin/bash
-    sudo: ALL=(ALL) NOPASSWD:ALL
-    ssh_authorized_keys:
-%{ for k in ssh_authorized_keys ~}
-      - ${k}
-%{ endfor ~}
+# No SSH user is provisioned. iptables drops all inbound on this VM
+# (ESTABLISHED/RELATED + ICMP only); the Cloudflare Tunnel is the
+# sole ingress, and it terminates at omni's port 8090, not at sshd.
+# Break-glass is the Contabo serial console (root password from
+# Contabo dashboard).
 
 apt:
   sources:

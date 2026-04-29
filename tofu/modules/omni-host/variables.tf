@@ -19,11 +19,6 @@ variable "contabo_region" {
   default = "EU"
 }
 
-variable "ssh_authorized_keys" {
-  type        = list(string)
-  description = "SSH keys allowed during cloud-init bootstrap and for break-glass access. After bootstrap the host has all inbound ports DROPped except CF Tunnel egress; SSH is reachable only via the Contabo console."
-}
-
 variable "omni_version" { type = string }
 variable "dex_version" { type = string }
 variable "cloudflared_version" { type = string }
