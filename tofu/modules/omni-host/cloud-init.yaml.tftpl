@@ -5,14 +5,15 @@ fqdn: ${name}
 # Root SSH login enabled for the operator keys threaded in via tofu
 # (CONTABO_PUBLIC_SSH_KEY github secret). Used for diagnostics — Omni
 # container log inspection, in-place edits to /etc/omni/* config, etc.
-# The security boundary for the Omni control plane itself remains
-# Omni's own auth (Dex+GitHub OIDC, --initial-users gated) and the
-# SideroLink WireGuard handshake (Curve25519). Break-glass is the
-# Contabo serial console.
+# Password auth is hard-disabled and fail2ban guards sshd against
+# brute-force probing on the public IP. The security boundary for
+# Omni itself remains Omni's own auth (Dex+GitHub OIDC,
+# --initial-users gated) and the SideroLink WireGuard handshake
+# (Curve25519). Break-glass is the Contabo serial console.
 
 users:
   - name: root
-    lock_passwd: false
+    lock_passwd: true
 %{ if length(ssh_authorized_keys) > 0 ~}
     ssh_authorized_keys:
 %{ for key in ssh_authorized_keys ~}
@@ -34,6 +35,7 @@ package_upgrade: true
 packages:
   - curl
   - jq
+  - fail2ban
   - docker-ce
   - docker-ce-cli
   - containerd.io
@@ -178,10 +180,41 @@ write_files:
       APT::Periodic::Update-Package-Lists "1";
       APT::Periodic::Unattended-Upgrade "1";
 
+  # Hard-disable password auth at the sshd layer too — cloud-init's
+  # ssh_pwauth: false touches Ubuntu defaults but a stray
+  # /etc/ssh/sshd_config.d/* drop-in can re-enable it. This fragment
+  # is loaded last (alphabetically high prefix) and locks the policy.
+  - path: /etc/ssh/sshd_config.d/99-stawi.conf
+    permissions: "0644"
+    content: |
+      PasswordAuthentication no
+      ChallengeResponseAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin prohibit-password
+      MaxAuthTries 3
+      LoginGraceTime 20s
+
+  # fail2ban jail for sshd. Bans an IP for 1h after 5 failed auth
+  # attempts within 10 min. Persistent across restarts via
+  # /var/lib/fail2ban/.
+  - path: /etc/fail2ban/jail.d/sshd.local
+    permissions: "0644"
+    content: |
+      [sshd]
+      enabled  = true
+      port     = ssh
+      backend  = systemd
+      maxretry = 5
+      findtime = 10m
+      bantime  = 1h
+      banaction = iptables-multiport
+
 runcmd:
   - install -d -o root -g root -m 0700 /var/lib/omni
   - install -d -o root -g root -m 0700 /var/lib/dex
   - install -d -o root -g root -m 0700 /var/lib/caddy
   - systemctl daemon-reload
+  - systemctl enable --now fail2ban.service
+  - systemctl reload sshd.service
   - systemctl enable --now omni-keys.service
   - systemctl enable --now omni-stack.service
