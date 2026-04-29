@@ -42,10 +42,20 @@ resource "terraform_data" "image_generation" {
   triggers_replace = var.force_image_generation
 }
 
-resource "talos_image_factory_schematic" "this" {
-  schematic = templatefile("${var.shared_patches_dir}/../schematic.yaml.tftpl", {
-    siderolink_url = var.omni_siderolink_url
+locals {
+  _base_schematic = yamldecode(file("${var.shared_patches_dir}/../schematic.yaml"))
+  _schematic_with_siderolink = var.omni_siderolink_url == "" ? local._base_schematic : merge(local._base_schematic, {
+    customization = merge(local._base_schematic.customization, {
+      extraKernelArgs = concat(
+        local._base_schematic.customization.extraKernelArgs,
+        ["siderolink.api=${var.omni_siderolink_url}"],
+      )
+    })
   })
+}
+
+resource "talos_image_factory_schematic" "this" {
+  schematic = yamlencode(local._schematic_with_siderolink)
 }
 
 data "talos_image_factory_urls" "this" {

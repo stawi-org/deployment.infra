@@ -1,0 +1,20 @@
+# tofu/shared/schematic.yaml
+#
+# Static base for the Talos Image Factory schematic. The workflow's
+# "Stage Talos .oci archive" step uploads this verbatim to compute
+# the schematic_id used in qcow2 download URLs. Tofu's
+# talos_image_factory_schematic resource reads this same file and
+# may append additional extraKernelArgs at apply time (notably
+# `siderolink.api=...` when var.omni_siderolink_url is non-empty —
+# see image.tf in each layer that consumes the schematic). The
+# append produces a different schematic_id, which forces an image
+# rebuild — exactly what we want when the SideroLink URL changes.
+
+customization:
+  extraKernelArgs:
+    - ipv6.disable=0
+    - ipv6.autoconf=0
+  systemExtensions:
+    officialExtensions:
+      - siderolabs/util-linux-tools
+      - siderolabs/siderolink-agent
