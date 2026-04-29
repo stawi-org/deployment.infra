@@ -85,10 +85,30 @@ auth_token() {
 }
 
 api_get() {
-  curl -sS \
-    -H "Authorization: Bearer ${TOKEN}" \
-    -H "x-request-id: $(uuid)" \
-    "$1"
+  # Retry on transient 401 (token expired mid-call) or 5xx + connection
+  # errors. On 401, re-fetch the token before the next attempt.
+  local url="$1" resp body code attempt
+  for attempt in 1 2 3 4 5 6; do
+    resp=$(curl -sS -w $'\nHTTP_%{http_code}' \
+      -H "Authorization: Bearer ${TOKEN}" \
+      -H "x-request-id: $(uuid)" \
+      -H 'Accept: application/json' \
+      "$url" 2>/dev/null) || true
+    code=$(awk -F_ '/^HTTP_/{print $2; exit}' <<<"$resp")
+    body=$(awk '/^HTTP_/{exit} {print}' <<<"$resp")
+    if [[ "$code" == "200" ]]; then
+      printf '%s' "$body"
+      return 0
+    fi
+    echo "api_get $url: HTTP=${code:-error} body=${body:0:200} (attempt $attempt)" >&2
+    if [[ "$code" == "401" ]]; then
+      echo "  refreshing token before retry..." >&2
+      TOKEN=$(auth_token)
+    fi
+    sleep $((attempt * 5))
+  done
+  echo "api_get $url: giving up after 6 attempts (last HTTP=${code:-error})" >&2
+  return 1
 }
 
 # Wrap the provisioning body in a function so we can capture its exit
