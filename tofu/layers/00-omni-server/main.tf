@@ -83,6 +83,52 @@ module "omni_host" {
 # DNS records pull the IPs straight from the imported contabo_instance —
 # tofu knows them because the instance exists. AAAA included so
 # clients with v6 connectivity hit the VPS directly.
+#
+# data sources lookup pre-existing CF records by name so the
+# import {} blocks below can adopt them — earlier failed/cancelled
+# applies left orphan records in CF without matching tofu state, and
+# `cloudflare_dns_record` create then fails with "identical record
+# already exists". Querying-then-importing is the no-manual-steps fix.
+data "cloudflare_dns_records" "cp" {
+  zone_id = var.cloudflare_zone_id_stawi
+  name    = { exact = "cp.stawi.org" }
+}
+
+data "cloudflare_dns_records" "cpd" {
+  zone_id = var.cloudflare_zone_id_stawi
+  name    = { exact = "cpd.stawi.org" }
+}
+
+locals {
+  cp_a_id     = try([for r in data.cloudflare_dns_records.cp.result : r.id if r.type == "A"][0], null)
+  cp_aaaa_id  = try([for r in data.cloudflare_dns_records.cp.result : r.id if r.type == "AAAA"][0], null)
+  cpd_a_id    = try([for r in data.cloudflare_dns_records.cpd.result : r.id if r.type == "A"][0], null)
+  cpd_aaaa_id = try([for r in data.cloudflare_dns_records.cpd.result : r.id if r.type == "AAAA"][0], null)
+}
+
+import {
+  for_each = local.cp_a_id == null ? toset([]) : toset([local.cp_a_id])
+  to       = cloudflare_dns_record.cp_stawi
+  id       = "${var.cloudflare_zone_id_stawi}/${each.value}"
+}
+
+import {
+  for_each = local.cpd_a_id == null ? toset([]) : toset([local.cpd_a_id])
+  to       = cloudflare_dns_record.cpd_stawi
+  id       = "${var.cloudflare_zone_id_stawi}/${each.value}"
+}
+
+import {
+  for_each = local.cp_aaaa_id == null ? toset([]) : toset([local.cp_aaaa_id])
+  to       = cloudflare_dns_record.cp_stawi_v6[0]
+  id       = "${var.cloudflare_zone_id_stawi}/${each.value}"
+}
+
+import {
+  for_each = local.cpd_aaaa_id == null ? toset([]) : toset([local.cpd_aaaa_id])
+  to       = cloudflare_dns_record.cpd_stawi_v6[0]
+  id       = "${var.cloudflare_zone_id_stawi}/${each.value}"
+}
 
 # Browser-facing UI: orange-cloud (Cloudflare proxies HTTPS, accepts the
 # origin cert at the edge).
