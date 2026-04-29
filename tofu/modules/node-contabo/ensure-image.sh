@@ -119,10 +119,23 @@ do_provision() {
 
   # Contabo's response shape: .data[0].ipConfig.v4 is an OBJECT with
   # .ip (not an array). Confirmed via contabo.py's own accessor.
-  INSTANCE_IP=$(api_get "https://api.contabo.com/v1/compute/instances/${INSTANCE_ID}" \
-    | jq -r '.data[0].ipConfig.v4.ip')
+  # On a freshly-POST'd instance, ipConfig may be empty for ~30-90s
+  # while Contabo allocates an IP — poll until populated.
+  INSTANCE_IP=""
+  for ip_attempt in $(seq 1 30); do
+    SNAP=$(api_get "https://api.contabo.com/v1/compute/instances/${INSTANCE_ID}")
+    INSTANCE_IP=$(jq -r '.data[0].ipConfig.v4.ip // empty' <<<"$SNAP")
+    if [[ -n "$INSTANCE_IP" && "$INSTANCE_IP" != "null" ]]; then
+      break
+    fi
+    INSTANCE_STATUS=$(jq -r '.data[0].status // "unknown"' <<<"$SNAP")
+    INSTANCE_NAME=$(jq -r '.data[0].name // "unknown"' <<<"$SNAP")
+    echo "  attempt ${ip_attempt}/30: instance ${INSTANCE_ID} name=${INSTANCE_NAME} status=${INSTANCE_STATUS} — no IP yet" >&2
+    sleep 10
+  done
   if [[ -z "$INSTANCE_IP" || "$INSTANCE_IP" == "null" ]]; then
-    echo "could not resolve IPv4 for instance ${INSTANCE_ID}" >&2
+    echo "could not resolve IPv4 for instance ${INSTANCE_ID} after 5 minutes" >&2
+    echo "last snapshot: $SNAP" >&2
     return 1
   fi
   echo "instance=${INSTANCE_ID} ip=${INSTANCE_IP} target=${TARGET_IMAGE_ID}"
