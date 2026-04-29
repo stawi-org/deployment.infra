@@ -27,6 +27,16 @@ data "http" "token" {
     "username=${urlencode(var.api_user)}",
     "password=${urlencode(var.api_password)}",
   ])
+  # Contabo's KeyCloak instance occasionally returns transient 401
+  # invalid_grant for valid credentials — same call succeeds on
+  # retry. Surface it as a real error only after exhausting the
+  # backoff. 5xx + 401 are both eligible to retry; permanent bad
+  # creds will exhaust attempts and fall through to the postcondition.
+  retry {
+    attempts     = 5
+    min_delay_ms = 4000
+    max_delay_ms = 30000
+  }
   lifecycle {
     postcondition {
       condition     = self.status_code == 200

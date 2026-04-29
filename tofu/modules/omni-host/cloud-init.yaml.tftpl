@@ -2,11 +2,11 @@
 hostname: ${name}
 fqdn: ${name}
 
-# No SSH user is provisioned. iptables drops all inbound on this VM
-# (ESTABLISHED/RELATED + ICMP only); the Cloudflare Tunnel is the
-# sole ingress, and it terminates at omni's port 8090, not at sshd.
-# Break-glass is the Contabo serial console (root password from
-# Contabo dashboard).
+# No SSH user is provisioned. Inbound is open by default on Contabo
+# VPS; the security boundary is Omni's own auth (Dex+GitHub OIDC →
+# Omni admin role gated by --initial-users) and the SideroLink
+# WireGuard handshake (Curve25519). Break-glass is the Contabo serial
+# console.
 
 apt:
   sources:
@@ -20,10 +20,8 @@ packages:
   - docker-ce
   - docker-ce-cli
   - containerd.io
-  - docker-buildx-plugin
   - docker-compose-plugin
-  - rclone
-  - sqlite3
+  - gnupg
   - unattended-upgrades
 
 write_files:
@@ -38,7 +36,24 @@ ${indent(6, docker_compose_yaml)}
     owner: root:root
     content: |
       OMNI_ACCOUNT_ID=${omni_account_id}
-      OMNI_PUBLIC_IP=__PLACEHOLDER__
+
+  # TLS cert + key (Cloudflare Origin Certificate, supplied as tofu vars
+  # from GitHub secrets). One multi-SAN cert covers cp.<zone> and
+  # cpd.<zone> in both DNS zones. Browsers accept the cert at the
+  # Cloudflare edge (cp.<zone> orange-cloud); Talos validates it
+  # directly when dialing cpd.<zone>:8090, which requires the CF Origin
+  # CA to be in Talos's trusted-roots — handled in the Talos schematic
+  # in the consuming layer.
+  - path: /etc/omni/certs/server.crt
+    permissions: "0644"
+    owner: root:root
+    content: |
+${indent(6, tls_cert_pem)}
+  - path: /etc/omni/certs/server.key
+    permissions: "0600"
+    owner: root:root
+    content: |
+${indent(6, tls_key_pem)}
 
   - path: /etc/dex/config.yaml
     permissions: "0640"
@@ -66,31 +81,34 @@ ${indent(6, docker_compose_yaml)}
           redirectURIs: [https://${siderolink_api_advertised_host}/oauth/callback]
           name: Omni
 
-  - path: /etc/cloudflared/cloudflared.env
-    permissions: "0600"
-    owner: root:root
+  # Caddy terminates TLS on :443 with the origin cert and path-routes
+  # the browser-facing OIDC flow to Dex. Omni's UI is bound to loopback
+  # so all browser traffic for cp.<zone> goes through Caddy. Talos
+  # endpoints (cpd.<zone>:8090, :8100, :50180/udp) bypass Caddy and
+  # talk to Omni directly.
+  - path: /etc/caddy/Caddyfile
+    permissions: "0644"
     content: |
-      TUNNEL_TOKEN=${cloudflare_tunnel_token}
-
-  - path: /etc/rclone/rclone.conf
-    permissions: "0600"
-    owner: root:root
-    content: |
-      [r2]
-      type = s3
-      provider = Cloudflare
-      access_key_id = ${r2_backup_access_key_id}
-      secret_access_key = ${r2_backup_secret_access_key}
-      endpoint = ${r2_endpoint}
-      acl = private
+      {
+        auto_https off
+      }
+      :443 {
+        tls /etc/omni/certs/server.crt /etc/omni/certs/server.key
+        handle /dex/* {
+          reverse_proxy http://127.0.0.1:5556
+        }
+        handle {
+          reverse_proxy http://127.0.0.1:8080
+        }
+      }
 
   - path: /etc/systemd/system/omni-stack.service
     permissions: "0644"
     content: |
       [Unit]
-      Description=Omni stack (omni + dex + cloudflared)
-      Requires=docker.service
-      After=docker.service network-online.target
+      Description=Omni stack (omni + dex + caddy)
+      Requires=docker.service omni-keys.service
+      After=docker.service network-online.target omni-keys.service
       [Service]
       Type=oneshot
       RemainAfterExit=true
@@ -99,54 +117,43 @@ ${indent(6, docker_compose_yaml)}
       [Install]
       WantedBy=multi-user.target
 
-  - path: /etc/systemd/system/omni-backup.service
+  # One-shot key generation. Omni uses asymmetric encryption for the
+  # master-key slot (--public-key-files for encryption, --private-key-source
+  # for decryption). Generate once and persist under /var/lib/omni so
+  # state survives container restarts. Never re-generated — losing this
+  # key = losing access to every cluster Omni has ever provisioned.
+  - path: /etc/systemd/system/omni-keys.service
     permissions: "0644"
     content: |
       [Unit]
-      Description=Snapshot Omni sqlite + rclone to R2
+      Description=Generate Omni master keypair on first boot
+      ConditionPathExists=!/var/lib/omni/keys/omni.asc
       [Service]
       Type=oneshot
-      ExecStart=/usr/local/bin/omni-backup.sh
-
-  - path: /etc/systemd/system/omni-backup.timer
-    permissions: "0644"
-    content: |
-      [Unit]
-      Description=Hourly Omni state backup
-      [Timer]
-      OnCalendar=hourly
-      Persistent=true
+      ExecStart=/usr/local/bin/omni-keygen.sh
+      RemainAfterExit=true
       [Install]
-      WantedBy=timers.target
+      WantedBy=multi-user.target
 
-  - path: /usr/local/bin/omni-backup.sh
+  - path: /usr/local/bin/omni-keygen.sh
     permissions: "0755"
     content: |
       #!/usr/bin/env bash
       set -euo pipefail
-      # Skip silently if Omni has not yet initialised its database (e.g. first boot).
-      [[ -f /var/lib/omni/omni.db ]] || { echo "omni.db not yet initialised, skipping backup" >&2; exit 0; }
-      ts=$(date -u +%Y%m%dT%H%M%SZ)
-      tmp=$(mktemp -d)
-      trap "rm -rf $tmp" EXIT
-      sqlite3 /var/lib/omni/omni.db ".backup '$tmp/omni-$ts.db'"
-      gzip -9 "$tmp/omni-$ts.db"
-      rclone copy "$tmp/" "r2:${r2_backup_bucket}/${r2_backup_prefix}" --include "omni-*.db.gz"
-      # 30-day retention: scope the delete to backup files only to avoid
-      # accidentally removing unrelated objects in the same prefix.
-      rclone delete --min-age 30d --include "omni-*.db.gz" "r2:${r2_backup_bucket}/${r2_backup_prefix}"
-
-  - path: /etc/iptables/rules.v4
-    permissions: "0640"
-    content: |
-      *filter
-      :INPUT DROP [0:0]
-      :FORWARD DROP [0:0]
-      :OUTPUT ACCEPT [0:0]
-      -A INPUT -i lo -j ACCEPT
-      -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-      -A INPUT -p icmp -j ACCEPT
-      COMMIT
+      install -d -m 0700 /var/lib/omni/keys
+      tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+      cat > "$tmp/batch" <<'EOF'
+      %no-protection
+      Key-Type: RSA
+      Key-Length: 4096
+      Name-Real: Omni Master
+      Name-Email: omni@${siderolink_api_advertised_host}
+      Expire-Date: 0
+      EOF
+      GNUPGHOME="$tmp" gpg --batch --gen-key "$tmp/batch"
+      GNUPGHOME="$tmp" gpg --armor --export-secret-keys > /var/lib/omni/keys/omni.asc
+      GNUPGHOME="$tmp" gpg --armor --export             > /var/lib/omni/keys/omni.pub.asc
+      chmod 0600 /var/lib/omni/keys/omni.asc /var/lib/omni/keys/omni.pub.asc
 
   - path: /etc/apt/apt.conf.d/20auto-upgrades
     permissions: "0644"
@@ -155,28 +162,9 @@ ${indent(6, docker_compose_yaml)}
       APT::Periodic::Unattended-Upgrade "1";
 
 runcmd:
-  - mkdir -p /var/lib/omni /var/lib/dex
-  - chown -R root:root /var/lib/omni /var/lib/dex
-  - chmod 0700 /var/lib/omni /var/lib/dex
-  - mkdir -p /etc/iptables
-  - iptables-restore < /etc/iptables/rules.v4
-  # Preseed debconf so iptables-persistent does not snapshot the running
-  # (empty) ruleset on install, which would leave the host open after reboot.
-  - echo iptables-persistent iptables-persistent/autosave_v4 boolean false | debconf-set-selections
-  - echo iptables-persistent iptables-persistent/autosave_v6 boolean false | debconf-set-selections
-  - DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent
-  # Re-apply rules in case the package install touched anything.
-  - iptables-restore < /etc/iptables/rules.v4
-  - |
-    # Resolve the public IP at first boot — write_files is byte-literal and
-    # cannot execute shell, so we use a sed replacement against the placeholder.
-    # Multiple fallbacks: lifecycle.ignore_changes=[user_data] means a transient
-    # failure here permanently wedges the instance until a tofu taint+recreate.
-    PUBLIC_IP=$(curl -fsSL --max-time 10 https://api.ipify.org \
-      || curl -fsSL --max-time 10 https://api4.ipify.org \
-      || curl -fsSL --max-time 10 https://ifconfig.me \
-      || curl -fsSL --max-time 10 https://icanhazip.com)
-    if [[ -z "$PUBLIC_IP" ]]; then echo "ERROR: could not resolve public IP via any fallback" >&2; exit 1; fi
-    sed -i "s|^OMNI_PUBLIC_IP=.*|OMNI_PUBLIC_IP=$PUBLIC_IP|" /etc/omni/omni.env
+  - install -d -o root -g root -m 0700 /var/lib/omni
+  - install -d -o root -g root -m 0700 /var/lib/dex
+  - install -d -o root -g root -m 0700 /var/lib/caddy
   - systemctl daemon-reload
-  - systemctl enable --now omni-stack.service omni-backup.timer
+  - systemctl enable --now omni-keys.service
+  - systemctl enable --now omni-stack.service

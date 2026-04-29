@@ -11,10 +11,6 @@ output "omni_host_ipv6" {
   value = module.omni_host.ipv6
 }
 
-output "tunnel_id" {
-  value = cloudflare_zero_trust_tunnel_cloudflared.omni.id
-}
-
 output "dex_omni_client_secret" {
   value     = module.omni_host.dex_omni_client_secret
   sensitive = true

@@ -5,7 +5,7 @@ variable "name" {
 
 variable "contabo_product_id" {
   type        = string
-  default     = "V47" # VPS-S, 1 CPU/8GB; sufficient for single-instance Omni + dex + cloudflared
+  default     = "V47" # VPS-S, 1 CPU/8GB; sufficient for Omni + dex + caddy
   description = "Contabo product ID for the omni-host VPS shape."
 }
 
@@ -21,7 +21,11 @@ variable "contabo_region" {
 
 variable "omni_version" { type = string }
 variable "dex_version" { type = string }
-variable "cloudflared_version" { type = string }
+variable "caddy_version" {
+  type        = string
+  default     = "2.10-alpine"
+  description = "Caddy image tag — version pinned to alpine variant for size."
+}
 
 variable "omni_account_name" {
   type        = string
@@ -30,13 +34,12 @@ variable "omni_account_name" {
 
 variable "siderolink_api_advertised_host" {
   type        = string
-  description = "Public hostname Omni advertises in node siderolink cmdlines, e.g. cp.antinvestor.com."
+  description = "Browser-facing Omni hostname (orange-cloud Cloudflare). Serves the UI on :443 via Caddy and the OIDC discovery path /dex."
 }
 
-variable "extra_dns_aliases" {
-  type        = list(string)
-  default     = []
-  description = "Extra hostnames the Omni cert/SAN should cover, e.g. [\"cp.stawi.org\"]."
+variable "siderolink_wireguard_advertised_host" {
+  type        = string
+  description = "Talos-facing Omni hostname (gray-cloud direct A → VPS public IP). Serves machine-api :8090, k8s-proxy :8100, and WireGuard :50180/udp."
 }
 
 variable "github_oidc_client_id" {
@@ -55,30 +58,23 @@ variable "github_oidc_allowed_orgs" {
   default = ["stawi-org"]
 }
 
-variable "cloudflare_tunnel_token" {
+variable "tls_cert_pem" {
   type        = string
   sensitive   = true
-  description = "Token for the pre-created CF Tunnel that fronts cp.antinvestor.com / cp.stawi.org."
+  description = "PEM-encoded TLS certificate (Cloudflare Origin Cert, multi-SAN covering siderolink_api_advertised_host + siderolink_wireguard_advertised_host in both zones)."
 }
 
-variable "r2_endpoint" { type = string }
-
-variable "r2_backup_access_key_id" {
-  type      = string
-  sensitive = true
+variable "tls_key_pem" {
+  type        = string
+  sensitive   = true
+  description = "PEM-encoded private key matching tls_cert_pem."
 }
 
-variable "r2_backup_secret_access_key" {
-  type      = string
-  sensitive = true
-}
-
-variable "r2_backup_bucket" {
-  type    = string
-  default = "cluster-tofu-state"
-}
-
-variable "r2_backup_prefix" {
-  type    = string
-  default = "production/omni-backups/"
+variable "initial_users" {
+  type        = list(string)
+  description = "Email addresses promoted to Admin on first login. Empty list means no admins — UI will be locked."
+  validation {
+    condition     = length(var.initial_users) > 0
+    error_message = "At least one initial admin email is required."
+  }
 }

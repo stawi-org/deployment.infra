@@ -2,25 +2,74 @@
 # Pinned tags only — bumping the version is a deliberate tofu var change.
 version: "3.9"
 services:
+  # Omni binds the browser-facing UI to loopback (Caddy fronts it on
+  # :443 with the origin cert). Talos-facing endpoints (machine-api,
+  # k8s-proxy) terminate TLS themselves on the public interface using
+  # the same cert.
   omni:
     image: ghcr.io/siderolabs/omni:${omni_version}
     container_name: omni
     restart: unless-stopped
     network_mode: host
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
     volumes:
       - /var/lib/omni:/var/lib/omni
       - /etc/omni/omni.env:/etc/omni/omni.env:ro
+      - /etc/omni/certs:/etc/omni/certs:ro
     env_file:
       - /etc/omni/omni.env
     command:
       - --account-id=$${OMNI_ACCOUNT_ID}
       - --name=${omni_account_name}
+      # Storage — paths are inside the container; /var/lib/omni is a
+      # bind mount so state persists across container restarts. Losing
+      # this directory = losing every cluster Omni ever provisioned.
+      - --etcd-embedded-db-path=/var/lib/omni/etcd
+      - --sqlite-storage-path=/var/lib/omni/omni.db
+      # Master-key encryption — generated once on first boot by
+      # omni-keys.service in cloud-init.
+      - --private-key-source=file:///var/lib/omni/keys/omni.asc
+      - --public-key-files=/var/lib/omni/keys/omni.pub.asc
+      # Browser-facing UI binds loopback only; Caddy reverse-proxies
+      # /dex/* to Dex and /* to here over plain HTTP on the host.
+      - --bind-addr=127.0.0.1:8080
       - --advertised-api-url=https://${siderolink_api_advertised_host}
-      - --siderolink-api-advertised-url=https://${siderolink_api_advertised_host}
+      # Talos-facing machine API. Cert/key supplied; this listener is
+      # exposed on the public interface (gray-cloud cpd.<zone>:8090).
       - --machine-api-bind-addr=0.0.0.0:8090
-      - --siderolink-wireguard-advertised-addr=$${OMNI_PUBLIC_IP}:50180
+      - --machine-api-cert=/etc/omni/certs/server.crt
+      - --machine-api-key=/etc/omni/certs/server.key
+      - --siderolink-api-advertised-url=https://${siderolink_wireguard_advertised_host}:8090
+      # Kubernetes proxy. Uses the same --cert/--key as the loopback
+      # UI listener; we set them so this listener can serve TLS, even
+      # though the UI side bypasses them via Caddy.
+      - --cert=/etc/omni/certs/server.crt
+      - --key=/etc/omni/certs/server.key
+      - --k8s-proxy-bind-addr=0.0.0.0:8100
+      - --advertised-kubernetes-proxy-url=https://${siderolink_wireguard_advertised_host}:8100
+      # Event sink — Talos machines POST status events here. Default
+      # 8090 collides with machine-api; 8091 keeps them separate.
+      - --event-sink-port=8091
+      # SideroLink WireGuard. Advertised as a hostname (gray-cloud A
+      # record straight to the VPS public IP); WireGuard resolves the
+      # endpoint at connect time and Talos has DHCP-DNS by then.
+      - --siderolink-wireguard-advertised-addr=${siderolink_wireguard_advertised_host}:50180
+      # Auth — disable upstream defaults, route everything through Dex.
       - --auth-auth0-enabled=false
       - --auth-saml-enabled=false
+      - --auth-oidc-enabled=true
+      - --auth-oidc-provider-url=https://${siderolink_api_advertised_host}/dex
+      - --auth-oidc-client-id=omni
+      - --auth-oidc-client-secret=${dex_omni_client_secret}
+      - --auth-oidc-scopes=openid
+      - --auth-oidc-scopes=profile
+      - --auth-oidc-scopes=email
+%{ for email in initial_users ~}
+      - --initial-users=${email}
+%{ endfor ~}
       - --siderolink-disable-last-endpoint=false
 
   dex:
@@ -30,12 +79,18 @@ services:
     network_mode: host
     volumes:
       - /etc/dex/config.yaml:/etc/dex/config.yaml:ro
+      - /var/lib/dex:/var/lib/dex
+    command:
+      - dex
+      - serve
+      - /etc/dex/config.yaml
 
-  cloudflared:
-    image: cloudflare/cloudflared:${cloudflared_version}
-    container_name: cloudflared
+  caddy:
+    image: caddy:${caddy_version}
+    container_name: caddy
     restart: unless-stopped
     network_mode: host
-    command: tunnel --no-autoupdate run
-    env_file:
-      - /etc/cloudflared/cloudflared.env
+    volumes:
+      - /etc/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /etc/omni/certs:/etc/omni/certs:ro
+      - /var/lib/caddy:/data

@@ -30,6 +30,11 @@ on:
       # under OMNI_DEX_*.
       OMNI_DEX_GITHUB_CLIENT_ID:     { required: false }
       OMNI_DEX_GITHUB_CLIENT_SECRET: { required: false }
+      # Cloudflare Origin Certificate (multi-SAN, PEM-encoded). One-time
+      # generated via the CF dashboard, valid for 15 years. Used by
+      # 00-omni-server only; other layers ignore.
+      OMNI_TLS_CERT:                 { required: false }
+      OMNI_TLS_KEY:                  { required: false }
       # OCI accounts now come exclusively from production/config/ under R2.
       # The workflow syncs the provider/account YAML files and aggregates them.
       # Repository variable:
@@ -395,6 +400,8 @@ jobs:
           TF_VAR_cloudflare_zone_id_stawi:       ${{ vars.CLOUDFLARE_ZONE_ID_STAWI }}
           TF_VAR_github_oidc_client_id:          ${{ secrets.OMNI_DEX_GITHUB_CLIENT_ID }}
           TF_VAR_github_oidc_client_secret:      ${{ secrets.OMNI_DEX_GITHUB_CLIENT_SECRET }}
+          TF_VAR_omni_tls_cert:                  ${{ secrets.OMNI_TLS_CERT }}
+          TF_VAR_omni_tls_key:                   ${{ secrets.OMNI_TLS_KEY }}
           # Per-account-state layers (01-contabo-infra, 02-oracle-infra,
           # 02-onprem-infra) read var.account_key to scope their
           # for_each maps to a single account; harmless on layers that
