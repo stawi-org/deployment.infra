@@ -21,11 +21,12 @@ locals {
   docker_compose_yaml = templatefile(
     "${path.module}/docker-compose.yaml.tftpl",
     {
-      omni_version                   = var.omni_version
-      dex_version                    = var.dex_version
-      cloudflared_version            = var.cloudflared_version
-      omni_account_name              = var.omni_account_name
-      siderolink_api_advertised_host = var.siderolink_api_advertised_host
+      omni_version                             = var.omni_version
+      dex_version                              = var.dex_version
+      cloudflared_version                      = var.cloudflared_version
+      omni_account_name                        = var.omni_account_name
+      siderolink_api_advertised_host           = var.siderolink_api_advertised_host
+      siderolink_wireguard_advertised_endpoint = var.siderolink_wireguard_advertised_endpoint
     }
   )
 

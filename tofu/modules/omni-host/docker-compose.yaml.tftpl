@@ -18,7 +18,7 @@ services:
       - --advertised-api-url=https://${siderolink_api_advertised_host}
       - --siderolink-api-advertised-url=https://${siderolink_api_advertised_host}
       - --machine-api-bind-addr=0.0.0.0:8090
-      - --siderolink-wireguard-advertised-addr=$${OMNI_PUBLIC_IP}:50180
+      - --siderolink-wireguard-advertised-addr=${siderolink_wireguard_advertised_endpoint}
       - --auth-auth0-enabled=false
       - --auth-saml-enabled=false
       - --siderolink-disable-last-endpoint=false

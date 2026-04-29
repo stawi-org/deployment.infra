@@ -47,8 +47,10 @@ provider "aws" {
   }
 }
 
-# Cloudflare Zero Trust Tunnel that fronts cp.antinvestor.com + cp.stawi.org.
-# Outbound-only from the omni-host (no inbound port on the VPS).
+# Cloudflare Zero Trust Tunnel that fronts cp.antinvestor.com + cp.stawi.org
+# (HTTPS / gRPC discovery only). The SideroLink WireGuard mesh runs over UDP
+# and cannot ride the Tunnel; nodes dial cpd.<zone> (gray-cloud, A record
+# direct to VPS public IP) for that.
 resource "cloudflare_zero_trust_tunnel_cloudflared" "omni" {
   account_id = var.cloudflare_account_id
   name       = "omni"
@@ -84,20 +86,21 @@ locals {
 module "omni_host" {
   source = "../../modules/omni-host"
 
-  name                           = "cluster-omni-contabo"
-  contabo_image_id               = module.ubuntu_24_04_image.image_id
-  omni_version                   = var.omni_version
-  dex_version                    = var.dex_version
-  cloudflared_version            = var.cloudflared_version
-  omni_account_name              = "stawi"
-  siderolink_api_advertised_host = "cp.antinvestor.com"
-  extra_dns_aliases              = ["cp.stawi.org"]
-  github_oidc_client_id          = var.github_oidc_client_id
-  github_oidc_client_secret      = var.github_oidc_client_secret
-  cloudflare_tunnel_token        = local.tunnel_token
-  r2_endpoint                    = "https://${var.r2_account_id}.r2.cloudflarestorage.com"
-  r2_backup_access_key_id        = var.etcd_backup_r2_access_key_id
-  r2_backup_secret_access_key    = var.etcd_backup_r2_secret_access_key
+  name                                     = "cluster-omni-contabo"
+  contabo_image_id                         = module.ubuntu_24_04_image.image_id
+  omni_version                             = var.omni_version
+  dex_version                              = var.dex_version
+  cloudflared_version                      = var.cloudflared_version
+  omni_account_name                        = "stawi"
+  siderolink_api_advertised_host           = "cp.antinvestor.com"
+  siderolink_wireguard_advertised_endpoint = "cpd.antinvestor.com:50180"
+  extra_dns_aliases                        = ["cp.stawi.org"]
+  github_oidc_client_id                    = var.github_oidc_client_id
+  github_oidc_client_secret                = var.github_oidc_client_secret
+  cloudflare_tunnel_token                  = local.tunnel_token
+  r2_endpoint                              = "https://${var.r2_account_id}.r2.cloudflarestorage.com"
+  r2_backup_access_key_id                  = var.etcd_backup_r2_access_key_id
+  r2_backup_secret_access_key              = var.etcd_backup_r2_secret_access_key
 }
 
 # Orange-cloud DNS records — both zones point at the same CF Tunnel.
@@ -120,4 +123,31 @@ resource "cloudflare_dns_record" "cp_stawi" {
   proxied = true
   ttl     = 1
   comment = "Cloudflare Tunnel target for self-hosted Omni."
+}
+
+# Gray-cloud DNS records for the SideroLink WireGuard endpoint. Must NOT
+# be CF-proxied: WireGuard is UDP, and Cloudflare Tunnel / orange-cloud
+# only proxy TCP/HTTP. A direct A record to the VPS public IP is the
+# only path that lets nodes complete the WG handshake. The handshake
+# itself authenticates the peer (Curve25519 keys), so removing the CF
+# WAF in front is not a meaningful loss of protection.
+
+resource "cloudflare_dns_record" "cpd_antinvestor" {
+  zone_id = var.cloudflare_zone_id_antinvestor
+  name    = "cpd"
+  type    = "A"
+  content = module.omni_host.ipv4
+  proxied = false
+  ttl     = 300
+  comment = "SideroLink WireGuard endpoint (UDP/50180) — gray-cloud direct."
+}
+
+resource "cloudflare_dns_record" "cpd_stawi" {
+  zone_id = var.cloudflare_zone_id_stawi
+  name    = "cpd"
+  type    = "A"
+  content = module.omni_host.ipv4
+  proxied = false
+  ttl     = 300
+  comment = "SideroLink WireGuard endpoint (UDP/50180) — gray-cloud direct."
 }

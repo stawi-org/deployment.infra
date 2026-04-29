@@ -33,6 +33,11 @@ variable "siderolink_api_advertised_host" {
   description = "Public hostname Omni advertises in node siderolink cmdlines, e.g. cp.antinvestor.com."
 }
 
+variable "siderolink_wireguard_advertised_endpoint" {
+  type        = string
+  description = "host:port nodes dial for the SideroLink WireGuard mesh. Cloudflare Tunnel cannot proxy UDP, so this MUST be a gray-cloud DNS name (or raw IP) that resolves directly to the VPS public IP. Example: cpd.antinvestor.com:50180."
+}
+
 variable "extra_dns_aliases" {
   type        = list(string)
   default     = []
