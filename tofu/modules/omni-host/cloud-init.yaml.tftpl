@@ -2,13 +2,13 @@
 hostname: ${name}
 fqdn: ${name}
 
-# Override Contabo's auto-injected bootcmd, which calls
-# `pkill -HUP sshd` at boot — sshd isn't running yet at bootcmd phase
-# and the resulting non-zero exit makes `cloud-init status` report
-# "error" even on a fully successful provision. We don't need to enable
-# root SSH that way (the `users:` block below seeds the authorized_keys
-# directly), so an empty bootcmd is fine.
-bootcmd: []
+# Note: Contabo's image agent appends its own cloud-config (with
+# `bootcmd: [..., pkill -HUP sshd]`) AFTER our user-data, so YAML
+# duplicate-key resolution makes Contabo's bootcmd win. `pkill -HUP
+# sshd` returns 1 when sshd isn't running yet at bootcmd phase, which
+# makes `cloud-init status` report "error" even on a fully successful
+# provision. We can't override it from our side; the actual health
+# signal is omni-stack-ready.service, not cloud-init's overall status.
 
 # Root SSH login enabled for the operator keys threaded in via tofu
 # (CONTABO_PUBLIC_SSH_KEY github secret). Used for diagnostics — Omni
@@ -50,7 +50,7 @@ packages:
   - docker-compose-plugin
   - gnupg
   - unattended-upgrades
-  - awscli
+  - unzip
   - nftables
 
 write_files:
@@ -294,7 +294,7 @@ write_files:
       install -d -m 0700 /var/lib/omni/keys
       tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
       cat > "$tmp/batch" <<'EOF'
-      %%no-protection
+      %no-protection
       Key-Type: RSA
       Key-Length: 4096
       Name-Real: Omni Master
@@ -336,7 +336,7 @@ write_files:
       set -euo pipefail
       trap 'systemctl is-active --quiet omni-stack.service || systemctl start omni-stack.service' EXIT
       set -a; source /etc/omni/r2.env; set +a
-      ts=$(date -u +%%Y%%m%%dT%%H%%M%%SZ)
+      ts=$(date -u +%Y%m%dT%H%M%SZ)
       tmp=$(mktemp -d); trap 'rm -rf "$tmp"; systemctl is-active --quiet omni-stack.service || systemctl start omni-stack.service' EXIT
       echo "[omni-backup] stopping omni-stack for consistent snapshot"
       systemctl stop omni-stack.service
@@ -395,10 +395,21 @@ write_files:
         echo "[omni-restore] /var/lib/omni already populated — skipping"
         exit 0
       fi
+      if ! command -v aws >/dev/null; then
+        echo "[omni-restore] ERROR: aws CLI not in PATH (install runcmd should have placed it)" >&2
+        exit 1
+      fi
       set -a; source /etc/omni/r2.env; set +a
-      latest=$(aws s3 ls "s3://$R2_BUCKET/$R2_PREFIX/" \
-        --endpoint-url "$R2_ENDPOINT" \
-        | awk '{print $4}' | grep -E '^omni-.*\.tar\.gz$' | sort | tail -1 || true)
+      # Separate the ls call so we can distinguish "no backup yet"
+      # (legitimate first-boot) from a real failure (auth, network, missing
+      # bucket). A silent failure here would skip restore and let omni-keys
+      # generate a brand-new master key, which the operator wouldn't notice
+      # until they hit a state-mismatch error days later.
+      list=$(aws s3 ls "s3://$R2_BUCKET/$R2_PREFIX/" --endpoint-url "$R2_ENDPOINT") || {
+        echo "[omni-restore] ERROR: aws s3 ls failed — cannot tell if a backup exists, refusing to proceed" >&2
+        exit 1
+      }
+      latest=$(echo "$list" | awk '{print $4}' | grep -E '^omni-.*\.tar\.gz$' | sort | tail -1)
       if [ -z "$latest" ]; then
         echo "[omni-restore] no backup in s3://$R2_BUCKET/$R2_PREFIX/ — first-boot path, omni-keys will generate fresh keys"
         exit 0
@@ -516,6 +527,17 @@ write_files:
       banaction = iptables-multiport
 
 runcmd:
+  # AWS CLI v2 — Ubuntu 24.04 dropped the `awscli` apt package, so we
+  # install the official zip distribution from awscli.amazonaws.com.
+  # This MUST land before omni-restore.service starts (its script calls
+  # `aws s3 ls` to look for the latest backup), so we install it first
+  # and the runcmd ordering guarantees `aws` is in PATH by the time
+  # systemctl enables omni-restore further down.
+  - curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+  - unzip -q /tmp/awscliv2.zip -d /tmp
+  - /tmp/aws/install
+  - rm -rf /tmp/awscliv2.zip /tmp/aws
+
   - install -d -o root -g root -m 0700 /var/lib/omni
   # dexidp/dex container runs as uid 1001; the dex.db sqlite file
   # lives under /var/lib/dex and the container needs to write to
