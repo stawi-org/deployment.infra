@@ -5,7 +5,7 @@ variable "name" {
 
 variable "contabo_product_id" {
   type        = string
-  default     = "V47" # VPS-S, 1 CPU/8GB; sufficient for Omni + dex + caddy
+  default     = "V94" # Same shape the existing Contabo CPs use; V47 was retired by Contabo.
   description = "Contabo product ID for the omni-host VPS shape."
 }
 
