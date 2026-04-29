@@ -86,7 +86,7 @@ module "omni_host" {
 
 # Browser-facing UI: orange-cloud (Cloudflare proxies HTTPS, accepts the
 # origin cert at the edge).
-resource "cloudflare_dns_record" "cp_stawi_a" {
+resource "cloudflare_dns_record" "cp_stawi" {
   zone_id = var.cloudflare_zone_id_stawi
   name    = "cp"
   type    = "A"
@@ -96,7 +96,7 @@ resource "cloudflare_dns_record" "cp_stawi_a" {
   comment = "Omni UI — orange-cloud."
 }
 
-resource "cloudflare_dns_record" "cp_stawi_aaaa" {
+resource "cloudflare_dns_record" "cp_stawi_v6" {
   count   = module.omni_host.ipv6 == null ? 0 : 1
   zone_id = var.cloudflare_zone_id_stawi
   name    = "cp"
@@ -111,7 +111,7 @@ resource "cloudflare_dns_record" "cp_stawi_aaaa" {
 # proxies a fixed set of HTTP(S) ports (no :8090, no :8100, no UDP),
 # so SideroLink API + k8s-proxy + WireGuard cannot ride orange-cloud.
 # Talos validates the origin cert directly.
-resource "cloudflare_dns_record" "cpd_stawi_a" {
+resource "cloudflare_dns_record" "cpd_stawi" {
   zone_id = var.cloudflare_zone_id_stawi
   name    = "cpd"
   type    = "A"
@@ -121,7 +121,7 @@ resource "cloudflare_dns_record" "cpd_stawi_a" {
   comment = "Omni Talos-facing (8090/8100/50180) — gray-cloud."
 }
 
-resource "cloudflare_dns_record" "cpd_stawi_aaaa" {
+resource "cloudflare_dns_record" "cpd_stawi_v6" {
   count   = module.omni_host.ipv6 == null ? 0 : 1
   zone_id = var.cloudflare_zone_id_stawi
   name    = "cpd"
