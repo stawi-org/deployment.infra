@@ -86,3 +86,19 @@ variable "sops_age_key" {
   type      = string
   sensitive = true
 }
+
+# ---- R2 backup / restore -----------------------------------------------------
+# Threaded into module.omni_host so the on-host omni-backup.sh /
+# omni-restore.sh pair can write to / read from R2 without baking
+# credentials into a script committed to the repo.
+
+variable "r2_access_key_id" {
+  type        = string
+  sensitive   = true
+  description = "R2 access key ID with read+write on the tofu-state bucket. Same secret already used by the workflow's `aws s3 sync` step."
+}
+
+variable "r2_secret_access_key" {
+  type      = string
+  sensitive = true
+}

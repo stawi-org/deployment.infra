@@ -30,7 +30,7 @@ locals {
     {
       omni_version                         = var.omni_version
       dex_version                          = var.dex_version
-      caddy_version                        = var.caddy_version
+      nginx_version                        = var.nginx_version
       omni_account_id                      = random_uuid.omni_account_id.result
       omni_account_name                    = var.omni_account_name
       siderolink_api_advertised_host       = var.siderolink_api_advertised_host
@@ -55,6 +55,11 @@ locals {
       tls_cert_pem                   = var.tls_cert_pem
       tls_key_pem                    = var.tls_key_pem
       ssh_authorized_keys            = var.ssh_authorized_keys
+      r2_account_id                  = var.r2_account_id
+      r2_access_key_id               = var.r2_access_key_id
+      r2_secret_access_key           = var.r2_secret_access_key
+      r2_bucket_name                 = var.r2_bucket_name
+      r2_backup_prefix               = var.r2_backup_prefix
     }
   )
 }

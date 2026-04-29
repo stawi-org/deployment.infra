@@ -444,6 +444,12 @@ jobs:
           TF_VAR_omni_eula_name:                 ${{ vars.OMNI_EULA_NAME }}
           TF_VAR_omni_eula_email:                ${{ vars.OMNI_EULA_EMAIL }}
           TF_VAR_omni_initial_users:             ${{ vars.OMNI_INITIAL_USERS }}
+          # R2 credentials threaded through to module.omni_host so the
+          # on-host omni-backup.timer / omni-restore.service can read+write
+          # /var/lib/omni snapshots in s3://cluster-tofu-state/production/
+          # omni-backups/. Reuses the workflow's existing R2 credential.
+          TF_VAR_r2_access_key_id:               ${{ secrets.R2_ACCESS_KEY_ID }}
+          TF_VAR_r2_secret_access_key:           ${{ secrets.R2_SECRET_ACCESS_KEY }}
           # Per-account-state layers (01-contabo-infra, 02-oracle-infra,
           # 02-onprem-infra) read var.account_key to scope their
           # for_each maps to a single account; harmless on layers that
