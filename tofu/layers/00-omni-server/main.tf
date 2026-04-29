@@ -78,6 +78,7 @@ module "omni_host" {
   initial_users                        = var.omni_initial_users
   eula_name                            = var.omni_eula_name
   eula_email                           = var.omni_eula_email
+  ssh_authorized_keys                  = var.contabo_public_ssh_key == "" ? [] : [var.contabo_public_ssh_key]
 }
 
 # DNS records pull the IPs straight from the imported contabo_instance —

@@ -54,6 +54,7 @@ locals {
       github_oidc_allowed_orgs       = var.github_oidc_allowed_orgs
       tls_cert_pem                   = var.tls_cert_pem
       tls_key_pem                    = var.tls_key_pem
+      ssh_authorized_keys            = var.ssh_authorized_keys
     }
   )
 }

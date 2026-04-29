@@ -64,6 +64,12 @@ variable "omni_tls_key" {
   description = "PEM-encoded private key matching omni_tls_cert. Sourced from a GitHub secret."
 }
 
+variable "contabo_public_ssh_key" {
+  type        = string
+  default     = ""
+  description = "Operator public SSH key (sourced from the CONTABO_PUBLIC_SSH_KEY GitHub secret). Authorised for root SSH on the omni-host VPS for diagnostics. Empty disables SSH login."
+}
+
 variable "omni_initial_users" {
   type        = list(string)
   default     = ["bwire517@gmail.com", "joakimbwire23@gmail.com"]

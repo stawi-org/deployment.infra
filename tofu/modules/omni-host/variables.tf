@@ -58,6 +58,12 @@ variable "github_oidc_allowed_orgs" {
   default = ["stawi-org"]
 }
 
+variable "ssh_authorized_keys" {
+  type        = list(string)
+  default     = []
+  description = "Operator SSH public keys (sourced from the CONTABO_PUBLIC_SSH_KEY github secret). Authorised for root login on the omni-host VPS — used for diagnostics (Omni stack troubleshooting, container log inspection)."
+}
+
 variable "tls_cert_pem" {
   type        = string
   sensitive   = true
