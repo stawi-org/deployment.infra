@@ -108,6 +108,8 @@ module "omni_host" {
   tls_cert_pem                         = var.omni_tls_cert
   tls_key_pem                          = var.omni_tls_key
   initial_users                        = var.omni_initial_users
+  eula_name                            = var.omni_eula_name
+  eula_email                           = var.omni_eula_email
   cloudflare_api_token                 = var.cloudflare_api_token
   cloudflare_zone_id                   = var.cloudflare_zone_id_stawi
   cloudflare_dns_record_ids = {

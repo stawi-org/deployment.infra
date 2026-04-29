@@ -36,6 +36,8 @@ locals {
       siderolink_wireguard_advertised_host = var.siderolink_wireguard_advertised_host
       dex_omni_client_secret               = random_password.dex_omni_client_secret.result
       initial_users                        = var.initial_users
+      eula_name                            = var.eula_name
+      eula_email                           = var.eula_email
     }
   )
 

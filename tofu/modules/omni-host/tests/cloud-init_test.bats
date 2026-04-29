@@ -21,6 +21,8 @@ module "h" {
   tls_cert_pem = "FAKE-CERT-FOR-VALIDATE-ONLY"
   tls_key_pem  = "FAKE-KEY-FOR-VALIDATE-ONLY"
   initial_users = ["test@example.com"]
+  eula_name = "Test User"
+  eula_email = "test@example.com"
   cloudflare_api_token = "fake"
   cloudflare_zone_id = "zid"
   cloudflare_dns_record_ids = { cp = "rec1", cpd = "rec2" }

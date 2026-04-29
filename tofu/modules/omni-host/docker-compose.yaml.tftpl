@@ -70,6 +70,9 @@ services:
 %{ for email in initial_users ~}
       - --initial-users=${email}
 %{ endfor ~}
+      # Sidero EULA acceptance (required Omni v1.7+).
+      - --eula-accept-name=${eula_name}
+      - --eula-accept-email=${eula_email}
       - --siderolink-disable-last-endpoint=false
 
   dex:

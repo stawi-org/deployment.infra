@@ -32,7 +32,19 @@ variable "github_oidc_client_secret" {
 
 variable "omni_version" {
   type    = string
-  default = "v1.4.6"
+  default = "v1.7.1"
+}
+
+variable "omni_eula_name" {
+  type        = string
+  default     = "Peter Bwire"
+  description = "Name supplied to Omni's --eula-accept-name flag (Sidero EULA acceptance, required v1.7+)."
+}
+
+variable "omni_eula_email" {
+  type        = string
+  default     = "bwire517@gmail.com"
+  description = "Email supplied to Omni's --eula-accept-email flag."
 }
 
 variable "dex_version" {

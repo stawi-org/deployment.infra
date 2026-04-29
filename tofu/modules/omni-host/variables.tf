@@ -100,3 +100,13 @@ variable "initial_users" {
     error_message = "At least one initial admin email is required."
   }
 }
+
+variable "eula_name" {
+  type        = string
+  description = "Name supplied to Omni's --eula-accept-name flag (Sidero EULA, required v1.7+)."
+}
+
+variable "eula_email" {
+  type        = string
+  description = "Email supplied to Omni's --eula-accept-email flag."
+}
