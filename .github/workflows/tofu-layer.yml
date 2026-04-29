@@ -199,9 +199,25 @@ jobs:
           # var.omni_siderolink_url is non-empty (see image.tf in
           # consuming layers) — but the workflow only needs the base
           # schematic to compute the qcow2 download URL.
-          SCHEMATIC_ID=$(curl -fsSL -X POST https://factory.talos.dev/schematics \
+          echo "::group::schematic.yaml content + checksum"
+          ls -la tofu/shared/schematic.yaml
+          md5sum tofu/shared/schematic.yaml
+          cat tofu/shared/schematic.yaml
+          echo "::endgroup::"
+          # Capture body on error too — drop -f so curl doesn't squelch
+          # the 400 response body from factory.
+          schematic_response=$(curl -sS -w '\n__HTTP__%{http_code}' -X POST \
+            https://factory.talos.dev/schematics \
             -H "Content-Type: application/yaml" \
-            --data-binary @tofu/shared/schematic.yaml | jq -r '.id')
+            --data-binary @tofu/shared/schematic.yaml)
+          schematic_http=$(echo "$schematic_response" | tail -1 | sed 's/^__HTTP__//')
+          schematic_body=$(echo "$schematic_response" | head -n -1)
+          echo "factory http=$schematic_http body=$schematic_body"
+          if [[ "$schematic_http" != "200" ]]; then
+            echo "::error::factory rejected schematic (HTTP $schematic_http): $schematic_body"
+            exit 1
+          fi
+          SCHEMATIC_ID=$(echo "$schematic_body" | jq -r '.id')
           if [[ -z "$SCHEMATIC_ID" || "$SCHEMATIC_ID" == "null" ]]; then
             echo "::error::failed to resolve Talos schematic id"
             exit 1
