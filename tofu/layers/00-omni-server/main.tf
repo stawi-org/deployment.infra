@@ -19,14 +19,21 @@ provider "contabo" {
   oauth2_pass          = module.contabo_account_state.auth.auth.oauth2_pass
 }
 
-# Contabo image ID is sourced from terraform.tfvars (alongside SSH
-# pubkeys). Both are non-sensitive and committed to the repo —
-# tofu-managed, not GH-Actions-secret-managed. The Contabo provider's
-# data "contabo_image" data source only looks up by ID, not by name,
-# so name-resolution can't be done here at apply time. Operator runs
-# `curl -H "Authorization: Bearer $token"
-#   https://api.contabo.com/v1/compute/images?name=Ubuntu 24.04`
-# once at setup, drops the ID into terraform.tfvars.
+# Resolve the Contabo Ubuntu 24.04 LTS image ID at plan time using the
+# same OAuth2 creds we just gave the contabo provider. The provider's
+# data "contabo_image" only looks up by exact UUID, so name-resolution
+# lives in this small module (two http data sources). No operator
+# action, no opaque IDs in tfvars, no secrets exposed outside CI.
+module "ubuntu_24_04_image" {
+  source = "../../modules/contabo-image-lookup"
+
+  name_pattern   = "^Ubuntu 24\\.04"
+  standard_image = true
+  client_id      = module.contabo_account_state.auth.auth.oauth2_client_id
+  client_secret  = module.contabo_account_state.auth.auth.oauth2_client_secret
+  api_user       = module.contabo_account_state.auth.auth.oauth2_user
+  api_password   = module.contabo_account_state.auth.auth.oauth2_pass
+}
 
 provider "aws" {
   region                      = "auto"
@@ -78,7 +85,7 @@ module "omni_host" {
   source = "../../modules/omni-host"
 
   name                           = "cluster-omni-contabo"
-  contabo_image_id               = var.contabo_ubuntu_24_04_image_id
+  contabo_image_id               = module.ubuntu_24_04_image.image_id
   omni_version                   = var.omni_version
   dex_version                    = var.dex_version
   cloudflared_version            = var.cloudflared_version

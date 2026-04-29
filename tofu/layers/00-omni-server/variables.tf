@@ -24,17 +24,6 @@ variable "cloudflare_zone_id_stawi" {
   description = "Cloudflare zone ID for stawi.org."
 }
 
-variable "contabo_ubuntu_24_04_image_id" {
-  type        = string
-  description = "Contabo image ID for Ubuntu 24.04 LTS Minimal. Look up once via the Contabo API and pin in terraform.tfvars; image IDs are stable per Contabo's catalog. Not sensitive — public catalog data."
-  default     = ""
-
-  validation {
-    condition     = var.contabo_ubuntu_24_04_image_id != ""
-    error_message = "Set contabo_ubuntu_24_04_image_id in tofu/layers/00-omni-server/terraform.tfvars. Look it up via: curl -X POST https://auth.contabo.com/auth/realms/contabo/protocol/openid-connect/token -d 'grant_type=password&client_id=$ID&client_secret=$SECRET&username=$USER&password=$PASS' | jq -r .access_token, then curl -H 'Authorization: Bearer <token>' 'https://api.contabo.com/v1/compute/images' | jq '.data[] | select(.name | contains(\"Ubuntu 24.04\"))'."
-  }
-}
-
 variable "local_inventory_dir" {
   type        = string
   default     = "/tmp/inventory"
