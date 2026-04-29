@@ -205,7 +205,11 @@ write_files:
 
 runcmd:
   - install -d -o root -g root -m 0700 /var/lib/omni
-  - install -d -o root -g root -m 0700 /var/lib/dex
+  # dexidp/dex container runs as uid 1001; the dex.db sqlite file
+  # lives under /var/lib/dex and the container needs to write to
+  # it. Owning the host dir as 1001:1001 lets the container write
+  # without --user=root or chmod 0777.
+  - install -d -o 1001 -g 1001 -m 0700 /var/lib/dex
   - install -d -o root -g root -m 0700 /var/lib/caddy
   - systemctl daemon-reload
   - systemctl enable --now fail2ban.service
