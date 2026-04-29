@@ -18,17 +18,33 @@ client_secret=$(echo "$input"| jq -r .client_secret)
 api_user=$(echo "$input"     | jq -r .api_user)
 api_password=$(echo "$input" | jq -r .api_password)
 
-token=$(curl -fsS -X POST 'https://auth.contabo.com/auth/realms/contabo/protocol/openid-connect/token' \
-  -H 'Content-Type: application/x-www-form-urlencoded' \
-  --data-urlencode "grant_type=password" \
-  --data-urlencode "client_id=$client_id" \
-  --data-urlencode "client_secret=$client_secret" \
-  --data-urlencode "username=$api_user" \
-  --data-urlencode "password=$api_password" \
-  | jq -r .access_token)
+# Contabo's KeyCloak occasionally returns 401 invalid_grant for valid
+# credentials — same call succeeds on retry. Retry up to 6 times with
+# 5s backoff before giving up.
+token=""
+for token_attempt in $(seq 1 6); do
+  resp=$(curl -sS -X POST 'https://auth.contabo.com/auth/realms/contabo/protocol/openid-connect/token' \
+    -H 'Content-Type: application/x-www-form-urlencoded' \
+    --data-urlencode "grant_type=password" \
+    --data-urlencode "client_id=$client_id" \
+    --data-urlencode "client_secret=$client_secret" \
+    --data-urlencode "username=$api_user" \
+    --data-urlencode "password=$api_password" \
+    -w '\n%{http_code}') || true
+  http_code=$(echo "$resp" | tail -n1)
+  body=$(echo "$resp" | sed '$d')
+  if [[ "$http_code" == "200" ]]; then
+    token=$(echo "$body" | jq -r .access_token)
+    if [[ -n "$token" && "$token" != "null" ]]; then
+      break
+    fi
+  fi
+  echo "OAuth token attempt $token_attempt failed (HTTP $http_code), retrying in 5s..." >&2
+  sleep 5
+done
 
 if [[ -z "$token" || "$token" == "null" ]]; then
-  echo "ERROR: failed to obtain Contabo OAuth2 token" >&2
+  echo "ERROR: failed to obtain Contabo OAuth2 token after 6 attempts" >&2
   exit 1
 fi
 
