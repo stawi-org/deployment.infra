@@ -31,6 +31,7 @@ locals {
       omni_version                         = var.omni_version
       dex_version                          = var.dex_version
       caddy_version                        = var.caddy_version
+      omni_account_id                      = random_uuid.omni_account_id.result
       omni_account_name                    = var.omni_account_name
       siderolink_api_advertised_host       = var.siderolink_api_advertised_host
       siderolink_wireguard_advertised_host = var.siderolink_wireguard_advertised_host
@@ -46,7 +47,6 @@ locals {
     {
       name                           = var.name
       docker_compose_yaml            = local.docker_compose_yaml
-      omni_account_id                = random_uuid.omni_account_id.result
       dex_omni_client_secret         = random_password.dex_omni_client_secret.result
       siderolink_api_advertised_host = var.siderolink_api_advertised_host
       github_oidc_client_id          = var.github_oidc_client_id
