@@ -29,7 +29,7 @@ write_files:
     permissions: "0640"
     owner: root:root
     content: |
-${indent(6, docker_compose_yaml)}
+      ${indent(6, docker_compose_yaml)}
 
   - path: /etc/omni/omni.env
     permissions: "0600"
@@ -48,12 +48,12 @@ ${indent(6, docker_compose_yaml)}
     permissions: "0644"
     owner: root:root
     content: |
-${indent(6, tls_cert_pem)}
+      ${indent(6, tls_cert_pem)}
   - path: /etc/omni/certs/server.key
     permissions: "0600"
     owner: root:root
     content: |
-${indent(6, tls_key_pem)}
+      ${indent(6, tls_key_pem)}
 
   - path: /etc/dex/config.yaml
     permissions: "0640"
