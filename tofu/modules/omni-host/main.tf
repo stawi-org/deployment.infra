@@ -69,20 +69,15 @@ resource "contabo_instance" "this" {
   user_data    = local.user_data
   period       = 1
 
-  # IMPORTANT: user_data is intentionally frozen post-creation. cloud-init
-  # runs once at first boot; re-applying user_data does NOT re-run cloud-init
-  # on the live VM. Tofu plan will silently swallow template-variable changes
-  # (omni_version, dex_version, etc.) without visible diff.
-  #
-  # To push config changes to a running host:
-  #   - Minor (bump container tags / rotate env / cert renewal): serial-console
-  #     in, edit /etc/omni/{docker-compose.yaml,*.env,certs/*}, then
-  #     `systemctl restart omni-stack.service`.
-  #   - Major (OS / packages / cloud-init structure): `tofu taint
-  #     module.omni_host.contabo_instance.this` then `tofu apply` to
-  #     destroy+recreate. Restore /var/lib/omni from your backup before
-  #     re-enabling — losing the keys directory means losing every cluster.
+  # Contabo VPSs are NEVER destroyed/replaced via tofu. The first apply
+  # creates the instance with the current rendered user_data; the disk
+  # is then frozen from tofu's perspective. To push changes (Omni
+  # version bump, cert rotation, cloud-init structural changes), the
+  # operator triggers a Reinstall through the Contabo dashboard and
+  # pastes the latest rendered user_data (`tofu output -raw user_data`).
+  # ignore_changes on user_data + image_id keeps tofu from fighting
+  # the operator's manual reinstall.
   lifecycle {
-    ignore_changes = [user_data]
+    ignore_changes = [user_data, image_id]
   }
 }
