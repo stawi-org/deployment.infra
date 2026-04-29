@@ -104,19 +104,22 @@ write_files:
           redirectURIs: [https://${siderolink_api_advertised_host}/oauth/callback]
           name: Omni
 
-  # Nginx terminates TLS on :443 with the origin cert, path-routes
-  # /dex/* to Dex, and content-type-routes the rest to Omni's main API
-  # (gRPC-Web from the browser → grpc_pass; HTTP → proxy_pass). Mirrors
-  # Sidero's recommended pattern in expose-omni-with-nginx-https. Talos
-  # endpoints (cpd.<zone>:8090, :8100, :50180/udp) bypass nginx and
-  # talk to Omni directly.
+  # nginx terminates TLS only for cp.<zone> (browser dashboard via
+  # Cloudflare orange cloud). For cpd.<zone>:8090 (Talos machine-api)
+  # and cpd.<zone>:8100 (k8s-proxy) nginx is a pure TCP passthrough
+  # via the stream module — Omni serves its TLS directly to Talos
+  # clients on those paths, using the same multi-SAN CF Origin Cert.
+  # All Omni listeners bind 127.0.0.1; nginx is the only public-facing
+  # listener on every port.
   #
-  # Upstream protocol: Omni's main UI listener is HTTPS because
-  # --cert/--key TLS-enable every Omni listener (those flags are also
-  # required for the k8s-proxy listener at :8100). So 127.0.0.1:8080
-  # is HTTPS, not HTTP. Nginx reverse-proxies with proxy_ssl_verify off
-  # because the origin cert's SAN list doesn't include 127.0.0.1 — the
-  # connection is loopback, not an attack surface.
+  # NOTE on the cp upstream protocol: Omni's UI listener at
+  # 127.0.0.1:18080 is HTTPS because --cert/--key TLS-enables it (those
+  # flags are also the ones that enable k8s-proxy TLS, which we need
+  # for the passthrough below — we cannot drop them just for the UI).
+  # nginx therefore reverse-proxies the UI with proxy_pass https:// +
+  # proxy_ssl_verify off. Loopback isn't an attack surface, and there
+  # is exactly one PUBLIC TLS endpoint per port (which is what the
+  # "no double termination" rule was actually about).
   - path: /etc/omni/nginx.conf
     permissions: "0644"
     content: |
@@ -124,12 +127,36 @@ write_files:
       pid /run/nginx.pid;
       events { worker_connections 4096; }
 
+      # ---- TCP passthrough for Talos-facing endpoints --------------
+      # Forward the TCP stream byte-for-byte to Omni's loopback
+      # listeners. Omni serves the CF Origin Cert directly to Talos
+      # clients; nginx never decrypts. ssl_preread is OFF because we
+      # don't need SNI-based routing (one upstream per port).
+      stream {
+        # Omni binds 127.0.0.1:18090 / 127.0.0.1:18100 — see the
+        # docker-compose template for the +10000 port-offset rationale.
+        server {
+          listen 0.0.0.0:8090;
+          listen [::]:8090;
+          proxy_pass 127.0.0.1:18090;
+          proxy_timeout 1h;
+          proxy_connect_timeout 60s;
+        }
+
+        server {
+          listen 0.0.0.0:8100;
+          listen [::]:8100;
+          proxy_pass 127.0.0.1:18100;
+          proxy_timeout 1h;
+          proxy_connect_timeout 60s;
+        }
+      }
+
+      # ---- HTTP termination for cp.<zone> dashboard ----------------
       http {
         proxy_redirect off;
         proxy_http_version 1.1;
         proxy_connect_timeout 60s;
-        # Omni needs long timeouts for the long-lived connections it
-        # serves (gRPC streams, websockets, SSE).
         proxy_send_timeout 1h;
         proxy_read_timeout 1h;
 
@@ -165,7 +192,6 @@ write_files:
             proxy_set_header X-Forwarded-Proto $scheme;
           }
 
-          # Omni main API — Content-Type routes to gRPC or HTTP upstream.
           location / {
             error_page 418 = @grpc;
             error_page 419 = @http;
@@ -176,12 +202,12 @@ write_files:
           location @grpc {
             grpc_read_timeout 1h;
             grpc_send_timeout 1h;
-            grpc_pass grpcs://127.0.0.1:8080;
+            grpc_pass grpcs://127.0.0.1:18080;
             grpc_ssl_verify off;
           }
 
           location @http {
-            proxy_pass https://127.0.0.1:8080;
+            proxy_pass https://127.0.0.1:18080;
             proxy_ssl_verify off;
             proxy_set_header Upgrade           $http_upgrade;
             proxy_set_header Connection        $connection_upgrade;
@@ -249,6 +275,9 @@ write_files:
       }
 
       probe_machine_api() {
+        # Hit nginx's stream listener (public face) which forwards to
+        # Omni's loopback bind on 127.0.0.1:18090. We probe the public
+        # listener so a nginx misconfig fails the smoke check too.
         local code
         code=$(curl -sS -k -o /dev/null -w '%%{http_code}' --max-time 5 \
           https://127.0.0.1:8090/ 2>/dev/null || true)
