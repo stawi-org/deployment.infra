@@ -70,7 +70,7 @@ resource "cloudflare_dns_record" "cp_stawi" {
   content = "192.0.2.1" # TEST-NET-1 placeholder — overwritten by cloud-init.
   proxied = true
   ttl     = 1
-  comment = "Self-hosted Omni UI — orange-cloud (CF proxies HTTPS, accepts origin cert at edge). Content patched by VPS cloud-init."
+  comment = "Omni UI — orange-cloud; content patched by VPS cloud-init."
   lifecycle {
     ignore_changes = [content, comment]
   }
@@ -87,7 +87,7 @@ resource "cloudflare_dns_record" "cpd_stawi" {
   content = "192.0.2.1" # TEST-NET-1 placeholder — overwritten by cloud-init.
   proxied = false
   ttl     = 300
-  comment = "Talos-facing Omni endpoints (machine-api :8090, k8s-proxy :8100, WG :50180/udp) — gray-cloud direct. Content patched by VPS cloud-init."
+  comment = "Omni Talos-facing (8090/8100/50180) — gray-cloud; patched by cloud-init."
   lifecycle {
     ignore_changes = [content, comment]
   }

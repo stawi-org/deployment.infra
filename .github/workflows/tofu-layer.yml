@@ -395,6 +395,11 @@ jobs:
         if: inputs.pre_apply_state_rm != ''
         working-directory: tofu/layers/${{ inputs.layer }}
         env:
+          # state rm hits the R2 backend; needs the same creds as
+          # init/apply.
+          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
           TF_VAR_account_key: ${{ inputs.account }}
         run: |
           set -euo pipefail
