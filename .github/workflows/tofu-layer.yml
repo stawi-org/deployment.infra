@@ -194,9 +194,30 @@ jobs:
             echo "::error::could not read talos_version from tofu/shared/versions.auto.tfvars.json"
             exit 1
           fi
+          # Render tofu/shared/schematic.yaml.tftpl — substitute
+          # ${siderolink_url} with the env value (empty during Phase A,
+          # populated post-Omni-bootstrap) and strip the conditional
+          # cmdline arg block when the URL is empty. Same algorithm
+          # tofu's templatefile() applies, just inline so we don't
+          # need a tofu init at this step.
+          export SIDEROLINK_URL="${OMNI_SIDEROLINK_URL:-}"
+          python3 - <<PYEOF > /tmp/schematic.rendered.yaml
+          import os, re
+          src = open('tofu/shared/schematic.yaml.tftpl').read()
+          url = os.environ.get('SIDEROLINK_URL', '')
+          # Strip %{ if siderolink_url != "" ~} ... %{ endif ~} block
+          # when URL is empty; otherwise keep contents and substitute.
+          if url:
+              src = re.sub(r'%\{ if siderolink_url != "" ~\}\s*', '', src)
+              src = re.sub(r'%\{ endif ~\}\s*', '', src)
+              src = src.replace('${siderolink_url}', url)
+          else:
+              src = re.sub(r'%\{ if siderolink_url != "" ~\}.*?%\{ endif ~\}\n?', '', src, flags=re.DOTALL)
+          print(src, end='')
+          PYEOF
           SCHEMATIC_ID=$(curl -fsSL -X POST https://factory.talos.dev/schematics \
             -H "Content-Type: application/yaml" \
-            --data-binary @tofu/shared/schematic.yaml | jq -r '.id')
+            --data-binary @/tmp/schematic.rendered.yaml | jq -r '.id')
           if [[ -z "$SCHEMATIC_ID" || "$SCHEMATIC_ID" == "null" ]]; then
             echo "::error::failed to resolve Talos schematic id"
             exit 1
