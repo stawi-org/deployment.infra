@@ -26,8 +26,10 @@ on:
       # Omni-host (00-omni-server layer) — Dex OIDC into Omni via a
       # GitHub OAuth App. Required only for the omni-server layer's
       # apply; other layers ignore unrecognised secret names.
-      GITHUB_OIDC_CLIENT_ID:     { required: false }
-      GITHUB_OIDC_CLIENT_SECRET: { required: false }
+      # GitHub reserves the GITHUB_ prefix, so secrets are namespaced
+      # under OMNI_DEX_*.
+      OMNI_DEX_GITHUB_CLIENT_ID:     { required: false }
+      OMNI_DEX_GITHUB_CLIENT_SECRET: { required: false }
       # OCI accounts now come exclusively from production/config/ under R2.
       # The workflow syncs the provider/account YAML files and aggregates them.
       # Repository variable:
@@ -367,17 +369,16 @@ jobs:
           TF_VAR_etcd_backup_r2_access_key_id:     ${{ secrets.ETCD_BACKUP_R2_ACCESS_KEY_ID }}
           TF_VAR_etcd_backup_r2_secret_access_key: ${{ secrets.ETCD_BACKUP_R2_SECRET_ACCESS_KEY }}
           TF_VAR_age_recipients:                   ${{ vars.SOPS_AGE_RECIPIENTS }}
-          # Omni-host (00-omni-server layer). All but the OIDC pair
-          # are repository vars; the OIDC pair is sensitive. Empty
-          # values are tolerated by other layers (they ignore
-          # unrecognised TF_VAR_*).
+          # Omni-host (00-omni-server layer). Cloudflare IDs are repo
+          # vars; the GitHub OIDC pair is sensitive. Other Omni-host
+          # config (Ubuntu image ID, SSH keys, versions) is sourced
+          # via tofu data lookups + terraform.tfvars in the layer
+          # itself — no workflow-level pass-through needed.
           TF_VAR_cloudflare_account_id:          ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           TF_VAR_cloudflare_zone_id_antinvestor: ${{ vars.CLOUDFLARE_ZONE_ID_ANTINVESTOR }}
           TF_VAR_cloudflare_zone_id_stawi:       ${{ vars.CLOUDFLARE_ZONE_ID_STAWI }}
-          TF_VAR_contabo_ubuntu_24_04_image_id:  ${{ vars.CONTABO_UBUNTU_24_04_IMAGE_ID }}
-          TF_VAR_ssh_authorized_keys:            ${{ vars.SSH_AUTHORIZED_KEYS }}
-          TF_VAR_github_oidc_client_id:          ${{ secrets.GITHUB_OIDC_CLIENT_ID }}
-          TF_VAR_github_oidc_client_secret:      ${{ secrets.GITHUB_OIDC_CLIENT_SECRET }}
+          TF_VAR_github_oidc_client_id:          ${{ secrets.OMNI_DEX_GITHUB_CLIENT_ID }}
+          TF_VAR_github_oidc_client_secret:      ${{ secrets.OMNI_DEX_GITHUB_CLIENT_SECRET }}
           # Per-account-state layers (01-contabo-infra, 02-oracle-infra,
           # 02-onprem-infra) read var.account_key to scope their
           # for_each maps to a single account; harmless on layers that

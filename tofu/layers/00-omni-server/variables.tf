@@ -26,12 +26,25 @@ variable "cloudflare_zone_id_stawi" {
 
 variable "ssh_authorized_keys" {
   type        = list(string)
-  description = "SSH keys allowed during cloud-init bootstrap and break-glass via Contabo console."
+  description = "SSH public keys for cloud-init bootstrap + break-glass via Contabo console. Public keys are not secrets — set the value in tofu/layers/00-omni-server/terraform.tfvars (committed to repo)."
+  default     = []
 }
 
 variable "contabo_ubuntu_24_04_image_id" {
   type        = string
-  description = "Contabo image ID for Ubuntu 24.04 LTS Minimal. Look up via Contabo API; pin here for reproducibility."
+  description = "Contabo image ID for Ubuntu 24.04 LTS Minimal. Look up once via the Contabo API and pin in terraform.tfvars; image IDs are stable per Contabo's catalog. Not sensitive — public catalog data."
+  default     = ""
+
+  validation {
+    condition     = var.contabo_ubuntu_24_04_image_id != ""
+    error_message = "Set contabo_ubuntu_24_04_image_id in tofu/layers/00-omni-server/terraform.tfvars. Look it up via: curl -X POST https://auth.contabo.com/auth/realms/contabo/protocol/openid-connect/token -d 'grant_type=password&client_id=$ID&client_secret=$SECRET&username=$USER&password=$PASS' | jq -r .access_token, then curl -H 'Authorization: Bearer <token>' 'https://api.contabo.com/v1/compute/images' | jq '.data[] | select(.name | contains(\"Ubuntu 24.04\"))'."
+  }
+}
+
+variable "local_inventory_dir" {
+  type        = string
+  default     = "/tmp/inventory"
+  description = "Local mirror of the R2 inventory bucket. node-state reads/writes here; the workflow `aws s3 sync`s it before init. Contabo OAuth2 creds for the bwire account live under this dir at contabo/bwire/auth.yaml (sopsed)."
 }
 
 variable "github_oidc_client_id" {

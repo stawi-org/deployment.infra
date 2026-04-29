@@ -2,6 +2,32 @@ provider "cloudflare" {
   api_token = var.cloudflare_api_token
 }
 
+# Read Contabo OAuth2 credentials from R2-backed sopsed inventory —
+# same pattern layer 01 uses. The omni-host lives in the bwire account.
+module "contabo_account_state" {
+  source              = "../../modules/node-state"
+  provider_name       = "contabo"
+  account             = "bwire"
+  age_recipients      = split(",", var.age_recipients)
+  local_inventory_dir = "/tmp/inventory"
+}
+
+provider "contabo" {
+  oauth2_client_id     = module.contabo_account_state.auth.auth.oauth2_client_id
+  oauth2_client_secret = module.contabo_account_state.auth.auth.oauth2_client_secret
+  oauth2_user          = module.contabo_account_state.auth.auth.oauth2_user
+  oauth2_pass          = module.contabo_account_state.auth.auth.oauth2_pass
+}
+
+# Contabo image ID is sourced from terraform.tfvars (alongside SSH
+# pubkeys). Both are non-sensitive and committed to the repo —
+# tofu-managed, not GH-Actions-secret-managed. The Contabo provider's
+# data "contabo_image" data source only looks up by ID, not by name,
+# so name-resolution can't be done here at apply time. Operator runs
+# `curl -H "Authorization: Bearer $token"
+#   https://api.contabo.com/v1/compute/images?name=Ubuntu 24.04`
+# once at setup, drops the ID into terraform.tfvars.
+
 provider "aws" {
   region                      = "auto"
   s3_use_path_style           = true
