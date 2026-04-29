@@ -21,10 +21,9 @@ module "h" {
   tls_cert_pem = "FAKE-CERT-FOR-VALIDATE-ONLY"
   tls_key_pem  = "FAKE-KEY-FOR-VALIDATE-ONLY"
   initial_users = ["test@example.com"]
-  contabo_client_id = "fake"
-  contabo_client_secret = "fake"
-  contabo_api_user = "fake"
-  contabo_api_password = "fake"
+  cloudflare_api_token = "fake"
+  cloudflare_zone_id = "zid"
+  cloudflare_dns_record_ids = { cp = "rec1", cpd = "rec2" }
 }
 output "ud" {
   value     = module.h.user_data

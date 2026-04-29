@@ -3,12 +3,8 @@ output "omni_url" {
   description = "Public Omni endpoint."
 }
 
-output "omni_host_ipv4" {
-  value = module.omni_host.ipv4
-}
-
-output "omni_host_ipv6" {
-  value = module.omni_host.ipv6
+output "omni_host_instance_id" {
+  value = module.omni_host.instance_id
 }
 
 output "dex_omni_client_secret" {

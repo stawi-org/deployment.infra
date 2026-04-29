@@ -58,27 +58,26 @@ variable "github_oidc_allowed_orgs" {
   default = ["stawi-org"]
 }
 
-# Contabo OAuth2 credentials are also needed inside the module so the
-# wait-for-contabo-ip.sh script can poll Contabo's API for the
-# async-assigned IP after instance creation.
-variable "contabo_client_id" {
+# Cloudflare API access — passed to the VPS so cloud-init can patch
+# the cp.<zone> + cpd.<zone> DNS records with the VPS's actual public
+# IP at first boot. Tofu cannot do this itself: Contabo assigns the
+# IP async post-create, and the contabo terraform provider's resource
+# Read does not refresh ip_config, so a same-apply downstream DNS
+# resource sees an empty value. Letting the VPS fix its own DNS is
+# the most robust path.
+variable "cloudflare_api_token" {
   type      = string
   sensitive = true
 }
 
-variable "contabo_client_secret" {
-  type      = string
-  sensitive = true
+variable "cloudflare_zone_id" {
+  type        = string
+  description = "Zone ID for the DNS hostnames the VPS owns (e.g. stawi.org)."
 }
 
-variable "contabo_api_user" {
-  type      = string
-  sensitive = true
-}
-
-variable "contabo_api_password" {
-  type      = string
-  sensitive = true
+variable "cloudflare_dns_record_ids" {
+  type        = map(string)
+  description = "Map of short hostname → CF DNS record ID. cloud-init PATCHes each record's content with the VPS's resolved public IP. Pre-created in tofu so the IDs are known."
 }
 
 variable "tls_cert_pem" {
