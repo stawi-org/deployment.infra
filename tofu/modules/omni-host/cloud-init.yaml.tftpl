@@ -99,6 +99,13 @@ write_files:
   # so all browser traffic for cp.<zone> goes through Caddy. Talos
   # endpoints (cpd.<zone>:8090, :8100, :50180/udp) bypass Caddy and
   # talk to Omni directly.
+  #
+  # Upstream protocol: Omni's main listener serves HTTPS using the same
+  # --cert/--key (those flags are also required for the k8s-proxy
+  # listener, which Talos clients reach via cpd.<zone>:8100). So
+  # 127.0.0.1:8080 is HTTPS, not HTTP. Caddy reverse-proxies with
+  # tls_insecure_skip_verify because the origin cert's SAN list doesn't
+  # include 127.0.0.1 — the connection is loopback, not an attack surface.
   - path: /etc/caddy/Caddyfile
     permissions: "0644"
     content: |
@@ -111,7 +118,11 @@ write_files:
           reverse_proxy http://127.0.0.1:5556
         }
         handle {
-          reverse_proxy http://127.0.0.1:8080
+          reverse_proxy https://127.0.0.1:8080 {
+            transport http {
+              tls_insecure_skip_verify
+            }
+          }
         }
       }
 
