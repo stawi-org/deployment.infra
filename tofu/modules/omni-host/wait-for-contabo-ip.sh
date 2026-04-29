@@ -49,19 +49,30 @@ if [[ -z "$token" || "$token" == "null" ]]; then
 fi
 
 # Up to ~5 minutes — Contabo VPS provisioning typically settles in <2 min.
+# Don't fail-fast on HTTP errors: KeyCloak / API gateway 401s are
+# transient just like the token-fetch ones, so we just keep polling.
+last_status=""
+last_body=""
 for attempt in $(seq 1 60); do
-  resp=$(curl -fsS "https://api.contabo.com/v1/compute/instances/$instance_id" \
+  resp=$(curl -sS "https://api.contabo.com/v1/compute/instances/$instance_id" \
     -H "Authorization: Bearer $token" \
     -H "x-request-id: 00000000-0000-0000-0000-000000000001" \
-    -H 'Accept: application/json')
-  ip=$(echo "$resp" | jq -r '.data[0].ipConfig.v4.ip // empty')
-  if [[ -n "$ip" && "$ip" != "null" ]]; then
-    jq -nc --arg ip "$ip" '{ipv4: $ip}'
-    echo "Contabo instance $instance_id got IP $ip on attempt $attempt." >&2
-    exit 0
+    -H 'Accept: application/json' \
+    -w '\n%{http_code}') || true
+  last_status=$(echo "$resp" | tail -n1)
+  last_body=$(echo "$resp" | sed '$d')
+  if [[ "$last_status" == "200" ]]; then
+    ip=$(echo "$last_body" | jq -r '.data[0].ipConfig.v4.ip // empty')
+    if [[ -n "$ip" && "$ip" != "null" ]]; then
+      jq -nc --arg ip "$ip" '{ipv4: $ip}'
+      echo "Contabo instance $instance_id got IP $ip on attempt $attempt." >&2
+      exit 0
+    fi
+  else
+    echo "Instance lookup attempt $attempt: HTTP $last_status, retrying in 5s..." >&2
   fi
   sleep 5
 done
 
-echo "ERROR: Contabo never assigned an IPv4 to instance $instance_id within 5 minutes" >&2
+echo "ERROR: Contabo never assigned an IPv4 to instance $instance_id within 5 minutes (last status=$last_status, body=$last_body)" >&2
 exit 1
