@@ -27,7 +27,7 @@ provider "contabo" {
 module "ubuntu_24_04_image" {
   source = "../../modules/contabo-image-lookup"
 
-  name_pattern   = "^Ubuntu 24\\.04"
+  name_pattern   = "^ubuntu-24\\.04$"
   standard_image = true
   client_id      = module.contabo_account_state.auth.auth.oauth2_client_id
   client_secret  = module.contabo_account_state.auth.auth.oauth2_client_secret
