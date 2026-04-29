@@ -62,6 +62,10 @@ module "omni_host" {
   tls_cert_pem                         = var.omni_tls_cert
   tls_key_pem                          = var.omni_tls_key
   initial_users                        = var.omni_initial_users
+  contabo_client_id                    = module.contabo_account_state.auth.auth.oauth2_client_id
+  contabo_client_secret                = module.contabo_account_state.auth.auth.oauth2_client_secret
+  contabo_api_user                     = module.contabo_account_state.auth.auth.oauth2_user
+  contabo_api_password                 = module.contabo_account_state.auth.auth.oauth2_pass
 }
 
 # Browser-facing UI: orange-cloud (Cloudflare proxies HTTPS, accepts the

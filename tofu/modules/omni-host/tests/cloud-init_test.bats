@@ -21,6 +21,10 @@ module "h" {
   tls_cert_pem = "FAKE-CERT-FOR-VALIDATE-ONLY"
   tls_key_pem  = "FAKE-KEY-FOR-VALIDATE-ONLY"
   initial_users = ["test@example.com"]
+  contabo_client_id = "fake"
+  contabo_client_secret = "fake"
+  contabo_api_user = "fake"
+  contabo_api_password = "fake"
 }
 output "ud" {
   value     = module.h.user_data

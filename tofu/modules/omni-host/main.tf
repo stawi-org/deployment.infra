@@ -81,3 +81,21 @@ resource "contabo_instance" "this" {
     ignore_changes = [user_data]
   }
 }
+
+# Contabo's create call returns immediately with the instance object but
+# no IP — the IP is assigned async (typically within ~30-90s but up to a
+# few minutes). The provider's resource Read does not repopulate
+# ip_config when the IP is later assigned, so a same-apply downstream
+# resource (the cp.<zone> A record below) sees an empty value and the
+# Cloudflare API rejects it. Poll Contabo's API ourselves and stash the
+# IP in state via data.external — survives across re-applies.
+data "external" "vps_ip" {
+  program = ["bash", "${path.module}/wait-for-contabo-ip.sh"]
+  query = {
+    instance_id   = contabo_instance.this.id
+    client_id     = var.contabo_client_id
+    client_secret = var.contabo_client_secret
+    api_user      = var.contabo_api_user
+    api_password  = var.contabo_api_password
+  }
+}

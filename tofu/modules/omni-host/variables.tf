@@ -58,6 +58,29 @@ variable "github_oidc_allowed_orgs" {
   default = ["stawi-org"]
 }
 
+# Contabo OAuth2 credentials are also needed inside the module so the
+# wait-for-contabo-ip.sh script can poll Contabo's API for the
+# async-assigned IP after instance creation.
+variable "contabo_client_id" {
+  type      = string
+  sensitive = true
+}
+
+variable "contabo_client_secret" {
+  type      = string
+  sensitive = true
+}
+
+variable "contabo_api_user" {
+  type      = string
+  sensitive = true
+}
+
+variable "contabo_api_password" {
+  type      = string
+  sensitive = true
+}
+
 variable "tls_cert_pem" {
   type        = string
   sensitive   = true
