@@ -1,31 +1,41 @@
 # tofu/modules/omni-host/main.tf
 #
-# Single Contabo VPS running Omni + Dex + cloudflared via docker-compose.
-# All configuration declarative via cloud-init; no SSH-driven setup.
+# Single Contabo VPS running Omni + Dex + Caddy via docker-compose. All
+# configuration declarative via cloud-init; no SSH-driven setup.
 #
 # License note: Omni is BSL-licensed (non-production self-host, option iii).
 # Revisit when Stawi has production revenue.
-#
-# Provider note: uses the existing repo-standard contabo/contabo provider
-# (same as tofu/modules/node-contabo). Provider credentials are wired at
-# the layer level (tofu/layers/00-omni-server) via the provider alias.
 
-resource "random_uuid" "omni_account_id" {}
+resource "random_uuid" "omni_account_id" {
+  # The Omni account ID is baked into every machine's SideroLink config.
+  # Rotating it (e.g. by re-creating the random_uuid resource via state
+  # rebuild) would orphan every cluster the host has ever provisioned —
+  # they'd reject the new ID's signed configs. Pin it.
+  lifecycle {
+    ignore_changes = [keepers]
+  }
+}
 
 resource "random_password" "dex_omni_client_secret" {
   length  = 64
   special = false
+  lifecycle {
+    ignore_changes = [length, special]
+  }
 }
 
 locals {
   docker_compose_yaml = templatefile(
     "${path.module}/docker-compose.yaml.tftpl",
     {
-      omni_version                   = var.omni_version
-      dex_version                    = var.dex_version
-      cloudflared_version            = var.cloudflared_version
-      omni_account_name              = var.omni_account_name
-      siderolink_api_advertised_host = var.siderolink_api_advertised_host
+      omni_version                         = var.omni_version
+      dex_version                          = var.dex_version
+      caddy_version                        = var.caddy_version
+      omni_account_name                    = var.omni_account_name
+      siderolink_api_advertised_host       = var.siderolink_api_advertised_host
+      siderolink_wireguard_advertised_host = var.siderolink_wireguard_advertised_host
+      dex_omni_client_secret               = random_password.dex_omni_client_secret.result
+      initial_users                        = var.initial_users
     }
   )
 
@@ -40,12 +50,8 @@ locals {
       github_oidc_client_id          = var.github_oidc_client_id
       github_oidc_client_secret      = var.github_oidc_client_secret
       github_oidc_allowed_orgs       = var.github_oidc_allowed_orgs
-      cloudflare_tunnel_token        = var.cloudflare_tunnel_token
-      r2_endpoint                    = var.r2_endpoint
-      r2_backup_access_key_id        = var.r2_backup_access_key_id
-      r2_backup_secret_access_key    = var.r2_backup_secret_access_key
-      r2_backup_bucket               = var.r2_backup_bucket
-      r2_backup_prefix               = var.r2_backup_prefix
+      tls_cert_pem                   = var.tls_cert_pem
+      tls_key_pem                    = var.tls_key_pem
     }
   )
 }
@@ -58,22 +64,19 @@ resource "contabo_instance" "this" {
   user_data    = local.user_data
   period       = 1
 
-  # IMPORTANT: user_data is intentionally frozen post-creation.
-  # cloud-init runs once at first boot; re-applying user_data does NOT
-  # re-run cloud-init on the live VM. Tofu plan will silently swallow
-  # any template-variable changes (omni_version, dex_version,
-  # cloudflare_tunnel_token, etc.) without visible diff.
+  # IMPORTANT: user_data is intentionally frozen post-creation. cloud-init
+  # runs once at first boot; re-applying user_data does NOT re-run cloud-init
+  # on the live VM. Tofu plan will silently swallow template-variable changes
+  # (omni_version, dex_version, etc.) without visible diff.
   #
-  # To push config changes to a running host, choose:
-  #   - Minor (bump container tags / rotate env): log in via Contabo
-  #     serial console (root password from Contabo dashboard), edit
-  #     /etc/omni/{docker-compose.yaml,*.env}, then
+  # To push config changes to a running host:
+  #   - Minor (bump container tags / rotate env / cert renewal): serial-console
+  #     in, edit /etc/omni/{docker-compose.yaml,*.env,certs/*}, then
   #     `systemctl restart omni-stack.service`.
   #   - Major (OS / packages / cloud-init structure): `tofu taint
   #     module.omni_host.contabo_instance.this` then `tofu apply` to
-  #     destroy+recreate. Restore the latest sqlite snapshot from R2.
-  #
-  # Rotating Dex/Tunnel secrets requires the major path.
+  #     destroy+recreate. Restore /var/lib/omni from your backup before
+  #     re-enabling — losing the keys directory means losing every cluster.
   lifecycle {
     ignore_changes = [user_data]
   }

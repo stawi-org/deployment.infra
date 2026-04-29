@@ -13,15 +13,14 @@ module "h" {
   contabo_image_id = "ubuntu-24.04"
   omni_version = "v1.4.6"
   dex_version = "v2.41.1"
-  cloudflared_version = "2025.10.1"
   omni_account_name = "stawi"
   siderolink_api_advertised_host = "cp.example.com"
+  siderolink_wireguard_advertised_host = "cpd.example.com"
   github_oidc_client_id = "abc"
   github_oidc_client_secret = "def"
-  cloudflare_tunnel_token = "ghi"
-  r2_endpoint = "https://x.r2.cloudflarestorage.com"
-  r2_backup_access_key_id = "k"
-  r2_backup_secret_access_key = "s"
+  tls_cert_pem = "FAKE-CERT-FOR-VALIDATE-ONLY"
+  tls_key_pem  = "FAKE-KEY-FOR-VALIDATE-ONLY"
+  initial_users = ["test@example.com"]
 }
 output "ud" {
   value     = module.h.user_data
