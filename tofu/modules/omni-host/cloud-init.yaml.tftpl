@@ -2,11 +2,26 @@
 hostname: ${name}
 fqdn: ${name}
 
-# No SSH user is provisioned. Inbound is open by default on Contabo
-# VPS; the security boundary is Omni's own auth (Dex+GitHub OIDC →
-# Omni admin role gated by --initial-users) and the SideroLink
-# WireGuard handshake (Curve25519). Break-glass is the Contabo serial
-# console.
+# Root SSH login enabled for the operator keys threaded in via tofu
+# (CONTABO_PUBLIC_SSH_KEY github secret). Used for diagnostics — Omni
+# container log inspection, in-place edits to /etc/omni/* config, etc.
+# The security boundary for the Omni control plane itself remains
+# Omni's own auth (Dex+GitHub OIDC, --initial-users gated) and the
+# SideroLink WireGuard handshake (Curve25519). Break-glass is the
+# Contabo serial console.
+
+users:
+  - name: root
+    lock_passwd: false
+%{ if length(ssh_authorized_keys) > 0 ~}
+    ssh_authorized_keys:
+%{ for key in ssh_authorized_keys ~}
+      - ${key}
+%{ endfor ~}
+%{ endif ~}
+
+ssh_pwauth: false
+disable_root: false
 
 apt:
   sources:
