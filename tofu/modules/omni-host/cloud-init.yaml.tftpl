@@ -50,12 +50,6 @@ write_files:
     content: |
       ${indent(6, docker_compose_yaml)}
 
-  - path: /etc/omni/omni.env
-    permissions: "0600"
-    owner: root:root
-    content: |
-      OMNI_ACCOUNT_ID=${omni_account_id}
-
   # TLS cert + key (Cloudflare Origin Certificate, supplied as tofu vars
   # from GitHub secrets). One multi-SAN cert covers cp.<zone> and
   # cpd.<zone> in both DNS zones. Browsers accept the cert at the
@@ -75,7 +69,7 @@ write_files:
       ${indent(6, tls_key_pem)}
 
   - path: /etc/dex/config.yaml
-    permissions: "0640"
+    permissions: "0644"
     owner: root:root
     content: |
       issuer: https://${siderolink_api_advertised_host}/dex
@@ -215,6 +209,8 @@ runcmd:
   - install -d -o root -g root -m 0700 /var/lib/caddy
   - systemctl daemon-reload
   - systemctl enable --now fail2ban.service
-  - systemctl reload sshd.service
+  # Ubuntu's sshd unit is named ssh.service (not sshd.service). Reload
+  # so the sshd_config.d/99-stawi.conf drop-in takes effect.
+  - systemctl reload ssh.service
   - systemctl enable --now omni-keys.service
   - systemctl enable --now omni-stack.service

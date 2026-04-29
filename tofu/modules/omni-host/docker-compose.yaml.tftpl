@@ -17,12 +17,13 @@ services:
       - /dev/net/tun:/dev/net/tun
     volumes:
       - /var/lib/omni:/var/lib/omni
-      - /etc/omni/omni.env:/etc/omni/omni.env:ro
       - /etc/omni/certs:/etc/omni/certs:ro
-    env_file:
-      - /etc/omni/omni.env
     command:
-      - --account-id=$${OMNI_ACCOUNT_ID}
+      # account-id is rendered as a literal at tofu time (the value is
+      # known — random_uuid.omni_account_id). docker-compose's command:
+      # array does NOT expand env_file vars, so $${OMNI_ACCOUNT_ID}
+      # would reach Omni unexpanded and fail schema validation.
+      - --account-id=${omni_account_id}
       - --name=${omni_account_name}
       # Storage — paths are inside the container; /var/lib/omni is a
       # bind mount so state persists across container restarts. Losing
@@ -42,7 +43,9 @@ services:
       - --machine-api-bind-addr=0.0.0.0:8090
       - --machine-api-cert=/etc/omni/certs/server.crt
       - --machine-api-key=/etc/omni/certs/server.key
-      - --siderolink-api-advertised-url=https://${siderolink_wireguard_advertised_host}:8090
+      # Renamed in v1.7+ from --siderolink-api-advertised-url; deprecation
+      # warning was non-fatal but sticking to the new flag.
+      - --machine-api-advertised-url=https://${siderolink_wireguard_advertised_host}:8090
       # Kubernetes proxy. Uses the same --cert/--key as the loopback
       # UI listener; we set them so this listener can serve TLS, even
       # though the UI side bypasses them via Caddy.
