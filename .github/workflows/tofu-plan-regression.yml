@@ -1,6 +1,9 @@
 # Catches layers that propose unexpected changes on a steady-state plan.
 # Runs after every tofu-plan on main/PR; fails if any layer has a non-zero
 # resource diff.
+#
+# Reads plan.json (rendered upstream by tofu-layer.yml so providers and
+# var.account_key are already in scope). Pure jq + bash — no tofu init.
 name: tofu-plan-regression
 on:
   workflow_run:
@@ -18,48 +21,35 @@ jobs:
         layer: [01-contabo-infra, 02-oracle-infra, 02-onprem-infra, 03-talos]
     steps:
       - uses: actions/checkout@v5
-      # tofu binary is needed for `tofu show -json <plan>` below.
-      - uses: opentofu/setup-opentofu@v2
-        with:
-          tofu_version: "1.10.0"
       # The three per-account-state layers (01-contabo-infra,
-      # 02-oracle-infra, 02-onprem-infra) upload one tfplan per account
-      # (tfplan-<layer>-<acct>); 03-talos uploads a single tfplan-<layer>.
-      # Glob with `*` so the regression check covers every per-account
-      # artifact while staying a single download for 03-talos.
+      # 02-oracle-infra, 02-onprem-infra) upload one artifact per
+      # account (tfplan-<layer>-<acct>); 03-talos uploads a single
+      # tfplan-<layer>. Glob with `*` so the regression check covers
+      # every per-account artifact while staying a single download for
+      # 03-talos. With v6 + multi-match the artifacts land in
+      # `artifacts/<artifact-name>/` — `find` walks them all uniformly.
       - uses: actions/download-artifact@v6
         with:
           pattern: tfplan-${{ matrix.layer }}*
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: artifacts
-      - name: Init layer (downloads provider plugins so `tofu show -json` can load schemas)
-        working-directory: tofu/layers/${{ matrix.layer }}
-        run: tofu init -backend=false -input=false
 
       - name: Assert zero resource diffs
-        # actions/download-artifact@v6 extracts each artifact into its
-        # own subdir under `path:`. With pattern matching multiple
-        # account-scoped uploads (tfplan-01-contabo-infra-bwire,
-        # tfplan-02-oracle-infra-bwire, …) we get one tfplan per
-        # subdir; `find` walks them all in one go. We `cd` into the
-        # layer dir so `tofu show` finds the plugins from `tofu init`.
-        working-directory: tofu/layers/${{ matrix.layer }}
         run: |
           set -euo pipefail
           shopt -s nullglob
-          mapfile -t plans < <(find "$GITHUB_WORKSPACE/artifacts" -name tfplan -type f 2>/dev/null)
+          mapfile -t plans < <(find artifacts -name plan.json -type f 2>/dev/null)
           if (( ${#plans[@]} == 0 )); then
-            echo "::error::no tfplan artifact found for ${{ matrix.layer }}"
+            echo "::error::no plan.json artifact found for ${{ matrix.layer }}"
             exit 1
           fi
           rc=0
           for p in "${plans[@]}" ; do
-            tofu show -json "$p" > plan.json
-            n=$(jq '[.resource_changes[] | select(.change.actions != ["no-op"] and .change.actions != ["read"])] | length' plan.json)
+            n=$(jq '[.resource_changes[] | select(.change.actions != ["no-op"] and .change.actions != ["read"])] | length' "$p")
             echo "::notice::artifact=$p non-noop-diffs=$n"
             if [ "$n" -ne 0 ]; then
-              jq '.resource_changes[] | select(.change.actions != ["no-op"] and .change.actions != ["read"]) | {address,actions:.change.actions}' plan.json
+              jq '.resource_changes[] | select(.change.actions != ["no-op"] and .change.actions != ["read"]) | {address,actions:.change.actions}' "$p"
               echo "::error::$p proposes $n changes on a steady-state plan"
               rc=1
             fi

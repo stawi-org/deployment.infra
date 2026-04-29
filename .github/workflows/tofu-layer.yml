@@ -482,6 +482,18 @@ jobs:
             exit $rc
           fi
 
+      # Render plan.json HERE while we still have providers + variables
+      # initialised. tofu-plan-regression.yml then reads plan.json with
+      # jq directly (no tofu init / no per-layer var.account_key shim).
+      - name: Render plan.json for regression check
+        if: inputs.mode == 'plan' || inputs.mode == 'apply'
+        working-directory: tofu/layers/${{ inputs.layer }}
+        env:
+          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          TF_VAR_account_key:    ${{ inputs.account }}
+        run: tofu show -json tfplan > plan.json
+
       # actions/upload-artifact@v4+ refuses duplicate names in a single
       # workflow run. With the per-account oracle matrix, every matrix
       # cell uploads its plan; suffix the artifact name with the account
@@ -491,7 +503,9 @@ jobs:
         if: inputs.mode == 'plan' || inputs.mode == 'apply'
         with:
           name: tfplan-${{ inputs.layer }}${{ inputs.account != '' && format('-{0}', inputs.account) || '' }}
-          path: tofu/layers/${{ inputs.layer }}/tfplan
+          path: |
+            tofu/layers/${{ inputs.layer }}/tfplan
+            tofu/layers/${{ inputs.layer }}/plan.json
           retention-days: 30
 
       - name: Apply
