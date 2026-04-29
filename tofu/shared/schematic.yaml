@@ -1,11 +1,25 @@
-# see : https://docs.siderolabs.com/talos/v1.12/platform-specific-installations/boot-assets
+# tofu/shared/schematic.yaml
+#
+# Static base for the Talos Image Factory schematic. The workflow's
+# "Stage Talos .oci archive" step uploads this verbatim to compute
+# the schematic_id used in qcow2 download URLs. Tofu's
+# talos_image_factory_schematic resource reads this same file and
+# may append additional extraKernelArgs at apply time (notably
+# `siderolink.api=...` when var.omni_siderolink_url is non-empty —
+# see image.tf in each layer that consumes the schematic). The
+# append produces a different schematic_id, which forces an image
+# rebuild — exactly what we want when the SideroLink URL changes.
 
 customization:
   extraKernelArgs:
     - ipv6.disable=0
-    # IPv6 optimizations for Contabo
-    - ipv6.autoconf=0        # Disable SLAAC, we use static config
+    - ipv6.autoconf=0
   systemExtensions:
     officialExtensions:
-      # Include useful extensions for networking diagnostics
       - siderolabs/util-linux-tools
+      # NOTE: SideroLink is built into Talos core (the apid daemon
+      # parses siderolink.api= from /proc/cmdline at boot). No extension
+      # is required to wire nodes to Omni — adding `siderolabs/
+      # siderolink-agent` here used to fail with "official extension
+      # ... is not available for Talos version v1.13.0" because that
+      # extension does not exist in the factory catalog.

@@ -6,7 +6,7 @@
 
 **Architecture:** Single Contabo VPS (`cluster-omni-contabo`, was `contabo-bwire-node-3`) running Ubuntu 24.04 LTS Minimal with a docker-compose stack of `omni` + `dex` + `cloudflared`. All config declarative via tofu-rendered cloud-init — no SSH-driven setup. Cloudflare orange-cloud at `cp.antinvestor.com` and `cp.stawi.org` proxies to the omni-host via CF Tunnel; no inbound ports on the VPS. Cluster nodes (Contabo CPs + OCI + on-prem) boot Talos with the `siderolink-agent` extension, dial home to Omni, get auto-allocated to `stawi-cluster`.
 
-**Tech Stack:** OpenTofu 1.10, Cloudflare R2 backend, Talos v1.13.0, Omni latest, Dex (OIDC proxy), cloudflared, docker-compose, Ubuntu 24.04 LTS, terraform-provider-omni.
+**Tech Stack:** OpenTofu 1.10, Cloudflare R2 backend, Talos v1.13.0, Omni latest, Dex (OIDC proxy), cloudflared, docker-compose, Ubuntu 24.04 LTS. **Cluster definition is YAML applied via `omnictl cluster template sync` — not a Terraform provider.** (No official `siderolabs/omni` provider exists; the community alternative is pre-alpha and lacks auto-allocation by labels.)
 
 **License posture:** BSL self-host non-production (option iii in the spec). Revisit when Stawi has revenue.
 
@@ -869,151 +869,84 @@ Apply runs after the existing antinvestor-cluster is torn down
 
 ---
 
-### Task 5: New tofu layer `03-omni-cluster`
+### Task 5: Cluster template YAML (NOT a tofu layer)
+
+**Why this is YAML, not tofu:** there is no official `siderolabs/omni` Terraform provider. The community `KittyKatt/omni` provider exists at `0.0.1-beta.1` with a pre-alpha schema and no auto-allocation by labels. Sidero's documented production path for cluster definition is YAML cluster templates applied via `omnictl cluster template sync -f`. That's what we use.
 
 **Files:**
-- Create: `tofu/layers/03-omni-cluster/main.tf`
-- Create: `tofu/layers/03-omni-cluster/backend.tf`
-- Create: `tofu/layers/03-omni-cluster/versions.tf`
-- Create: `tofu/layers/03-omni-cluster/outputs.tf`
-- Create: `tofu/layers/03-omni-cluster/sops-check.tf`
+- Create: `omni/templates/stawi-cluster.yaml`
 
-- [ ] **Step 5.1: Backend + versions**
+- [ ] **Step 5.1: Write the cluster template**
 
-`tofu/layers/03-omni-cluster/backend.tf`:
+`omni/templates/stawi-cluster.yaml`:
 
-```hcl
-terraform {
-  backend "s3" {
-    bucket                      = "cluster-tofu-state"
-    key                         = "production/03-omni-cluster.tfstate"
-    region                      = "auto"
-    encrypt                     = true
-    skip_credentials_validation = true
-    skip_metadata_api_check     = true
-    skip_region_validation      = true
-    skip_requesting_account_id  = true
-    use_path_style              = true
-  }
-}
+```yaml
+kind: Cluster
+name: stawi-cluster
+kubernetes:
+  version: v1.35.2
+talos:
+  version: v1.13.0
+features:
+  enableWorkloadProxy: true
+patches:
+  - name: allow-scheduling-on-controlplanes
+    inline:
+      cluster:
+        allowSchedulingOnControlPlanes: true
+  - name: cluster-network
+    inline:
+      cluster:
+        network:
+          cni:
+            name: flannel
+          podSubnets:
+            - fd00:10:244::/48
+            - 10.244.0.0/16
+          serviceSubnets:
+            - fd00:10:96::/112
+            - 10.96.0.0/12
+---
+kind: ControlPlane
+machineClass:
+  name: controlplane
+  matchLabels:
+    role: controlplane
+---
+kind: Workers
+machineClass:
+  name: workers
+  matchLabels:
+    role: worker
 ```
 
-`tofu/layers/03-omni-cluster/versions.tf`:
+`matchLabels` drives auto-allocation: any machine that registers with `role=controlplane` (set in the Talos config patch under `machine.nodeLabels`) joins the CP set automatically. No UUID enumeration, no per-node-add tofu apply.
 
-```hcl
-terraform {
-  required_version = ">= 1.10"
-  required_providers {
-    omni = {
-      source  = "siderolabs/omni"
-      version = "~> 0.5"
-    }
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.70"
-    }
-    sops = {
-      source  = "carlpett/sops"
-      version = "~> 1.1"
-    }
-  }
-}
-```
-
-- [ ] **Step 5.2: Cluster template**
-
-`tofu/layers/03-omni-cluster/main.tf`:
-
-```hcl
-data "terraform_remote_state" "omni_server" {
-  backend = "s3"
-  config = {
-    bucket   = "cluster-tofu-state"
-    key      = "production/00-omni-server.tfstate"
-    endpoint = "https://${var.r2_account_id}.r2.cloudflarestorage.com"
-    ...
-  }
-}
-
-provider "omni" {
-  endpoint = "https://cp.antinvestor.com"
-  service_account_key = var.omni_service_account_key
-}
-
-resource "omni_cluster" "stawi" {
-  name               = "stawi-cluster"
-  talos_version      = var.talos_version
-  kubernetes_version = var.kubernetes_version
-
-  features {
-    enable_workload_proxy = true
-  }
-}
-
-resource "omni_machine_class" "controlplane" {
-  name = "controlplane"
-  match_labels = ["role=controlplane"]
-}
-
-resource "omni_machine_class" "worker" {
-  name = "worker"
-  match_labels = ["role=worker"]
-}
-
-resource "omni_cluster_machine_class" "stawi_cp" {
-  cluster_name        = omni_cluster.stawi.name
-  machine_class_name  = omni_machine_class.controlplane.name
-  role                = "controlplane"
-  machine_count       = 3
-}
-
-resource "omni_cluster_machine_class" "stawi_workers" {
-  cluster_name        = omni_cluster.stawi.name
-  machine_class_name  = omni_machine_class.worker.name
-  role                = "worker"
-  machine_count       = -1  # all available
-}
-```
-
-- [ ] **Step 5.3: Outputs**
-
-```hcl
-output "siderolink_url" {
-  value = omni_cluster.stawi.siderolink_join_url
-  sensitive = true
-}
-
-output "kubeconfig" {
-  value = omni_cluster.stawi.kubeconfig
-  sensitive = true
-}
-
-output "talosconfig" {
-  value = omni_cluster.stawi.talosconfig
-  sensitive = true
-}
-```
-
-- [ ] **Step 5.4: Validate**
+- [ ] **Step 5.2: Validate the YAML syntactically**
 
 ```bash
-cd tofu/layers/03-omni-cluster
-tofu init -backend=false -input=false
-tofu validate
+python3 -c "import yaml, sys; list(yaml.safe_load_all(open('omni/templates/stawi-cluster.yaml')))" && echo "YAML OK"
 ```
 
-Expected: `Success!`. (Apply waits until Omni is reachable — Phase B step.)
+Full-fidelity validation requires `omnictl cluster template validate` against a live Omni server — that runs in Phase B step 7.1.
 
-- [ ] **Step 5.5: Commit**
+- [ ] **Step 5.3: Commit**
 
 ```bash
-git add tofu/layers/03-omni-cluster/
-git commit -m "tofu: add 03-omni-cluster layer (defines stawi-cluster in Omni)
+git add omni/templates/stawi-cluster.yaml
+git commit -m "omni: stawi-cluster template (applied via omnictl in Phase B)
 
-Uses terraform-provider-omni to declare stawi-cluster's template:
-talos version, k8s version, machine classes (controlplane/worker),
-auto-assignment rules. Apply depends on 00-omni-server's tofu
-state (Omni endpoint must be reachable)."
+Sidero Omni cluster template — multi-doc YAML defining stawi-cluster's
+identity, Talos and Kubernetes versions, cluster-wide config patches
+(podSubnets / serviceSubnets / Flannel / allowSchedulingOnControlPlanes),
+and machine-class auto-allocation by matchLabels.
+
+Applied with: omnictl cluster template sync -f omni/templates/stawi-cluster.yaml
+
+We don't use the terraform-provider-omni route — there is no official
+Sidero provider, and the community KittyKatt/omni provider is
+pre-alpha with no auto-allocation support. omnictl is Sidero's
+documented production path."
 ```
 
 ---
@@ -1094,16 +1027,16 @@ Save the service-account key + siderolink URL into the inventory's sopsed config
 
 ---
 
-### Task 7: Apply 03-omni-cluster + reimage cluster nodes
+### Task 7: Sync stawi-cluster YAML + reimage cluster nodes
 
-- [ ] **Step 7.1: Apply 03-omni-cluster**
+- [ ] **Step 7.1: Apply the cluster template via omnictl**
 
 ```bash
-gh workflow run tofu-apply.yml --ref main \
-  -f layer=03-omni-cluster -f mode=apply
+omnictl cluster template validate -f omni/templates/stawi-cluster.yaml
+omnictl cluster template sync -f omni/templates/stawi-cluster.yaml
 ```
 
-Expected: Omni now has a `stawi-cluster` template registered, awaiting machines.
+Expected: Omni now has a `stawi-cluster` template registered with the matchLabels-based machine classes, awaiting machines that come up with the right `role` label. No tofu state for this — the YAML is the source of truth and `omnictl cluster template sync` is idempotent (re-runnable on every change).
 
 - [ ] **Step 7.2: Set TF_VAR_omni_siderolink_url cluster-wide**
 
@@ -1164,7 +1097,7 @@ cd tofu/layers/04-flux
 gh workflow run tofu-apply.yml --ref main -f layer=04-flux -f mode=apply
 ```
 
-The 04-flux layer reads kubeconfig from 03-omni-cluster's outputs (replacing the 03-talos lookup). Flux deploys the same `deployment.manifests` repo state to the new cluster.
+The 04-flux layer reads the kubeconfig from a SOPS-encrypted file in R2 inventory (placed there by the operator after step 7.6: `omnictl kubeconfig --cluster stawi-cluster | sops --encrypt /dev/stdin > production/inventory/omni/stawi-cluster.kubeconfig.sops.yaml && aws s3 cp ...`). Flux deploys the same `deployment.manifests` repo state to the new cluster.
 
 - [ ] **Step 8.2: Verify workloads landed**
 
@@ -1228,7 +1161,7 @@ done
 
 ```bash
 tofu fmt -recursive tofu/
-for l in 00-omni-server 01-contabo-infra 02-oracle-infra 02-onprem-infra 03-omni-cluster 04-flux; do
+for l in 00-omni-server 01-contabo-infra 02-oracle-infra 02-onprem-infra 04-flux; do
   cd "tofu/layers/$l"
   tofu init -backend=false -input=false 2>&1 | tail -3
   tofu validate

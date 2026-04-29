@@ -47,3 +47,9 @@ variable "talos_qcow2_local_path" {
   default     = null
   description = "Local filesystem path to a pre-downloaded Talos oracle-arm64 QCOW2. When set, each oracle account (for which talos_image_source_uris has no entry) creates a per-account public-read Object Storage bucket and uploads the file. CI populates this from tofu-layer.yml's download step; shared across all OCI accounts since the schematic+version is global."
 }
+
+variable "omni_siderolink_url" {
+  type        = string
+  default     = ""
+  description = "Full siderolink URL injected into the boot cmdline, e.g. https://cp.antinvestor.com?jointoken=<token>. Empty string disables (transitional during the migration; non-empty after Phase A lands)."
+}

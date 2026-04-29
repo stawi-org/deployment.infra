@@ -1,0 +1,182 @@
+#cloud-config
+hostname: ${name}
+fqdn: ${name}
+
+# No SSH user is provisioned. iptables drops all inbound on this VM
+# (ESTABLISHED/RELATED + ICMP only); the Cloudflare Tunnel is the
+# sole ingress, and it terminates at omni's port 8090, not at sshd.
+# Break-glass is the Contabo serial console (root password from
+# Contabo dashboard).
+
+apt:
+  sources:
+    docker:
+      source: "deb [arch=amd64 signed-by=$KEY_FILE] https://download.docker.com/linux/ubuntu noble stable"
+      keyid: 9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+
+package_update: true
+package_upgrade: true
+packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-buildx-plugin
+  - docker-compose-plugin
+  - rclone
+  - sqlite3
+  - unattended-upgrades
+
+write_files:
+  - path: /etc/omni/docker-compose.yaml
+    permissions: "0640"
+    owner: root:root
+    content: |
+${indent(6, docker_compose_yaml)}
+
+  - path: /etc/omni/omni.env
+    permissions: "0600"
+    owner: root:root
+    content: |
+      OMNI_ACCOUNT_ID=${omni_account_id}
+      OMNI_PUBLIC_IP=__PLACEHOLDER__
+
+  - path: /etc/dex/config.yaml
+    permissions: "0640"
+    owner: root:root
+    content: |
+      issuer: https://${siderolink_api_advertised_host}/dex
+      storage: { type: sqlite3, config: { file: /var/lib/dex/dex.db } }
+      web: { http: 0.0.0.0:5556 }
+      connectors:
+        - type: github
+          id: github
+          name: GitHub
+          config:
+            clientID: ${github_oidc_client_id}
+            clientSecret: ${github_oidc_client_secret}
+            redirectURI: https://${siderolink_api_advertised_host}/dex/callback
+            orgs:
+%{ for org in github_oidc_allowed_orgs ~}
+              - name: ${org}
+%{ endfor ~}
+      oauth2: { skipApprovalScreen: true }
+      staticClients:
+        - id: omni
+          secret: ${dex_omni_client_secret}
+          redirectURIs: [https://${siderolink_api_advertised_host}/oauth/callback]
+          name: Omni
+
+  - path: /etc/cloudflared/cloudflared.env
+    permissions: "0600"
+    owner: root:root
+    content: |
+      TUNNEL_TOKEN=${cloudflare_tunnel_token}
+
+  - path: /etc/rclone/rclone.conf
+    permissions: "0600"
+    owner: root:root
+    content: |
+      [r2]
+      type = s3
+      provider = Cloudflare
+      access_key_id = ${r2_backup_access_key_id}
+      secret_access_key = ${r2_backup_secret_access_key}
+      endpoint = ${r2_endpoint}
+      acl = private
+
+  - path: /etc/systemd/system/omni-stack.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Omni stack (omni + dex + cloudflared)
+      Requires=docker.service
+      After=docker.service network-online.target
+      [Service]
+      Type=oneshot
+      RemainAfterExit=true
+      ExecStart=/usr/bin/docker compose -f /etc/omni/docker-compose.yaml up -d --remove-orphans
+      ExecStop=/usr/bin/docker compose -f /etc/omni/docker-compose.yaml down
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/systemd/system/omni-backup.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Snapshot Omni sqlite + rclone to R2
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/omni-backup.sh
+
+  - path: /etc/systemd/system/omni-backup.timer
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Hourly Omni state backup
+      [Timer]
+      OnCalendar=hourly
+      Persistent=true
+      [Install]
+      WantedBy=timers.target
+
+  - path: /usr/local/bin/omni-backup.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      # Skip silently if Omni has not yet initialised its database (e.g. first boot).
+      [[ -f /var/lib/omni/omni.db ]] || { echo "omni.db not yet initialised, skipping backup" >&2; exit 0; }
+      ts=$(date -u +%Y%m%dT%H%M%SZ)
+      tmp=$(mktemp -d)
+      trap "rm -rf $tmp" EXIT
+      sqlite3 /var/lib/omni/omni.db ".backup '$tmp/omni-$ts.db'"
+      gzip -9 "$tmp/omni-$ts.db"
+      rclone copy "$tmp/" "r2:${r2_backup_bucket}/${r2_backup_prefix}" --include "omni-*.db.gz"
+      # 30-day retention: scope the delete to backup files only to avoid
+      # accidentally removing unrelated objects in the same prefix.
+      rclone delete --min-age 30d --include "omni-*.db.gz" "r2:${r2_backup_bucket}/${r2_backup_prefix}"
+
+  - path: /etc/iptables/rules.v4
+    permissions: "0640"
+    content: |
+      *filter
+      :INPUT DROP [0:0]
+      :FORWARD DROP [0:0]
+      :OUTPUT ACCEPT [0:0]
+      -A INPUT -i lo -j ACCEPT
+      -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+      -A INPUT -p icmp -j ACCEPT
+      COMMIT
+
+  - path: /etc/apt/apt.conf.d/20auto-upgrades
+    permissions: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+
+runcmd:
+  - mkdir -p /var/lib/omni /var/lib/dex
+  - chown -R root:root /var/lib/omni /var/lib/dex
+  - chmod 0700 /var/lib/omni /var/lib/dex
+  - mkdir -p /etc/iptables
+  - iptables-restore < /etc/iptables/rules.v4
+  # Preseed debconf so iptables-persistent does not snapshot the running
+  # (empty) ruleset on install, which would leave the host open after reboot.
+  - echo iptables-persistent iptables-persistent/autosave_v4 boolean false | debconf-set-selections
+  - echo iptables-persistent iptables-persistent/autosave_v6 boolean false | debconf-set-selections
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent
+  # Re-apply rules in case the package install touched anything.
+  - iptables-restore < /etc/iptables/rules.v4
+  - |
+    # Resolve the public IP at first boot — write_files is byte-literal and
+    # cannot execute shell, so we use a sed replacement against the placeholder.
+    # Multiple fallbacks: lifecycle.ignore_changes=[user_data] means a transient
+    # failure here permanently wedges the instance until a tofu taint+recreate.
+    PUBLIC_IP=$(curl -fsSL --max-time 10 https://api.ipify.org \
+      || curl -fsSL --max-time 10 https://api4.ipify.org \
+      || curl -fsSL --max-time 10 https://ifconfig.me \
+      || curl -fsSL --max-time 10 https://icanhazip.com)
+    if [[ -z "$PUBLIC_IP" ]]; then echo "ERROR: could not resolve public IP via any fallback" >&2; exit 1; fi
+    sed -i "s|^OMNI_PUBLIC_IP=.*|OMNI_PUBLIC_IP=$PUBLIC_IP|" /etc/omni/omni.env
+  - systemctl daemon-reload
+  - systemctl enable --now omni-stack.service omni-backup.timer

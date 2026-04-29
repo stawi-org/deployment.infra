@@ -1,6 +1,18 @@
 # tofu/layers/01-contabo-infra/image.tf
+locals {
+  _base_schematic = yamldecode(file("${path.module}/../../shared/schematic.yaml"))
+  _schematic_with_siderolink = var.omni_siderolink_url == "" ? local._base_schematic : merge(local._base_schematic, {
+    customization = merge(local._base_schematic.customization, {
+      extraKernelArgs = concat(
+        local._base_schematic.customization.extraKernelArgs,
+        ["siderolink.api=${var.omni_siderolink_url}"],
+      )
+    })
+  })
+}
+
 resource "talos_image_factory_schematic" "this" {
-  schematic = file("${path.module}/../../shared/schematic.yaml")
+  schematic = yamlencode(local._schematic_with_siderolink)
 }
 
 data "talos_image_factory_urls" "this" {

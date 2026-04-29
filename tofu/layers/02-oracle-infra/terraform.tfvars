@@ -10,7 +10,7 @@ age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
 # Bumped 9 → 10 alongside the schema-fix landing: the gen9 image
 # in each tenancy was created by the previous CLI-driven flow from
 # a plain qcow2 (no metadata) and boots with the wrong defaults.
-force_image_generation = 10
+force_image_generation = 11
 
 # Per-node reinstalls are now driven by request files under
 # .github/reconstruction/. The tofu-reconstruct workflow opens a PR
