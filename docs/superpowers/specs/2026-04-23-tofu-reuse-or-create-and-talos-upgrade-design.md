@@ -117,9 +117,9 @@ Contabo (age-encrypted):
 provider: contabo
 account: stawi-contabo
 auth:
-  oauth2_client_id: INT-14104698
+  oauth2_client_id: INT-XXXXXXXX
   oauth2_client_secret: <secret>
-  oauth2_user: bwire517@gmail.com
+  oauth2_user: <contabo-account-email>
   oauth2_pass: <secret>
 ```
 

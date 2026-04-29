@@ -37,14 +37,12 @@ variable "omni_version" {
 
 variable "omni_eula_name" {
   type        = string
-  default     = "Peter Bwire"
-  description = "Name supplied to Omni's --eula-accept-name flag (Sidero EULA acceptance, required v1.7+)."
+  description = "Name supplied to Omni's --eula-accept-name flag (Sidero EULA acceptance, required v1.7+). Sourced from the OMNI_EULA_NAME GitHub variable/secret."
 }
 
 variable "omni_eula_email" {
   type        = string
-  default     = "bwire517@gmail.com"
-  description = "Email supplied to Omni's --eula-accept-email flag."
+  description = "Email supplied to Omni's --eula-accept-email flag. Sourced from the OMNI_EULA_EMAIL GitHub variable/secret."
 }
 
 variable "dex_version" {
@@ -71,9 +69,12 @@ variable "contabo_public_ssh_key" {
 }
 
 variable "omni_initial_users" {
-  type        = list(string)
-  default     = ["bwire517@gmail.com", "joakimbwire23@gmail.com"]
-  description = "Email addresses promoted to Admin on first login. Must match the email field GitHub returns to Dex (the user's primary verified email)."
+  type        = string
+  description = "Comma-separated list of email addresses promoted to Admin on first login. Each email must match the primary verified email GitHub returns to Dex. Sourced from the OMNI_INITIAL_USERS GitHub variable."
+  validation {
+    condition     = length(trimspace(var.omni_initial_users)) > 0
+    error_message = "At least one initial admin email is required, otherwise the Omni UI will be locked on first login."
+  }
 }
 
 variable "age_recipients" {
