@@ -12,5 +12,6 @@ contabo:
       contabo_instance_id: "202727783"
     contabo-bwire-node-2:
       contabo_instance_id: "202727782"
-    contabo-bwire-node-3:
-      contabo_instance_id: "202727781"
+    # contabo-bwire-node-3 (id 202727781) was repurposed as
+    # contabo-bwire-omni — the omni-host. Adopted by layer 00-omni-server
+    # via an import{} block; layer 01-contabo-infra no longer manages it.

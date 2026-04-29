@@ -93,10 +93,24 @@ resource "cloudflare_dns_record" "cpd_stawi" {
   }
 }
 
+# Adopt the existing Contabo VPS instance — never create a fresh one.
+# 202727781 was originally provisioned as contabo-bwire-node-3 (Talos
+# CP). Repurposing it as the omni-host: the disk is reinstalled in
+# place by null_resource.ensure_image once layer 01-contabo-infra
+# stops managing it. Same VPS, never destroyed, only reimaged.
+import {
+  to = module.omni_host.contabo_instance.this
+  id = "202727781"
+}
+
 module "omni_host" {
   source = "../../modules/omni-host"
 
-  name                                 = "cluster-omni-contabo"
+  # Naming convention: <provider>-<account>-<role>. Cluster nodes are
+  # contabo-bwire-node-N; the omni-host is the same shape with role
+  # "omni" instead of "node-N". Lets future-us add other-account or
+  # other-provider Omni instances without bespoke naming.
+  name                                 = "contabo-bwire-omni"
   contabo_image_id                     = module.ubuntu_24_04_image.image_id
   omni_version                         = var.omni_version
   dex_version                          = var.dex_version
