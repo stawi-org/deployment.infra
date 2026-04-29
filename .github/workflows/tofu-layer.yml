@@ -19,6 +19,11 @@ on:
       environment:     { required: false, type: string, default: "production" }
       extra_plan_args: { required: false, type: string, default: "" }
       account:         { required: false, type: string, default: "" }
+      pre_apply_state_rm:
+        required: false
+        type: string
+        default: ""
+        description: "Whitespace-separated resource addresses to `tofu state rm` before plan. Recovery use only — orphaned state where the upstream provider can no longer destroy."
     secrets:
       R2_ACCOUNT_ID:            { required: true }
       R2_ACCESS_KEY_ID:         { required: true }
@@ -385,6 +390,18 @@ jobs:
           # var.account_key, and validate evaluates provider config.
           TF_VAR_account_key: ${{ inputs.account }}
         run: tofu validate
+
+      - name: Pre-apply state rm (manual recovery)
+        if: inputs.pre_apply_state_rm != ''
+        working-directory: tofu/layers/${{ inputs.layer }}
+        env:
+          TF_VAR_account_key: ${{ inputs.account }}
+        run: |
+          set -euo pipefail
+          for addr in ${{ inputs.pre_apply_state_rm }}; do
+            echo "::warning::tofu state rm $addr (manual recovery)"
+            tofu state rm "$addr" || echo "::warning::$addr not in state, continuing"
+          done
 
       - name: Plan
         if: inputs.mode == 'plan' || inputs.mode == 'apply'
