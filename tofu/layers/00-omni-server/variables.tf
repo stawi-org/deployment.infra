@@ -41,15 +41,18 @@ variable "github_oidc_client_secret" {
 }
 
 variable "omni_version" {
-  type = string
+  type    = string
+  default = "v1.4.6"
 }
 
 variable "dex_version" {
-  type = string
+  type    = string
+  default = "v2.41.1"
 }
 
 variable "cloudflared_version" {
-  type = string
+  type    = string
+  default = "2025.10.1"
 }
 
 variable "etcd_backup_r2_access_key_id" {
