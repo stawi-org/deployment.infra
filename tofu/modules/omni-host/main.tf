@@ -66,46 +66,11 @@ resource "contabo_instance" "this" {
   user_data    = local.user_data
   period       = 1
 
-  # Contabo VPSs are NEVER destroyed/replaced via tofu. user_data and
-  # image_id are absorbed here; in-place reinstall on user_data drift
-  # is driven by null_resource.ensure_image below, which re-uses the
-  # node-contabo module's ensure-image.sh (the official internal driver
-  # for Contabo VPS lifecycle). MODE=reinstall always — first-create
-  # technically wastes one redundant install pass; rare enough to ignore.
-  lifecycle {
-    ignore_changes = [user_data, image_id]
-  }
-}
-
-# Reinstall-in-place driver. Triggers when:
-#   - contabo_instance.this.id is fresh (first apply for this VPS)
-#   - the rendered user_data hash drifts (Omni version bump, cert
-#     rotation, cloud-init structural change, Caddy/Dex bumps, etc.)
-#
-# Calls into tofu/modules/node-contabo/ensure-image.sh — the official
-# Contabo VPS lifecycle driver in this repo. Adds two parameters to
-# what node-contabo passes: USER_DATA (full omni-host cloud-init,
-# instead of the minimal stub Talos uses), and READY_CHECK pointing
-# at https://cp.<zone>/ (instead of Talos's TCP probe on :50000).
-resource "null_resource" "ensure_image" {
-  triggers = {
-    instance_id    = contabo_instance.this.id
-    user_data_hash = sha256(local.user_data)
-  }
-  provisioner "local-exec" {
-    interpreter = ["bash"]
-    environment = {
-      MODE                  = "reinstall"
-      INSTANCE_ID           = contabo_instance.this.id
-      TARGET_IMAGE_ID       = var.contabo_image_id
-      USER_DATA             = local.user_data
-      NODE_ROLE             = "controlplane" # fail tofu on errors (single VPS, no fleet isolation)
-      READY_CHECK           = "https:https://${var.siderolink_api_advertised_host}/"
-      CONTABO_CLIENT_ID     = var.contabo_client_id
-      CONTABO_CLIENT_SECRET = var.contabo_client_secret
-      CONTABO_API_USER      = var.contabo_api_user
-      CONTABO_API_PASSWORD  = var.contabo_api_password
-    }
-    command = "${path.module}/../node-contabo/ensure-image.sh"
-  }
+  # No lifecycle.ignore_changes — the contabo provider's Update path is
+  # the canonical way to push image_id / user_data drift to a running
+  # VPS. Tofu plan surfaces the diff, the provider's PATCH /
+  # /v1/compute/instances/<id> handles the rest. No null_resource, no
+  # custom bash. If a particular provider version doesn't honour the
+  # update correctly, that's a provider bug to track upstream — not
+  # something to paper over with a script.
 }
