@@ -54,9 +54,6 @@ locals {
       github_oidc_allowed_orgs       = var.github_oidc_allowed_orgs
       tls_cert_pem                   = var.tls_cert_pem
       tls_key_pem                    = var.tls_key_pem
-      cloudflare_api_token           = var.cloudflare_api_token
-      cloudflare_zone_id             = var.cloudflare_zone_id
-      cloudflare_dns_record_ids      = var.cloudflare_dns_record_ids
     }
   )
 }
