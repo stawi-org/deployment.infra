@@ -79,6 +79,15 @@ module "omni_host" {
   eula_name                            = var.omni_eula_name
   eula_email                           = var.omni_eula_email
   ssh_authorized_keys                  = var.contabo_public_ssh_key == "" ? [] : [var.contabo_public_ssh_key]
+
+  # R2 backup/restore — reuses the existing tofu-state credentials so
+  # /var/lib/omni snapshots ride the same blast radius as the rest of
+  # the cluster. omni-restore.service rehydrates from the latest
+  # snapshot when /var/lib/omni is empty (fresh disk after a Contabo
+  # reinstall).
+  r2_account_id        = var.r2_account_id
+  r2_access_key_id     = var.r2_access_key_id
+  r2_secret_access_key = var.r2_secret_access_key
 }
 
 # DNS records pull the IPs straight from the imported contabo_instance —

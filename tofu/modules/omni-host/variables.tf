@@ -21,10 +21,10 @@ variable "contabo_region" {
 
 variable "omni_version" { type = string }
 variable "dex_version" { type = string }
-variable "caddy_version" {
+variable "nginx_version" {
   type        = string
-  default     = "2.10-alpine"
-  description = "Caddy image tag — version pinned to alpine variant for size."
+  default     = "1.27-alpine"
+  description = "Nginx image tag — alpine variant for size. Reverse-proxies cp.<zone> to Omni's loopback UI per Sidero's expose-omni-with-nginx-https reference config."
 }
 
 variable "omni_account_name" {
@@ -34,7 +34,7 @@ variable "omni_account_name" {
 
 variable "siderolink_api_advertised_host" {
   type        = string
-  description = "Browser-facing Omni hostname (orange-cloud Cloudflare). Serves the UI on :443 via Caddy and the OIDC discovery path /dex."
+  description = "Browser-facing Omni hostname (orange-cloud Cloudflare). Serves the UI on :443 via nginx and the OIDC discovery path /dex."
 }
 
 variable "siderolink_wireguard_advertised_host" {
@@ -93,4 +93,39 @@ variable "eula_name" {
 variable "eula_email" {
   type        = string
   description = "Email supplied to Omni's --eula-accept-email flag."
+}
+
+# ---- R2 backup / restore -----------------------------------------------------
+# Daily snapshot of /var/lib/omni (embedded etcd + sqlite + master keys)
+# uploaded to R2; on a fresh disk, omni-restore pulls the most recent
+# snapshot before omni-keys + omni-stack come up. This is what makes a
+# Contabo reinstall non-destructive — losing /var/lib/omni would
+# otherwise lose every cluster Omni has ever provisioned.
+
+variable "r2_account_id" {
+  type        = string
+  description = "Cloudflare R2 account ID — feeds the S3 endpoint URL the on-host backup/restore scripts use."
+}
+
+variable "r2_access_key_id" {
+  type        = string
+  sensitive   = true
+  description = "R2 access key ID with read+write on r2_bucket_name. Reuses the existing tofu-state R2 credential pattern."
+}
+
+variable "r2_secret_access_key" {
+  type      = string
+  sensitive = true
+}
+
+variable "r2_bucket_name" {
+  type        = string
+  default     = "cluster-tofu-state"
+  description = "R2 bucket holding Omni snapshots. Defaulting to the tofu-state bucket keeps backups in the same blast radius as the rest of the cluster."
+}
+
+variable "r2_backup_prefix" {
+  type        = string
+  default     = "production/omni-backups"
+  description = "Object key prefix under r2_bucket_name where omni-*.tar.gz snapshots are written."
 }

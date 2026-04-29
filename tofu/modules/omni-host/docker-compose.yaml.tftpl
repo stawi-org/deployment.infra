@@ -2,7 +2,7 @@
 # Pinned tags only — bumping the version is a deliberate tofu var change.
 version: "3.9"
 services:
-  # Omni binds the browser-facing UI to loopback (Caddy fronts it on
+  # Omni binds the browser-facing UI to loopback (nginx fronts it on
   # :443 with the origin cert). Talos-facing endpoints (machine-api,
   # k8s-proxy) terminate TLS themselves on the public interface using
   # the same cert.
@@ -34,8 +34,9 @@ services:
       # omni-keys.service in cloud-init.
       - --private-key-source=file:///var/lib/omni/keys/omni.asc
       - --public-key-files=/var/lib/omni/keys/omni.pub.asc
-      # Browser-facing UI binds loopback only; Caddy reverse-proxies
-      # /dex/* to Dex and /* to here over plain HTTP on the host.
+      # Browser-facing UI binds loopback only; nginx reverse-proxies
+      # /dex/* to Dex and /* to here over HTTPS on the host (the
+      # --cert/--key flags TLS-enable this listener too).
       - --bind-addr=127.0.0.1:8080
       - --advertised-api-url=https://${siderolink_api_advertised_host}
       # Talos-facing machine API. Cert/key supplied; this listener is
@@ -48,7 +49,7 @@ services:
       - --machine-api-advertised-url=https://${siderolink_wireguard_advertised_host}:8090
       # Kubernetes proxy. Uses the same --cert/--key as the loopback
       # UI listener; we set them so this listener can serve TLS, even
-      # though the UI side bypasses them via Caddy.
+      # though the UI side is fronted by nginx.
       - --cert=/etc/omni/certs/server.crt
       - --key=/etc/omni/certs/server.key
       - --k8s-proxy-bind-addr=0.0.0.0:8100
@@ -91,12 +92,11 @@ services:
       - serve
       - /etc/dex/config.yaml
 
-  caddy:
-    image: caddy:${caddy_version}
-    container_name: caddy
+  nginx:
+    image: nginx:${nginx_version}
+    container_name: nginx
     restart: unless-stopped
     network_mode: host
     volumes:
-      - /etc/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /etc/omni/nginx.conf:/etc/nginx/nginx.conf:ro
       - /etc/omni/certs:/etc/omni/certs:ro
-      - /var/lib/caddy:/data

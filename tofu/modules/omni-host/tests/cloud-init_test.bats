@@ -23,6 +23,9 @@ module "h" {
   initial_users = ["test@example.com"]
   eula_name = "Test User"
   eula_email = "test@example.com"
+  r2_account_id        = "00000000000000000000000000000000"
+  r2_access_key_id     = "FAKE-AKID-FOR-VALIDATE-ONLY"
+  r2_secret_access_key = "FAKE-SECRET-FOR-VALIDATE-ONLY"
 }
 output "ud" {
   value     = module.h.user_data
