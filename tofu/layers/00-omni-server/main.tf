@@ -78,10 +78,6 @@ module "omni_host" {
   initial_users                        = var.omni_initial_users
   eula_name                            = var.omni_eula_name
   eula_email                           = var.omni_eula_email
-  contabo_client_id                    = module.contabo_account_state.auth.auth.oauth2_client_id
-  contabo_client_secret                = module.contabo_account_state.auth.auth.oauth2_client_secret
-  contabo_api_user                     = module.contabo_account_state.auth.auth.oauth2_user
-  contabo_api_password                 = module.contabo_account_state.auth.auth.oauth2_pass
 }
 
 # DNS records pull the IPs straight from the imported contabo_instance —

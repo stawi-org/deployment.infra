@@ -23,10 +23,6 @@ module "h" {
   initial_users = ["test@example.com"]
   eula_name = "Test User"
   eula_email = "test@example.com"
-  contabo_client_id = "fake"
-  contabo_client_secret = "fake"
-  contabo_api_user = "fake"
-  contabo_api_password = "fake"
 }
 output "ud" {
   value     = module.h.user_data
