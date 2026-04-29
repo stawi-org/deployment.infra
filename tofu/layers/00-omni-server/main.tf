@@ -116,4 +116,8 @@ module "omni_host" {
     cp  = cloudflare_dns_record.cp_stawi.id
     cpd = cloudflare_dns_record.cpd_stawi.id
   }
+  contabo_client_id     = module.contabo_account_state.auth.auth.oauth2_client_id
+  contabo_client_secret = module.contabo_account_state.auth.auth.oauth2_client_secret
+  contabo_api_user      = module.contabo_account_state.auth.auth.oauth2_user
+  contabo_api_password  = module.contabo_account_state.auth.auth.oauth2_pass
 }

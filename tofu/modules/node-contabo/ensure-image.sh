@@ -29,12 +29,24 @@
 #                            exit 0 so a single bad VPS doesn't block
 #                            sibling provisioning; controlplane failures
 #                            fail tofu (quorum matters).
+#   READY_CHECK            — readiness probe (default "tcp:50000" — Talos
+#                            apid). Also supports "https:<url>" — a curl
+#                            HEAD against <url>, success on any 2xx/3xx/
+#                            4xx. Reused by omni-host (https://cp.<zone>/).
+#   USER_DATA              — optional. When set, the reinstall PUT uses
+#                            this rendered cloud-init instead of the
+#                            minimal "users: []" stub. Used by omni-host
+#                            so the reinstalled disk runs the omni stack.
 #   CONTABO_CLIENT_ID/_SECRET/_API_USER/_API_PASSWORD — OAuth2 creds
 
 set -euo pipefail
 
 : "${MODE:?MODE must be 'verify' or 'reinstall'}"
 : "${NODE_ROLE:?NODE_ROLE must be set (controlplane|worker)}"
+
+# Readiness probe — TCP open on :PORT for Talos, or HTTPS reachability
+# for omni-host. Defaults preserve existing node-contabo callers.
+: "${READY_CHECK:=tcp:50000}"
 
 # Log everything to a file so failures are diagnosable even when
 # Terraform suppresses live stdout because env has sensitive values.
@@ -118,8 +130,13 @@ do_provision() {
     # What works: a minimal valid cloud-config YAML document. Talos
     # itself ignores cloud-init entirely — the siderolink.api kernel arg
     # is baked into the boot image via the Image Factory schematic
-    # (schematic.yaml.tftpl), not via userData.
-    USER_DATA_JSON=$(jq -Rs '.' <<<$'#cloud-config\nusers: []\n')
+    # (schematic.yaml.tftpl), not via userData. Callers that DO need a
+    # full cloud-init (omni-host) supply USER_DATA env explicitly.
+    if [[ -n "${USER_DATA:-}" ]]; then
+      USER_DATA_JSON=$(jq -Rs '.' <<<"$USER_DATA")
+    else
+      USER_DATA_JSON=$(jq -Rs '.' <<<$'#cloud-config\nusers: []\n')
+    fi
     echo "issuing PUT /compute/instances/${INSTANCE_ID} with imageId=${TARGET_IMAGE_ID}"
     RESP=$(curl -sS -w $'\nHTTP_%{http_code}' -X PUT \
       -H "Authorization: Bearer ${TOKEN}" \
@@ -179,20 +196,40 @@ do_provision() {
     fi
   fi
 
-  # Wait for Talos API on :50000 — sole trustworthy "disk has correct
-  # booted OS" signal. Works for both modes: verify (just-POSTed instance
-  # finishing first boot) and reinstall (new Talos booting after wipe).
-  # Matches wait_for_nodes_ready in contabo.py.
-  echo "waiting for Talos API on ${INSTANCE_IP}:50000 (up to 20 min)"
+  # Readiness probe — sole trustworthy "disk has booted OS" signal.
+  # Works for both modes: verify (just-POSTed instance finishing first
+  # boot) and reinstall (fresh boot after wipe).
+  case "$READY_CHECK" in
+    tcp:*)
+      probe_port="${READY_CHECK#tcp:}"
+      probe_label="${INSTANCE_IP}:${probe_port}"
+      probe_one() { timeout 3 bash -c "echo >/dev/tcp/${INSTANCE_IP}/${probe_port}" 2>/dev/null; }
+      ;;
+    https:*)
+      probe_url="${READY_CHECK#https:}"
+      probe_label="$probe_url"
+      probe_one() {
+        local code
+        code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$probe_url" 2>/dev/null || true)
+        [[ "$code" =~ ^[234][0-9][0-9]$ ]]
+      }
+      ;;
+    *)
+      echo "READY_CHECK must be 'tcp:<port>' or 'https:<url>', got: $READY_CHECK" >&2
+      return 1
+      ;;
+  esac
+
+  echo "waiting for ${probe_label} (up to 20 min)"
   for i in $(seq 1 120); do
-    if port_open; then
-      echo "attempt ${i}/120: ${INSTANCE_IP}:50000 open — node ready"
+    if probe_one; then
+      echo "attempt ${i}/120: ${probe_label} ready"
       return 0
     fi
-    echo "attempt ${i}/120: ${INSTANCE_IP}:50000 not open yet"
+    echo "attempt ${i}/120: ${probe_label} not ready yet"
     sleep 10
   done
-  echo "Talos API not reachable on ${INSTANCE_IP}:50000 after 20 min" >&2
+  echo "${probe_label} not reachable after 20 min" >&2
   return 1
 }
 

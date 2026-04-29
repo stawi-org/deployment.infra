@@ -69,15 +69,46 @@ resource "contabo_instance" "this" {
   user_data    = local.user_data
   period       = 1
 
-  # Contabo VPSs are NEVER destroyed/replaced via tofu. The first apply
-  # creates the instance with the current rendered user_data; the disk
-  # is then frozen from tofu's perspective. To push changes (Omni
-  # version bump, cert rotation, cloud-init structural changes), the
-  # operator triggers a Reinstall through the Contabo dashboard and
-  # pastes the latest rendered user_data (`tofu output -raw user_data`).
-  # ignore_changes on user_data + image_id keeps tofu from fighting
-  # the operator's manual reinstall.
+  # Contabo VPSs are NEVER destroyed/replaced via tofu. user_data and
+  # image_id are absorbed here; in-place reinstall on user_data drift
+  # is driven by null_resource.ensure_image below, which re-uses the
+  # node-contabo module's ensure-image.sh (the official internal driver
+  # for Contabo VPS lifecycle). MODE=reinstall always — first-create
+  # technically wastes one redundant install pass; rare enough to ignore.
   lifecycle {
     ignore_changes = [user_data, image_id]
+  }
+}
+
+# Reinstall-in-place driver. Triggers when:
+#   - contabo_instance.this.id is fresh (first apply for this VPS)
+#   - the rendered user_data hash drifts (Omni version bump, cert
+#     rotation, cloud-init structural change, Caddy/Dex bumps, etc.)
+#
+# Calls into tofu/modules/node-contabo/ensure-image.sh — the official
+# Contabo VPS lifecycle driver in this repo. Adds two parameters to
+# what node-contabo passes: USER_DATA (full omni-host cloud-init,
+# instead of the minimal stub Talos uses), and READY_CHECK pointing
+# at https://cp.<zone>/ (instead of Talos's TCP probe on :50000).
+resource "null_resource" "ensure_image" {
+  triggers = {
+    instance_id    = contabo_instance.this.id
+    user_data_hash = sha256(local.user_data)
+  }
+  provisioner "local-exec" {
+    interpreter = ["bash"]
+    environment = {
+      MODE                  = "reinstall"
+      INSTANCE_ID           = contabo_instance.this.id
+      TARGET_IMAGE_ID       = var.contabo_image_id
+      USER_DATA             = local.user_data
+      NODE_ROLE             = "controlplane" # fail tofu on errors (single VPS, no fleet isolation)
+      READY_CHECK           = "https:https://${var.siderolink_api_advertised_host}/"
+      CONTABO_CLIENT_ID     = var.contabo_client_id
+      CONTABO_CLIENT_SECRET = var.contabo_client_secret
+      CONTABO_API_USER      = var.contabo_api_user
+      CONTABO_API_PASSWORD  = var.contabo_api_password
+    }
+    command = "${path.module}/../node-contabo/ensure-image.sh"
   }
 }

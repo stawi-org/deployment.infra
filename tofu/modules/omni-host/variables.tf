@@ -70,6 +70,31 @@ variable "cloudflare_api_token" {
   sensitive = true
 }
 
+# Contabo OAuth2 credentials are needed by node-contabo's ensure-image.sh
+# (driven via null_resource.ensure_image in main.tf) so it can call
+# Contabo's PUT /v1/compute/instances/<id> to reinstall the VPS in
+# place when user_data drifts. Reuses the shared script — no per-module
+# bash duplication.
+variable "contabo_client_id" {
+  type      = string
+  sensitive = true
+}
+
+variable "contabo_client_secret" {
+  type      = string
+  sensitive = true
+}
+
+variable "contabo_api_user" {
+  type      = string
+  sensitive = true
+}
+
+variable "contabo_api_password" {
+  type      = string
+  sensitive = true
+}
+
 variable "cloudflare_zone_id" {
   type        = string
   description = "Zone ID for the DNS hostnames the VPS owns (e.g. stawi.org)."
