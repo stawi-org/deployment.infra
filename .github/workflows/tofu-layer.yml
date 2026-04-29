@@ -51,7 +51,7 @@ jobs:
           tofu_version: "1.10.0"
 
       - name: Sync R2 inventory to /tmp/inventory/ (node-state module reads from here)
-        if: inputs.layer == '01-contabo-infra' || inputs.layer == '02-oracle-infra' || inputs.layer == '02-onprem-infra' || inputs.layer == '03-talos'
+        if: inputs.layer == '00-omni-server' || inputs.layer == '01-contabo-infra' || inputs.layer == '02-oracle-infra' || inputs.layer == '02-onprem-infra' || inputs.layer == '03-talos'
         env:
           AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
