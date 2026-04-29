@@ -1,6 +1,7 @@
 # .github/workflows/tofu-layer.yml
 name: tofu-layer
 on:
+  # Reusable workflow used by tofu-plan / tofu-apply / reconstruction.
   workflow_call:
     inputs:
       layer:            { required: true, type: string }
@@ -8,6 +9,16 @@ on:
       environment:      { required: false, type: string, default: "" }
       extra_plan_args:  { required: false, type: string, default: "", description: "Extra args appended to tofu plan (e.g. -replace=foo.bar). Recovery use only." }
       account:          { required: false, type: string, default: "", description: "Account key for per-account-state layers (01-contabo-infra, 02-oracle-infra, 02-onprem-infra). When non-empty, the Init step overrides the backend key to production/<layer>-<account>.tfstate and TF_VAR_account_key is exported so the layer's variable validation accepts the run." }
+  # Direct operator dispatch — used for one-off recovery actions that
+  # don't fit the standard plan/apply graph (e.g. -replace= a single
+  # resource without dragging the whole layer chain along).
+  workflow_dispatch:
+    inputs:
+      layer:           { required: true, type: string }
+      mode:            { required: true, type: string, description: "plan | apply" }
+      environment:     { required: false, type: string, default: "production" }
+      extra_plan_args: { required: false, type: string, default: "" }
+      account:         { required: false, type: string, default: "" }
     secrets:
       R2_ACCOUNT_ID:            { required: true }
       R2_ACCESS_KEY_ID:         { required: true }
