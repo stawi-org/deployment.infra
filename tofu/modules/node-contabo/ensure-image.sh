@@ -58,37 +58,49 @@ trap 'echo "[ensure-image] exit=$? log=$LOG"' EXIT
 uuid() { cat /proc/sys/kernel/random/uuid; }
 
 auth_token() {
-  # Contabo's Keycloak token endpoint occasionally returns
-  # invalid_grant for credentials that just authenticated seconds ago
-  # (observed across three parallel null_resource.ensure_image
-  # invocations in the same apply — 2/3 succeeded, 1/3 got
-  # "invalid_grant"). Retry with short backoff.
-  local resp tok attempt
+  # Fail-fast on 401 invalid_grant. Each retry while KeyCloak is locked
+  # extends the lockout window, and the lockout makes subsequent attempts
+  # by every other layer (image-lookup, contabo provider Read, sibling
+  # ensure-image.sh runs in parallel matrix cells) more likely to fail.
+  # Retry only on transient signals (5xx, network errors).
+  local resp tok attempt code body
   for attempt in 1 2 3 4 5; do
-    resp=$(curl -sS -X POST 'https://auth.contabo.com/auth/realms/contabo/protocol/openid-connect/token' \
+    resp=$(curl -sS -w $'\nHTTP_%{http_code}' -X POST 'https://auth.contabo.com/auth/realms/contabo/protocol/openid-connect/token' \
       -H 'Content-Type: application/x-www-form-urlencoded' \
       --data-urlencode "client_id=${CONTABO_CLIENT_ID}" \
       --data-urlencode "client_secret=${CONTABO_CLIENT_SECRET}" \
       --data-urlencode "username=${CONTABO_API_USER}" \
       --data-urlencode "password=${CONTABO_API_PASSWORD}" \
-      --data-urlencode 'grant_type=password')
-    tok=$(jq -r '.access_token // empty' <<<"$resp")
+      --data-urlencode 'grant_type=password' 2>/dev/null) || true
+    code=$(awk -F_ '/^HTTP_/{print $2; exit}' <<<"$resp")
+    body=$(awk '/^HTTP_/{exit} {print}' <<<"$resp")
+    tok=$(jq -r '.access_token // empty' <<<"$body" 2>/dev/null || true)
     if [[ -n "$tok" ]]; then
       printf '%s' "$tok"
       return 0
     fi
-    echo "Contabo auth attempt $attempt failed. Body: $resp" >&2
+    if [[ "$code" == "400" || "$code" == "401" || "$code" == "403" ]]; then
+      # Terminal — these aren't transient. Likely either bad creds or a
+      # KeyCloak brute-force lockout. Retrying makes the lockout worse.
+      echo "Contabo auth: HTTP ${code} terminal (not transient). Body: ${body:0:300}" >&2
+      echo "Stop dispatching applies for ~15-30 min to let KeyCloak lockout clear." >&2
+      return 1
+    fi
+    echo "Contabo auth attempt ${attempt}/5: HTTP ${code:-error} body=${body:0:200}" >&2
     sleep $((attempt * 3))
   done
-  echo "Contabo auth failed after 5 attempts" >&2
+  echo "Contabo auth failed after 5 attempts (last HTTP=${code:-error})" >&2
   return 1
 }
 
 api_get() {
-  # Retry on transient 401 (token expired mid-call) or 5xx + connection
-  # errors. On 401, re-fetch the token before the next attempt.
+  # Fail-fast on 4xx auth/auth errors — refreshing the token only helps
+  # if the token expired mid-run, but in our retry-at-tofu-layer pattern
+  # KeyCloak treats each token-fetch as a login attempt, so chasing 401
+  # here is exactly what triggers the lockout. Retry only on 5xx /
+  # connection errors.
   local url="$1" resp body code attempt
-  for attempt in 1 2 3 4 5 6; do
+  for attempt in 1 2 3 4 5; do
     resp=$(curl -sS -w $'\nHTTP_%{http_code}' \
       -H "Authorization: Bearer ${TOKEN}" \
       -H "x-request-id: $(uuid)" \
@@ -100,14 +112,14 @@ api_get() {
       printf '%s' "$body"
       return 0
     fi
-    echo "api_get $url: HTTP=${code:-error} body=${body:0:200} (attempt $attempt)" >&2
-    if [[ "$code" == "401" ]]; then
-      echo "  refreshing token before retry..." >&2
-      TOKEN=$(auth_token)
+    if [[ "$code" =~ ^4[0-9][0-9]$ ]]; then
+      echo "api_get $url: HTTP $code terminal (4xx). Body: ${body:0:200}" >&2
+      return 1
     fi
+    echo "api_get $url: HTTP=${code:-error} body=${body:0:200} (attempt $attempt)" >&2
     sleep $((attempt * 5))
   done
-  echo "api_get $url: giving up after 6 attempts (last HTTP=${code:-error})" >&2
+  echo "api_get $url: giving up after 5 attempts (last HTTP=${code:-error})" >&2
   return 1
 }
 
