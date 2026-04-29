@@ -47,56 +47,24 @@ provider "aws" {
   }
 }
 
-# DNS records are pre-created with a placeholder IP (TEST-NET-1) so
-# Cloudflare's "Content for A record must be a valid IPv4 address"
-# validator accepts them at apply time. The VPS's cloud-init then
-# PATCHes each record's `content` to its real public IP at first
-# boot via the Cloudflare API. lifecycle.ignore_changes=[content,
-# comment] keeps tofu from undoing that patch on the next apply.
-#
-# Why not let tofu set the right IP? Contabo's POST /v1/compute/instances
-# returns immediately with no IP — the IP is assigned async post-create
-# and the contabo terraform provider's resource Read does not refresh
-# ip_config to pick it up. Polling Contabo's API ourselves hit
-# undocumented 401 behaviour we couldn't reliably work around. Letting
-# the VPS update its own DNS sidesteps the entire problem.
-
-# Browser-facing UI: orange-cloud (Cloudflare proxies HTTPS, accepts the
-# origin cert at the edge).
-resource "cloudflare_dns_record" "cp_stawi" {
-  zone_id = var.cloudflare_zone_id_stawi
-  name    = "cp"
-  type    = "A"
-  content = "192.0.2.1" # TEST-NET-1 placeholder — overwritten by cloud-init.
-  proxied = true
-  ttl     = 1
-  comment = "Omni UI — orange-cloud; content patched by VPS cloud-init."
-  lifecycle {
-    ignore_changes = [content, comment]
-  }
-}
-
-# Talos-facing endpoints: gray-cloud direct A record. Cloudflare's free
-# plan only proxies a fixed set of HTTP(S) ports (no :8090, no :8100,
-# no UDP), so the SideroLink API + k8s-proxy + WireGuard cannot ride
-# orange-cloud. Talos validates the origin cert directly.
-resource "cloudflare_dns_record" "cpd_stawi" {
-  zone_id = var.cloudflare_zone_id_stawi
-  name    = "cpd"
-  type    = "A"
-  content = "192.0.2.1" # TEST-NET-1 placeholder — overwritten by cloud-init.
-  proxied = false
-  ttl     = 300
-  comment = "Omni Talos-facing (8090/8100/50180) — gray-cloud; patched by cloud-init."
-  lifecycle {
-    ignore_changes = [content, comment]
-  }
+# Adopt the existing Contabo VPS instance — never create a fresh one.
+# 202727781 was originally provisioned as contabo-bwire-node-3 (Talos
+# CP). Repurposing it as the omni-host: the disk is reinstalled in
+# place by null_resource.ensure_image once layer 01-contabo-infra
+# stops managing it. Same VPS, never destroyed, only reimaged.
+import {
+  to = module.omni_host.contabo_instance.this
+  id = "202727781"
 }
 
 module "omni_host" {
   source = "../../modules/omni-host"
 
-  name                                 = "cluster-omni-contabo"
+  # Naming convention: <provider>-<account>-<role>. Cluster nodes are
+  # contabo-bwire-node-N; the omni-host is the same shape with role
+  # "omni" instead of "node-N". Lets future-us add other-account or
+  # other-provider Omni instances without bespoke naming.
+  name                                 = "contabo-bwire-omni"
   contabo_image_id                     = module.ubuntu_24_04_image.image_id
   omni_version                         = var.omni_version
   dex_version                          = var.dex_version
@@ -110,14 +78,60 @@ module "omni_host" {
   initial_users                        = var.omni_initial_users
   eula_name                            = var.omni_eula_name
   eula_email                           = var.omni_eula_email
-  cloudflare_api_token                 = var.cloudflare_api_token
-  cloudflare_zone_id                   = var.cloudflare_zone_id_stawi
-  cloudflare_dns_record_ids = {
-    cp  = cloudflare_dns_record.cp_stawi.id
-    cpd = cloudflare_dns_record.cpd_stawi.id
-  }
-  contabo_client_id     = module.contabo_account_state.auth.auth.oauth2_client_id
-  contabo_client_secret = module.contabo_account_state.auth.auth.oauth2_client_secret
-  contabo_api_user      = module.contabo_account_state.auth.auth.oauth2_user
-  contabo_api_password  = module.contabo_account_state.auth.auth.oauth2_pass
+  contabo_client_id                    = module.contabo_account_state.auth.auth.oauth2_client_id
+  contabo_client_secret                = module.contabo_account_state.auth.auth.oauth2_client_secret
+  contabo_api_user                     = module.contabo_account_state.auth.auth.oauth2_user
+  contabo_api_password                 = module.contabo_account_state.auth.auth.oauth2_pass
+}
+
+# DNS records pull the IPs straight from the imported contabo_instance —
+# tofu knows them because the instance exists. AAAA included so
+# clients with v6 connectivity hit the VPS directly.
+
+# Browser-facing UI: orange-cloud (Cloudflare proxies HTTPS, accepts the
+# origin cert at the edge).
+resource "cloudflare_dns_record" "cp_stawi_a" {
+  zone_id = var.cloudflare_zone_id_stawi
+  name    = "cp"
+  type    = "A"
+  content = module.omni_host.ipv4
+  proxied = true
+  ttl     = 1
+  comment = "Omni UI — orange-cloud."
+}
+
+resource "cloudflare_dns_record" "cp_stawi_aaaa" {
+  count   = module.omni_host.ipv6 == null ? 0 : 1
+  zone_id = var.cloudflare_zone_id_stawi
+  name    = "cp"
+  type    = "AAAA"
+  content = module.omni_host.ipv6
+  proxied = true
+  ttl     = 1
+  comment = "Omni UI — orange-cloud (v6)."
+}
+
+# Talos-facing endpoints: gray-cloud direct. Cloudflare's free plan only
+# proxies a fixed set of HTTP(S) ports (no :8090, no :8100, no UDP),
+# so SideroLink API + k8s-proxy + WireGuard cannot ride orange-cloud.
+# Talos validates the origin cert directly.
+resource "cloudflare_dns_record" "cpd_stawi_a" {
+  zone_id = var.cloudflare_zone_id_stawi
+  name    = "cpd"
+  type    = "A"
+  content = module.omni_host.ipv4
+  proxied = false
+  ttl     = 300
+  comment = "Omni Talos-facing (8090/8100/50180) — gray-cloud."
+}
+
+resource "cloudflare_dns_record" "cpd_stawi_aaaa" {
+  count   = module.omni_host.ipv6 == null ? 0 : 1
+  zone_id = var.cloudflare_zone_id_stawi
+  name    = "cpd"
+  type    = "AAAA"
+  content = module.omni_host.ipv6
+  proxied = false
+  ttl     = 300
+  comment = "Omni Talos-facing — gray-cloud (v6)."
 }

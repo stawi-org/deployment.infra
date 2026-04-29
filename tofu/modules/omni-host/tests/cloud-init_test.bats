@@ -23,9 +23,6 @@ module "h" {
   initial_users = ["test@example.com"]
   eula_name = "Test User"
   eula_email = "test@example.com"
-  cloudflare_api_token = "fake"
-  cloudflare_zone_id = "zid"
-  cloudflare_dns_record_ids = { cp = "rec1", cpd = "rec2" }
   contabo_client_id = "fake"
   contabo_client_secret = "fake"
   contabo_api_user = "fake"
