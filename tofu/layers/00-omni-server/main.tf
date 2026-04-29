@@ -55,8 +55,8 @@ module "omni_host" {
   omni_version                         = var.omni_version
   dex_version                          = var.dex_version
   omni_account_name                    = "stawi"
-  siderolink_api_advertised_host       = "cp.antinvestor.com"
-  siderolink_wireguard_advertised_host = "cpd.antinvestor.com"
+  siderolink_api_advertised_host       = "cp.stawi.org"
+  siderolink_wireguard_advertised_host = "cpd.stawi.org"
   github_oidc_client_id                = var.github_oidc_client_id
   github_oidc_client_secret            = var.github_oidc_client_secret
   tls_cert_pem                         = var.omni_tls_cert
@@ -65,11 +65,9 @@ module "omni_host" {
 }
 
 # Browser-facing UI: orange-cloud (Cloudflare proxies HTTPS, accepts the
-# origin cert at the edge). cp.stawi.org aliases the same record so the
-# multi-SAN cert covers both zones.
-
-resource "cloudflare_dns_record" "cp_antinvestor" {
-  zone_id = var.cloudflare_zone_id_antinvestor
+# origin cert at the edge).
+resource "cloudflare_dns_record" "cp_stawi" {
+  zone_id = var.cloudflare_zone_id_stawi
   name    = "cp"
   type    = "A"
   content = module.omni_host.ipv4
@@ -78,38 +76,17 @@ resource "cloudflare_dns_record" "cp_antinvestor" {
   comment = "Self-hosted Omni UI — orange-cloud (CF proxies HTTPS, accepts origin cert at edge)."
 }
 
-resource "cloudflare_dns_record" "cp_stawi" {
-  zone_id = var.cloudflare_zone_id_stawi
-  name    = "cp"
-  type    = "CNAME"
-  content = "cp.antinvestor.com"
-  proxied = true
-  ttl     = 1
-  comment = "Alias for the Omni UI in the secondary zone — same orange-cloud path."
-}
-
-# Talos-facing endpoints: gray-cloud direct A records. Cloudflare's free
+# Talos-facing endpoints: gray-cloud direct A record. Cloudflare's free
 # plan only proxies a fixed set of HTTP(S) ports (no :8090, no :8100,
 # no UDP), so the SideroLink API + k8s-proxy + WireGuard cannot ride
 # orange-cloud. Talos validates the origin cert directly; the schematic
 # in the consuming layer adds the CF Origin CA to Talos's trust store.
-
-resource "cloudflare_dns_record" "cpd_antinvestor" {
-  zone_id = var.cloudflare_zone_id_antinvestor
+resource "cloudflare_dns_record" "cpd_stawi" {
+  zone_id = var.cloudflare_zone_id_stawi
   name    = "cpd"
   type    = "A"
   content = module.omni_host.ipv4
   proxied = false
   ttl     = 300
   comment = "Talos-facing Omni endpoints (machine-api :8090, k8s-proxy :8100, WG :50180/udp) — gray-cloud direct."
-}
-
-resource "cloudflare_dns_record" "cpd_stawi" {
-  zone_id = var.cloudflare_zone_id_stawi
-  name    = "cpd"
-  type    = "CNAME"
-  content = "cpd.antinvestor.com"
-  proxied = false
-  ttl     = 300
-  comment = "Alias for the Talos-facing Omni endpoints in the secondary zone."
 }

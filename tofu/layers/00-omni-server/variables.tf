@@ -9,14 +9,9 @@ variable "cloudflare_api_token" {
   description = "Cloudflare API token with Zone:Read + DNS:Edit on antinvestor.com + stawi.org."
 }
 
-variable "cloudflare_zone_id_antinvestor" {
-  type        = string
-  description = "Cloudflare zone ID for antinvestor.com."
-}
-
 variable "cloudflare_zone_id_stawi" {
   type        = string
-  description = "Cloudflare zone ID for stawi.org."
+  description = "Cloudflare zone ID for stawi.org — sole DNS zone for the Omni control plane."
 }
 
 variable "local_inventory_dir" {
