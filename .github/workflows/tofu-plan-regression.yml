@@ -28,11 +28,17 @@ jobs:
           pattern: tfplan-${{ matrix.layer }}*
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: artifacts
       - name: Assert zero resource diffs
         run: |
+          # actions/download-artifact@v6 extracts each artifact into its
+          # own subdir under `path:`. With pattern matching multiple
+          # account-scoped uploads (tfplan-01-contabo-infra-bwire,
+          # tfplan-02-oracle-infra-bwire, …) we get one tfplan per
+          # subdir; `find` walks them all in one go.
           set -euo pipefail
           shopt -s nullglob
-          plans=(tfplan-${{ matrix.layer }}*/tfplan)
+          mapfile -t plans < <(find artifacts -name tfplan -type f 2>/dev/null)
           if (( ${#plans[@]} == 0 )); then
             echo "::error::no tfplan artifact found for ${{ matrix.layer }}"
             exit 1
