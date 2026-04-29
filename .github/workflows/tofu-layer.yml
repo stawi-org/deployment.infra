@@ -201,7 +201,7 @@ jobs:
           # tofu's templatefile() applies, just inline so we don't
           # need a tofu init at this step.
           export SIDEROLINK_URL="${OMNI_SIDEROLINK_URL:-}"
-          python3 - <<PYEOF > /tmp/schematic.rendered.yaml
+          python3 - <<'PYEOF' > /tmp/schematic.rendered.yaml
           import os, re
           src = open('tofu/shared/schematic.yaml.tftpl').read()
           url = os.environ.get('SIDEROLINK_URL', '')
