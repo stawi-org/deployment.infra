@@ -23,18 +23,26 @@ jobs:
       # (tfplan-<layer>-<acct>); 03-talos uploads a single tfplan-<layer>.
       # Glob with `*` so the regression check covers every per-account
       # artifact while staying a single download for 03-talos.
+      # Pin extraction to artifacts/<artifact-name>/<file> via the
+      # path: parameter. Without it, actions/download-artifact@v6
+      # extracts directly into the workdir on a single-artifact match
+      # (different from v4's always-make-subdir behaviour), and the
+      # regression check's bash glob found nothing on layers with a
+      # single per-account cell (e.g. 01-contabo-infra-bwire,
+      # 02-onprem-infra-tindase, 03-talos).
       - uses: actions/download-artifact@v6
         with:
           pattern: tfplan-${{ matrix.layer }}*
+          path: artifacts
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Assert zero resource diffs
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          plans=(tfplan-${{ matrix.layer }}*/tfplan)
+          mapfile -t plans < <(find artifacts -name tfplan -type f 2>/dev/null)
           if (( ${#plans[@]} == 0 )); then
             echo "::error::no tfplan artifact found for ${{ matrix.layer }}"
+            ls -laR artifacts/ 2>/dev/null || echo "(artifacts/ does not exist)"
             exit 1
           fi
           rc=0
