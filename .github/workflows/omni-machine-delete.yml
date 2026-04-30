@@ -49,16 +49,22 @@ jobs:
       - name: Verify auth
         run: omnictl get user --output json | head -20
 
-      - name: Delete Machines
+      # We try deleting the underlying Link (the Machine resource is
+      # derived from it; deleting Link is the canonical "forget this
+      # node" path). MachineLabels and other operator-set attributes
+      # are also cleared so the node re-registers as a clean slate.
+      - name: Delete Machines and friends
         run: |
           set -euo pipefail
           IFS=',' read -ra IDS <<< "$MACHINE_IDS"
           for id in "${IDS[@]}"; do
             id=$(echo "$id" | tr -d ' ')
             [[ -z "$id" ]] && continue
-            echo "::group::deleting Machines.omni.sidero.dev/$id"
-            omnictl delete Machines.omni.sidero.dev "$id" || echo "(delete failed or already absent)"
-            echo "::endgroup::"
+            for kind in Links.omni.sidero.dev MachineLabels.omni.sidero.dev MachineStatuses.omni.sidero.dev; do
+              echo "::group::deleting $kind/$id"
+              omnictl delete "$kind" "$id" || echo "(delete failed or already absent)"
+              echo "::endgroup::"
+            done
           done
 
       - name: Show remaining MachineStatus list
