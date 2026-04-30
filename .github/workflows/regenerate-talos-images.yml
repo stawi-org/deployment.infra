@@ -26,9 +26,12 @@
 #
 # Auth: needs OMNI_SERVICE_ACCOUNT_KEY (operator creates a service
 # account in the Omni dashboard once: Service Accounts → Create →
-# role Operator → copy key once → store as repo secret). OCI imports
-# reuse the existing GitHub-OIDC-to-OCI WIF flow already used by
-# tofu-layer.yml.
+# role ADMIN → copy key once → store as repo secret). The Operator
+# role is NOT enough — `omnictl download` calls into Omni's
+# CreateSchematic / SideroLink-params path which requires Admin
+# (run #25154959742 surfaced "insufficient role: Operator"). OCI
+# imports reuse the existing GitHub-OIDC-to-OCI WIF flow already used
+# by tofu-layer.yml.
 name: regenerate-talos-images
 on:
   workflow_dispatch:
