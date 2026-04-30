@@ -3,7 +3,7 @@
 # or bump tofu/shared/schematics/cluster.yaml and merge.
 schematic_id: "09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0"
 talos_version: "v1.13.0"
-generated_at: "2026-04-30T11:57:23Z"
+generated_at: "2026-04-30T12:18:17Z"
 formats:
   contabo:
     url: "https://pkgs.stawi.org/09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0/metal-amd64-omni-stawi-v1.13.0-6e47f8.xz"
@@ -15,7 +15,7 @@ formats:
     qcow2_url: "https://pkgs.stawi.org/09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0/oracle-arm64-omni-stawi-v1.13.0-6e47f8.qcow2"
     qcow2_sha256: "95748d4cc8911cdfcda59ee021411f51a51504e0c50b525fda0e39a269b07171"
     archive_url: "https://pkgs.stawi.org/09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0/talos-v1.13.0-09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0-oracle-arm64.oci"
-    archive_sha256: "539b3dad0e860018f1db39a1d1be88884ccbdd8dd0bf4bced642e88fd97d9a3d"
+    archive_sha256: "119b8d43b71f8a0802ebbe0a82ea4edb7fa976ac9d4c2576866613c184852ee5"
     accounts:
       alimbacho67:
         ocid: "ocid1.image.oc1.eu-frankfurt-1.aaaaaaaafu3t4eevnuggzxmwfzsuqipyg5zn3sd5ows37xxcviebb3amaoaa"
