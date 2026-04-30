@@ -371,12 +371,18 @@ jobs:
                   if missing:
                       skipped.append(f"{entry}: auth missing {missing}; auth keys = {sorted(auth.keys())}")
                       continue
-                  # Compartment + region come from the top-level of
-                  # auth.yaml — same place tofu reads them from
-                  # (oracle_auth_from_module[k].compartment_ocid).
-                  comp = data.get("compartment_ocid") or data.get("compartment_id")
+                  # compartment_ocid lives inside the `auth` block too
+                  # (real auth.yaml: {auth: {oidc..., compartment_ocid:
+                  # "ocid1..."}}). Fall back to top-level for legacy
+                  # layouts.
+                  comp = (
+                      auth.get("compartment_ocid")
+                      or auth.get("compartment_id")
+                      or data.get("compartment_ocid")
+                      or data.get("compartment_id")
+                  )
                   if not comp:
-                      skipped.append(f"{entry}: top-level missing compartment_ocid; data keys = {sorted(data.keys())}")
+                      skipped.append(f"{entry}: missing compartment_ocid; data keys = {sorted(data.keys())}; auth keys = {sorted(auth.keys())}")
                       continue
                   out.append({
                       "profile": entry,
