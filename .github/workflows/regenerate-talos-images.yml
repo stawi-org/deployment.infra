@@ -611,7 +611,7 @@ jobs:
               bucket: $b, object: $o, ocid: $id }
           ' > "/tmp/out/${PROFILE}.json"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: oci-import-${{ matrix.account.profile }}
           path: /tmp/out/${{ matrix.account.profile }}.json
@@ -620,18 +620,23 @@ jobs:
   # Renders the final talos-images.yaml from job outputs + per-account
   # artifacts and opens / updates the bot/talos-images-bump PR.
   assemble-and-pr:
+    # Run as long as build + discover succeeded. oci-import is a
+    # fail-fast=false matrix; we tolerate per-account failures and
+    # publish the inventory with whichever OCIDs successfully made it.
+    # (1 failed account out of 4 should not block the other 3.) The
+    # render step only emits accounts that produced artifacts; missing
+    # accounts simply don't appear in the per-account map.
     needs: [build, discover-oracle, oci-import]
     if: |
       always()
       && needs.build.result == 'success'
       && needs.build.outputs.skipped != 'true'
       && needs.discover-oracle.result == 'success'
-      && (needs.oci-import.result == 'success' || needs.discover-oracle.outputs.count == '0')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v6
         with:
           path: /tmp/oci-artifacts
           pattern: oci-import-*
@@ -720,7 +725,7 @@ jobs:
       # Open a PR rather than push directly: image bumps trigger VPS
       # reinstalls when applied, so a human review beat is required.
       - name: Open / update PR
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           branch: bot/talos-images-bump
           base: main
