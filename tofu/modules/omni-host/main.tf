@@ -45,21 +45,22 @@ locals {
   user_data = templatefile(
     "${path.module}/cloud-init.yaml.tftpl",
     {
-      name                           = var.name
-      docker_compose_yaml            = local.docker_compose_yaml
-      dex_omni_client_secret         = random_password.dex_omni_client_secret.result
-      siderolink_api_advertised_host = var.siderolink_api_advertised_host
-      github_oidc_client_id          = var.github_oidc_client_id
-      github_oidc_client_secret      = var.github_oidc_client_secret
-      github_oidc_allowed_orgs       = var.github_oidc_allowed_orgs
-      tls_cert_pem                   = var.tls_cert_pem
-      tls_key_pem                    = var.tls_key_pem
-      ssh_authorized_keys            = var.ssh_authorized_keys
-      r2_account_id                  = var.r2_account_id
-      r2_access_key_id               = var.r2_access_key_id
-      r2_secret_access_key           = var.r2_secret_access_key
-      r2_bucket_name                 = var.r2_bucket_name
-      r2_backup_prefix               = var.r2_backup_prefix
+      name                                 = var.name
+      docker_compose_yaml                  = local.docker_compose_yaml
+      dex_omni_client_secret               = random_password.dex_omni_client_secret.result
+      siderolink_api_advertised_host       = var.siderolink_api_advertised_host
+      siderolink_wireguard_advertised_host = var.siderolink_wireguard_advertised_host
+      github_oidc_client_id                = var.github_oidc_client_id
+      github_oidc_client_secret            = var.github_oidc_client_secret
+      github_oidc_allowed_orgs             = var.github_oidc_allowed_orgs
+      tls_cert_pem                         = var.tls_cert_pem
+      tls_key_pem                          = var.tls_key_pem
+      ssh_authorized_keys                  = var.ssh_authorized_keys
+      r2_account_id                        = var.r2_account_id
+      r2_access_key_id                     = var.r2_access_key_id
+      r2_secret_access_key                 = var.r2_secret_access_key
+      r2_bucket_name                       = var.r2_bucket_name
+      r2_backup_prefix                     = var.r2_backup_prefix
     }
   )
 }
