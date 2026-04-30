@@ -33,8 +33,3 @@ variable "annotations" {
 variable "bastion_id" { type = string }
 variable "account_key" { type = string }
 variable "region" { type = string }
-variable "reinstall_request_hash" {
-  type        = string
-  default     = ""
-  description = "SHA1 of the latest applicable reinstall-request file for this node (from .github/reconstruction/), or \"\" if none. Drives terraform_data.reinstall_marker.triggers_replace; replace cascades into oci_core_instance.this via lifecycle.replace_triggered_by (destroy+create wipes the disk)."
-}

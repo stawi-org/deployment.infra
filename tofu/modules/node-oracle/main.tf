@@ -7,7 +7,7 @@ terraform {
 
 # Drops the legacy terraform_data.image_fingerprint from state without
 # destroying anything. terraform_data has no real backend, so removed
-# is a state-only edit. The replacement (reinstall_marker below) is a
+# is a state-only edit. Letting source_details drift trigger plan-time
 # brand-new resource — its creation does NOT count as a replacement
 # for replace_triggered_by purposes, so oci_core_instance is preserved
 # across this migration.
@@ -36,12 +36,6 @@ removed {
 # not compatible") — so the in-place update isn't a real OCI
 # operation, just a tofu state-only edit at best. Re-rolling
 # instances onto a new image is the reinstall-request file's job.
-resource "terraform_data" "reinstall_marker" {
-  triggers_replace = {
-    reinstall_request_hash = var.reinstall_request_hash
-  }
-}
-
 # Direct image_id + user_data wiring — changes cause destroy+create of
 # the instance (OCI doesn't support in-place re-image). Expect the
 # worker to disappear and reappear on any Talos version bump. The
@@ -95,28 +89,21 @@ resource "oci_core_instance" "this" {
   metadata = {}
 
   lifecycle {
-    replace_triggered_by = [terraform_data.reinstall_marker]
-    ignore_changes = [
-      # availability_domain is resolved by the parent module's capacity
-      # probe (oracle-account-infra/main.tf). It picks the AD with the
-      # most current capacity, so the value can drift between plans
-      # even without operator intent — without this, a capacity shift
-      # in another AD would destroy+create a working instance to "move"
-      # it. Ignore so the chosen-at-create AD sticks for the instance
-      # lifetime; explicit reinstall is the only path that re-rolls AD
-      # selection.
-      availability_domain,
-      # source_details (boot image + boot_volume_size) drift on every
-      # image rebuild — a new oci_core_image OCID lands in source_id
-      # but the running instance can't actually migrate to it (OCI
-      # rejects cross-launchOptions UpdateInstance with 400-Invalid
-      # Parameter "Boot volume type ... not compatible"). Re-rolling
-      # an instance onto a new image is the reinstall-request file's
-      # job — that path destroys+creates and gets the new image
-      # cleanly. Without this ignore_changes, every image bump
-      # crashes apply for accounts with running instances.
-      source_details,
-    ]
+    # availability_domain is resolved by the parent module's capacity
+    # probe (oracle-account-infra/main.tf). It picks the AD with the
+    # most current capacity, so the value can drift between plans
+    # even without operator intent — without this, a capacity shift
+    # in another AD would destroy+create a working instance to "move"
+    # it. Ignore so the chosen-at-create AD sticks for the instance
+    # lifetime.
+    #
+    # source_details is intentionally NOT ignored. When the inventory
+    # rolls a new OCID forward, OCI rejects in-place image swap with
+    # 400-Invalid Parameter, so tofu plan shows destroy+create — the
+    # right outcome: instance recreates on the new image, joins
+    # SideroLink, registers in Omni. This is exactly the "node lacks
+    # Omni image → install it" branch of the simplified flow.
+    ignore_changes = [availability_domain]
   }
 }
 

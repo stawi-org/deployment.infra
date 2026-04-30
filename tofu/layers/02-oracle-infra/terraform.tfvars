@@ -12,8 +12,7 @@ age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
 # a plain qcow2 (no metadata) and boots with the wrong defaults.
 force_image_generation = 11
 
-# Per-node reinstalls are now driven by request files under
-# .github/reconstruction/. The tofu-reconstruct workflow opens a PR
-# adding reinstall-*.yaml; merging fires cluster-reinstall.yml which
-# dispatches tofu-apply, and the request hash flows into the per-node
-# terraform_data.reinstall_marker triggers via reconstruction.tf.
+# Per-node reinstalls happen automatically when the inventory's OCID
+# changes (regenerate-talos-images workflow rolls a new image →
+# oci_core_instance source_details drifts → tofu plans destroy+create).
+# No request-file mechanism, no manual triggers.

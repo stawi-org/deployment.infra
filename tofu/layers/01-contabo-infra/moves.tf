@@ -54,13 +54,20 @@ moved {
   to   = module.nodes["contabo-bwire-node-3"]
 }
 
-# --- Reconstruction-mechanism migration ------------------------------
-# Drops the integer-counter terraform_data from state without touching
-# anything Contabo-side. Replacement is now driven by
-# terraform_data.image_reinstall_marker (keyed on the SHA1 of the
-# latest reinstall request under .github/reconstruction/).
+# --- Reconstruction-mechanism cleanup --------------------------------
+# Drop legacy reinstall-trigger terraform_data from state without
+# destroying anything Contabo-side. The reinstall flow is now
+# image-drift-driven (contabo_image UUID change → ensure-image.sh
+# detects the diff and PUTs the reinstall PUT).
 removed {
   from = terraform_data.image_generation
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = terraform_data.image_reinstall_marker
   lifecycle {
     destroy = false
   }

@@ -1,9 +1,0 @@
-operation: reinstall
-scope: all
-nodes: []
-reason: |-
-  Full disk reinstall to clear mixed-CA state from debug loop; bring cluster back at v1.12.6
-requested_by: pitabwire
-requested_at: 2026-04-26T08:41:02Z
-source_run_id: "24952462764"
-source_run_url: https://github.com/stawi-org/deployment.infra/actions/runs/24952462764

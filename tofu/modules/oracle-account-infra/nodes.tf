@@ -27,9 +27,6 @@ module "node" {
   bastion_id          = oci_bastion_bastion.this.id
   account_key         = var.account_key
   region              = var.region
-  reinstall_request_hash = lookup(
-    var.per_node_reinstall_request_hash, each.key, ""
-  )
 
   providers = { oci = oci }
 }

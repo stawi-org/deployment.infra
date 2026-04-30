@@ -83,12 +83,6 @@ variable "talos_qcow2_local_path" {
   description = "Local filesystem path to a pre-downloaded Talos oracle-arm64 QCOW2. When set (and talos_image_source_uri is empty), the module creates a per-account public-read Object Storage bucket and uploads the file, then points CreateImage at the resulting objectstorage.<region>.oraclecloud.com URL. The workflow populates this by downloading from factory.talos.dev once per plan."
 }
 
-variable "per_node_reinstall_request_hash" {
-  type        = map(string)
-  default     = {}
-  description = "Per-node-key SHA1 of the latest applicable reinstall-request file from .github/reconstruction/, or \"\" if none. Computed by layer 02's reconstruction.tf — drives terraform_data.reinstall_marker.triggers_replace and (via replace_triggered_by) destroy+create of the OCI instance for in-scope nodes."
-}
-
 variable "omni_siderolink_url" {
   type        = string
   default     = ""

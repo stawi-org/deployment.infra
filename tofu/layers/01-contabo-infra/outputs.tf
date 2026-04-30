@@ -4,11 +4,6 @@ output "nodes" {
   value       = { for k, m in module.nodes : k => m.node }
 }
 
-output "cluster_reinstall_marker" {
-  description = "SHA1 of all scope=all reinstall requests under .github/reconstruction/. Layer 03 watches this on talos_machine_bootstrap.replace_triggered_by — when it changes, every Contabo CP got a wipe request together and the bootstrap RPC must re-fire against fresh etcd. Per-node (scope=selected) requests deliberately do NOT change this; those add a healthy node to a quorate cluster instead of bootstrapping a new one."
-  value       = local.cluster_wide_reinstall_marker
-}
-
 output "debug_inventory_has_files" {
   value = {
     for k, m in module.contabo_account_state : k => m.has_files

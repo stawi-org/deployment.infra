@@ -45,23 +45,15 @@ resource "contabo_instance" "this" {
   }
 }
 
-# Enforce that contabo_instance.this.id is running var.image_id on the
-# Contabo side. Runs once per active reinstall request and on first
-# create.
+# Enforce that contabo_instance.this.id is running var.image_id on
+# the Contabo side. Triggers re-run when the target image_id drifts —
+# a new contabo_image UUID (from inventory regen) is the sole signal
+# for a reinstall. ensure-image.sh compares Contabo's reported imageId
+# to the target and PUTs a reinstall iff they differ; otherwise no-op.
 resource "null_resource" "ensure_image" {
-  # Fires ONLY on:
-  #   (a) first creation of this instance (no OS yet — needs a real
-  #       install). instance_id is fresh, so null_resource is new.
-  #   (b) a new reinstall request file under .github/reconstruction/
-  #       lists this node (or scope=all) → reinstall_request_hash drifts.
-  #
-  # Intentionally NOT keyed on var.image_id or the script hash —
-  # bumping Talos versions is an UPGRADE, not a reinstall. An in-place
-  # talosctl upgrade preserves etcd, volumes, and workload state; a
-  # reinstall wipes all of that. The two paths must stay separate.
   triggers = {
-    instance_id            = contabo_instance.this.id
-    reinstall_request_hash = var.reinstall_request_hash
+    instance_id     = contabo_instance.this.id
+    target_image_id = var.image_id
   }
 
   provisioner "local-exec" {
@@ -73,22 +65,8 @@ resource "null_resource" "ensure_image" {
       CONTABO_CLIENT_SECRET = var.contabo_client_secret
       CONTABO_API_USER      = var.contabo_api_user
       CONTABO_API_PASSWORD  = var.contabo_api_password
-      # Drives ensure-image.sh's failure-isolation policy: workers
-      # warn-and-continue, controlplanes fail tofu. Keeps a single
-      # bad VPS from blocking provisioning of the rest of the cluster.
+      # Worker failures warn-and-continue; CP failures fail tofu.
       NODE_ROLE = var.role
-      # MODE=verify on first-create or trigger-drift-with-no-active-
-      # request: just confirm Talos API is answering on :50000.
-      # MODE=reinstall when an active request applies to this node:
-      # call Contabo's reinstall PUT directly and wait for Talos to
-      # come back up. Wipes the disk.
-      MODE = var.reinstall_request_hash != "" ? "reinstall" : "verify"
-      # Skip the post-reinstall TCP-probe to :50000. Talos's API now
-      # only listens on the SideroLink WireGuard tunnel (Omni-managed
-      # cluster), not on the public IP. Contabo's own status=running
-      # signal already confirms the disk was reimaged; whether Talos
-      # came up healthy is Omni's verification surface.
-      READY_CHECK = "skip"
     }
     command = "${path.module}/ensure-image.sh"
   }

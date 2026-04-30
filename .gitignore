@@ -52,3 +52,4 @@ htmlcov/
 # Talos layer apply-stage scratch (rendered machine configs / talosconfig)
 # Contains cluster-CA-signed material; never commit.
 tofu/layers/03-talos/.apply-stage/
+.playwright-mcp/

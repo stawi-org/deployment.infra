@@ -1,9 +1,0 @@
-operation: reset
-scope: all
-nodes: []
-reason: |-
-  Resolve bug related to setting up cluster reinstall
-requested_by: pitabwire
-requested_at: 2026-04-25T14:49:09Z
-source_run_id: "24933466549"
-source_run_url: https://github.com/stawi-org/deployment.infra/actions/runs/24933466549
