@@ -110,8 +110,16 @@ data "cloudflare_dns_records" "cpd" {
 }
 
 locals {
-  cp_a_id     = try([for r in data.cloudflare_dns_records.cp.result : r.id if r.type == "A"][0], null)
-  cp_aaaa_id  = try([for r in data.cloudflare_dns_records.cp.result : r.id if r.type == "AAAA"][0], null)
+  # Match the PROXIED record specifically — historically this layer
+  # raced with 03-talos's cluster_dns module which planted DNS-only
+  # `cp.<zone>` A/AAAA records pointing at every Talos CP node. If
+  # this import grabbed one of those by being non-deterministic on
+  # `[0]`, the omni-host's DNS state would be hijacked. The per-CP
+  # records there are now scoped to `cp-<N>` and the round-robin is
+  # gone (see tofu/layers/03-talos/dns.tf), but pinning to proxied=true
+  # also defends against any future stray DNS-only `cp` record.
+  cp_a_id     = try([for r in data.cloudflare_dns_records.cp.result : r.id if r.type == "A" && r.proxied][0], null)
+  cp_aaaa_id  = try([for r in data.cloudflare_dns_records.cp.result : r.id if r.type == "AAAA" && r.proxied][0], null)
   cpd_a_id    = try([for r in data.cloudflare_dns_records.cpd.result : r.id if r.type == "A"][0], null)
   cpd_aaaa_id = try([for r in data.cloudflare_dns_records.cpd.result : r.id if r.type == "AAAA"][0], null)
 }
