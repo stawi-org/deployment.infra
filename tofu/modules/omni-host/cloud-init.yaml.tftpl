@@ -101,7 +101,12 @@ write_files:
       staticClients:
         - id: omni
           secret: ${dex_omni_client_secret}
-          redirectURIs: [https://${siderolink_api_advertised_host}/oauth/callback]
+          # Omni's UI sends the OIDC code-exchange redirect to
+          # /oidc/consume (Omni v1.7+). Earlier docs and the original
+          # cloud-init had /oauth/callback, which Dex rejected with
+          # "Unregistered redirect_uri" once the user actually got far
+          # enough to attempt sign-in.
+          redirectURIs: [https://${siderolink_api_advertised_host}/oidc/consume]
           name: Omni
 
   # nginx terminates TLS only for cp.<zone> (browser dashboard via
