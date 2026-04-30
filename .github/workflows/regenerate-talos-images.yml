@@ -190,21 +190,36 @@ jobs:
               --output /tmp/images/
             echo "::endgroup::"
           }
-          download_image "Generic image (amd64)" amd64   # contabo (metal-amd64.raw.xz)
-          download_image iso                     amd64   # on-prem  (metal-amd64.iso)
-          download_image oracle                  arm64   # oci      (oracle-arm64.qcow2)
+          download_image "Generic image (amd64)" amd64   # contabo
+          download_image iso                     amd64   # on-prem
+          download_image oracle                  arm64   # oci (A1.Flex)
           ls -la /tmp/images/
 
           # ----- Resolve filenames produced by omnictl -----
-          contabo_file=$(cd /tmp/images && ls metal-amd64.raw.xz  2>/dev/null | head -1 || true)
-          onprem_file=$(cd /tmp/images  && ls metal-amd64.iso     2>/dev/null | head -1 || true)
-          oracle_file=$(cd /tmp/images  && ls oracle-arm64.qcow2  2>/dev/null | head -1 || true)
-          for v in "$contabo_file" "$onprem_file" "$oracle_file"; do
+          # Omni names files
+          # `<profile>-<arch>-omni-<account>-<version>-<short_id>.<ext>`,
+          # so the exact name varies per Omni install. Glob by
+          # profile-arch prefix + extension and require exactly one
+          # match per slot. Oracle ships qcow2-inside-xz (per
+          # InstallationMedia ContentType="application/x-xz"), so we
+          # decompress for the .oci archive build below.
+          contabo_file=$(cd /tmp/images && ls metal-amd64-*.xz   2>/dev/null | head -1 || true)
+          onprem_file=$(cd  /tmp/images && ls metal-amd64-*.iso  2>/dev/null | head -1 || true)
+          oracle_xz=$(cd    /tmp/images && ls oracle-arm64-*.xz  2>/dev/null | head -1 || true)
+          for v in "$contabo_file" "$onprem_file" "$oracle_xz"; do
             if [[ -z "$v" ]]; then
               echo "::error::expected image file missing — omnictl output naming may have changed"
+              ls -la /tmp/images/
               exit 1
             fi
           done
+
+          # Decompress oracle xz → qcow2 for the .oci archive build.
+          # The .xz wrapper is Omni's transport format; OCI image
+          # import wants a raw qcow2 inside the archive.
+          oracle_qcow2_file="${oracle_xz%.xz}.qcow2"
+          xz -dc "/tmp/images/${oracle_xz}" > "/tmp/images/${oracle_qcow2_file}"
+          oracle_file="${oracle_qcow2_file}"
 
           # ----- Build .oci archive (qcow2 + image_metadata.json) -----
           # OCI's CreateImage / UpdateImage APIs do NOT expose
