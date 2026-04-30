@@ -1,25 +1,35 @@
 # tofu/layers/01-contabo-infra/image.tf
+#
+# Per Task 4 of the Omni-takeover (docs/superpowers/plans/2026-04-30-
+# omni-takeover.md): image construction moves out of tofu and into
+# the regenerate-talos-images workflow. Tofu just reads the rendered
+# inventory and registers the URL with Contabo's image API.
+#
+# What stayed:
+#   - contabo_image per account (Contabo wants its own image UUID
+#     for use by contabo_instance.image_id; the URL is the input).
+#   - terraform_data.image_reinstall_marker + replace_triggered_by
+#     on contabo_image — guarantees a NEW image UUID per reinstall
+#     request file. Critical because Contabo's PUT /compute/instances
+#     treats imageId-equals-current as a metadata no-op (the disk
+#     does NOT get re-imaged). Bug observed in pre-Omni runs.
+#   - Per-account image (for_each over contabo_accounts_effective).
+#
+# What got removed:
+#   - talos_image_factory_schematic.this — schematics now ride
+#     omnictl through Omni's gRPC, mint happens in CI.
+#   - data.talos_image_factory_urls.this — URLs come from
+#     tofu/shared/inventory/talos-images.yaml.
+#   - var.omni_siderolink_url interpolation — Omni adds SideroLink
+#     params at omnictl-download time; we no longer twiddle the
+#     schematic per-apply.
+
 locals {
-  _base_schematic = yamldecode(file("${path.module}/../../shared/schematic.yaml"))
-  _schematic_with_siderolink = var.omni_siderolink_url == "" ? local._base_schematic : merge(local._base_schematic, {
-    customization = merge(local._base_schematic.customization, {
-      extraKernelArgs = concat(
-        local._base_schematic.customization.extraKernelArgs,
-        ["siderolink.api=${var.omni_siderolink_url}"],
-      )
-    })
-  })
-}
-
-resource "talos_image_factory_schematic" "this" {
-  schematic = yamlencode(local._schematic_with_siderolink)
-}
-
-data "talos_image_factory_urls" "this" {
-  talos_version = var.talos_version
-  schematic_id  = talos_image_factory_schematic.this.id
-  platform      = "metal"
-  architecture  = "amd64"
+  # Source of truth for image bytes + sha. Populated by the
+  # regenerate-talos-images workflow's auto-PR. URL host is a
+  # custom-domain-bound R2 bucket (images.stawi.org), so anonymous
+  # fetches by Contabo's image API succeed.
+  talos_images = yamldecode(file("${path.module}/../../shared/inventory/talos-images.yaml"))
 }
 
 # terraform_data that replaces whenever a new reinstall request
@@ -44,11 +54,11 @@ resource "contabo_image" "talos" {
 
   provider = contabo.account[each.key]
 
-  name        = "Talos ${var.talos_version}-${each.key}"
-  image_url   = data.talos_image_factory_urls.this.urls.iso
+  name        = "Talos ${local.talos_images.talos_version}-${each.key}"
+  image_url   = local.talos_images.formats.contabo.url
   os_type     = "Linux"
-  version     = var.talos_version
-  description = "Talos v${var.talos_version} metal-amd64"
+  version     = local.talos_images.talos_version
+  description = "Talos ${local.talos_images.talos_version} omni-aware (${local.talos_images.schematic_id})"
 
   # Explicit replacement on every new reinstall request. Whether
   # contabo_image treats name as ForceNew or updatable, this guarantees
