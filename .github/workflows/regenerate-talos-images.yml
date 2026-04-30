@@ -62,16 +62,19 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # cluster-tofu-state holds tofu state + the R2 inventory tree
+  # (oracle/<account>/auth.yaml etc). It stays private — readers
+  # use SigV4 with the R2 access keys.
   R2_BUCKET: cluster-tofu-state
-  R2_PREFIX: production/talos-images
-  OMNI_VERSION: v1.7.1 # Pinned to match the running Omni server.
-  # Public hostname for the R2 bucket — operator binds
-  # `images.stawi.org` to the `cluster-tofu-state` bucket via the
-  # Cloudflare R2 dashboard's "Custom Domains" tab. The path-style
-  # `<account>.r2.cloudflarestorage.com` URL requires SigV4 auth
-  # and isn't fetchable by Contabo / OCI image-import / etc., so
-  # the inventory URLs we render below use this host instead.
+  # Dedicated public-read bucket for Talos image bytes. Operator
+  # binds `images.stawi.org` to it via R2 dashboard → Custom
+  # Domains. Path-style `<account>.r2.cloudflarestorage.com` URLs
+  # would require SigV4 auth (Contabo / OCI image-import / on-prem
+  # cloud-init can't fetch those); the custom domain serves the
+  # bucket anonymously, which is what those clients expect.
+  R2_IMAGE_BUCKET: cluster-image-registry
   IMAGES_PUBLIC_HOST: images.stawi.org
+  OMNI_VERSION: v1.7.1 # Pinned to match the running Omni server.
 
 jobs:
   build:
@@ -292,7 +295,7 @@ jobs:
           echo "::notice::built $(stat -c%s "${oracle_archive_path}") byte .oci archive"
 
           # ----- Upload everything to R2 -----
-          dest_prefix="s3://${R2_BUCKET}/${R2_PREFIX}/${schematic_id}"
+          dest_prefix="s3://${R2_IMAGE_BUCKET}/${schematic_id}"
           for f in "/tmp/images/${contabo_file}" "/tmp/images/${onprem_file}" "/tmp/images/${oracle_file}" "${oracle_archive_path}"; do
             name=$(basename "$f")
             aws s3 cp "$f" "${dest_prefix}/${name}" --endpoint-url "${R2_ENDPOINT}"
@@ -473,7 +476,7 @@ jobs:
           mkdir -p /tmp/oci-stage
           archive_local="/tmp/oci-stage/${ARCHIVE_OBJECT}"
           aws s3 cp \
-            "s3://${R2_BUCKET}/${R2_PREFIX}/${SCHEMATIC_ID}/${ARCHIVE_OBJECT}" \
+            "s3://${R2_IMAGE_BUCKET}/${SCHEMATIC_ID}/${ARCHIVE_OBJECT}" \
             "${archive_local}" \
             --endpoint-url "${R2_ENDPOINT}"
           echo "::notice::downloaded $(stat -c%s "${archive_local}") byte archive"
@@ -671,7 +674,7 @@ jobs:
           # need. The S3-API URL (account.r2.cloudflarestorage.com)
           # would 400 anonymous requests, so we deliberately do NOT
           # use it for downstream URLs.
-          base="https://${IMAGES_PUBLIC_HOST}/${R2_PREFIX}/${SCHEMATIC_ID}"
+          base="https://${IMAGES_PUBLIC_HOST}/${SCHEMATIC_ID}"
 
           # Header (committed to repo as source of truth).
           {
