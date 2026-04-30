@@ -189,7 +189,14 @@ write_files:
           listen 0.0.0.0:443 ssl;
           listen [::]:443 ssl;
           http2 on;
-          server_name ${siderolink_api_advertised_host};
+          # Both names share the same routing. ${siderolink_api_advertised_host}
+          # (cp.<zone>) is orange-cloud — browser dashboard via CF.
+          # ${siderolink_wireguard_advertised_host} (cpd.<zone>) is gray-cloud
+          # direct — used by omnictl (whose native gRPC clients break under
+          # CF's free-plan HTTP/2-to-HTTP/1.1 origin downgrade) and by Talos
+          # machine-api on :8090. The CF Origin cert's SAN already covers
+          # both names, so a single ssl_certificate works for both.
+          server_name ${siderolink_api_advertised_host} ${siderolink_wireguard_advertised_host};
           ssl_certificate     /etc/omni/certs/server.crt;
           ssl_certificate_key /etc/omni/certs/server.key;
           ssl_protocols       TLSv1.2 TLSv1.3;
@@ -523,8 +530,13 @@ write_files:
           ip protocol icmp icmp type echo-request limit rate 10/second accept
           ip6 nexthdr ipv6-icmp accept
           tcp dport 22 accept comment "ssh (fail2ban-guarded)"
-          ip  saddr @cf_v4 tcp dport 443 accept comment "${siderolink_api_advertised_host} via Cloudflare"
-          ip6 saddr @cf_v6 tcp dport 443 accept comment "${siderolink_api_advertised_host} via Cloudflare (v6)"
+          # cp.<zone> (orange-cloud) traffic comes from CF only; cpd.<zone>
+          # (gray-cloud) traffic comes direct (omnictl). nftables can't
+          # distinguish the two by SNI before TLS terminates, so we accept
+          # all :443 from anywhere and rely on nginx + Omni auth for the
+          # access controls. CF DDoS protection still shields the cp.<zone>
+          # path because its DNS is orange-cloud (browsers hit CF first).
+          tcp dport 443 accept comment "${siderolink_api_advertised_host} (CF) + ${siderolink_wireguard_advertised_host} (omnictl gray-cloud)"
           tcp dport { 8090, 8100 } accept comment "Omni machine-api + k8s-proxy (Talos clients)"
           udp dport 50180 accept comment "SideroLink WireGuard"
           counter drop

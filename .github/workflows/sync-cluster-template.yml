@@ -44,7 +44,13 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     env:
-      OMNI_ENDPOINT: https://cp.stawi.org
+      # cpd.<zone> is gray-cloud direct (no CF in front). cp.<zone>
+      # is orange-cloud — CF's free plan downgrades HTTP/2 to HTTP/1.1
+      # at the origin which breaks omnictl's native gRPC client. The
+      # cert is a CF Origin Cert (not publicly trusted), so omnictl
+      # invocations all pass `--insecure-skip-tls-verify`. Auth still
+      # comes from OMNI_SERVICE_ACCOUNT_KEY.
+      OMNI_ENDPOINT: https://cpd.stawi.org
       OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
       DRY_RUN: ${{ inputs.dry_run }}
     steps:
@@ -53,8 +59,18 @@ jobs:
       - name: Install omnictl
         run: |
           set -euo pipefail
-          curl -fsSL -o /usr/local/bin/omnictl \
+          curl -fsSL -o /usr/local/bin/omnictl.real \
             "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          # Wrapper that always passes --insecure-skip-tls-verify.
+          # cpd.<zone> serves a CF Origin Cert that's only trusted by
+          # CF's edge — clients (including omnictl) reject it by
+          # default. Auth is still enforced via
+          # OMNI_SERVICE_ACCOUNT_KEY.
+          cat > /usr/local/bin/omnictl <<'WRAP'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
           chmod +x /usr/local/bin/omnictl
           omnictl --version
 
