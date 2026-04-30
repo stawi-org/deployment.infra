@@ -168,11 +168,13 @@ jobs:
           # update — flag now so we don't silently break it.
           #
           # `omnictl download <name>` matches by spec.Name, spec.Profile,
-          # or spec.Overlay (omnictl/download.go). Bare profile names
-          # like `metal` match multiple variants (iso, raw.xz, raw.zst)
-          # and fail with "multiple images found". We pass the FULL
-          # spec.Name (e.g. `metal-amd64.raw.xz`) instead so each
-          # download resolves to exactly one variant.
+          # or spec.Overlay (omnictl/download.go findImage). Profile
+          # `metal` is ambiguous (ISO + raw share it), so for the raw
+          # variant we hand the unique spec.Name "Generic image (amd64)"
+          # — the registered names live in
+          # internal/backend/runtime/omni/controllers/omni/installation_media.go.
+          # ISO has the substring-match special case so plain `iso` +
+          # arch filter is unique. Oracle profile is unique.
           mkdir -p /tmp/images
           download_image() {
             local image_name=$1 arch=$2
@@ -185,9 +187,9 @@ jobs:
               --output /tmp/images/
             echo "::endgroup::"
           }
-          download_image metal-amd64.raw.xz amd64   # contabo (xz, not zst — Omni's image factory output)
-          download_image metal-amd64.iso    amd64   # on-prem
-          download_image oracle-arm64.qcow2 arm64   # oci (A1.Flex)
+          download_image "Generic image (amd64)" amd64   # contabo (metal-amd64.raw.xz)
+          download_image iso                     amd64   # on-prem  (metal-amd64.iso)
+          download_image oracle                  arm64   # oci      (oracle-arm64.qcow2)
           ls -la /tmp/images/
 
           # ----- Resolve filenames produced by omnictl -----

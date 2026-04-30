@@ -4,19 +4,20 @@
 # Format mirrors the upstream libvirt-provider test fixture
 # (https://github.com/siderolabs/omni-infra-provider-libvirt/blob/main/test/machineclass.yaml).
 # COSI resource shape: metadata.type = MachineClasses.omni.sidero.dev,
-# spec.match_labels = list of "key=value" strings (per
-# client/api/omni/specs/omni.proto MachineClassSpec).
-#
-# Earlier attempts failed with "illegal base64 data at input byte 6"
-# but at the time the OMNI_SERVICE_ACCOUNT_KEY itself was malformed —
-# every omnictl call was failing on auth, surfacing as a misleading
-# decoder error. With auth working, the apply path is reachable.
+# protobuf-go-generated MachineClassSpec has the field MatchLabels;
+# go-yaml/v4 reflection lowercases it to `matchlabels` (no
+# underscore) — same flattening that produces `providerid` /
+# `providerdata` in the libvirt fixture for `provider_id` /
+# `provider_data`. Snake-case `match_labels` parses without error
+# but leaves the spec empty, which Omni rejects with
+# "machine class should either have auto provision or match labels
+# set" (validated against client/api/omni/specs/omni.proto).
 metadata:
   namespace: default
   type: MachineClasses.omni.sidero.dev
   id: cp
 spec:
-  match_labels:
+  matchlabels:
     - role=cp
 ---
 metadata:
@@ -24,5 +25,5 @@ metadata:
   type: MachineClasses.omni.sidero.dev
   id: workers
 spec:
-  match_labels:
+  matchlabels:
     - role=worker
