@@ -50,16 +50,10 @@ variable "dex_version" {
   default = "v2.41.1"
 }
 
-variable "omni_tls_cert" {
+variable "cf_dns_api_token" {
   type        = string
   sensitive   = true
-  description = "PEM-encoded Cloudflare Origin Certificate covering cp.<zone> and cpd.<zone> in both DNS zones (antinvestor.com + stawi.org). Sourced from a GitHub secret."
-}
-
-variable "omni_tls_key" {
-  type        = string
-  sensitive   = true
-  description = "PEM-encoded private key matching omni_tls_cert. Sourced from a GitHub secret."
+  description = "Cloudflare API token for certbot's DNS-01 challenge (scoped to Zone:DNS:Edit on stawi.org). Sourced from CF_DNS_API_TOKEN GitHub secret."
 }
 
 variable "contabo_public_ssh_key" {

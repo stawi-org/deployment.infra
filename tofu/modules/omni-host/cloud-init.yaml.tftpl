@@ -52,6 +52,8 @@ packages:
   - unattended-upgrades
   - unzip
   - nftables
+  - certbot
+  - python3-certbot-dns-cloudflare
 
 write_files:
   - path: /etc/omni/docker-compose.yaml
@@ -60,23 +62,19 @@ write_files:
     content: |
       ${indent(6, docker_compose_yaml)}
 
-  # TLS cert + key (Cloudflare Origin Certificate, supplied as tofu vars
-  # from GitHub secrets). One multi-SAN cert covers cp.<zone> and
-  # cpd.<zone> in both DNS zones. Browsers accept the cert at the
-  # Cloudflare edge (cp.<zone> orange-cloud); Talos validates it
-  # directly when dialing cpd.<zone>:8090, which requires the CF Origin
-  # CA to be in Talos's trusted-roots — handled in the Talos schematic
-  # in the consuming layer.
-  - path: /etc/omni/certs/server.crt
-    permissions: "0644"
-    owner: root:root
-    content: |
-      ${indent(6, tls_cert_pem)}
-  - path: /etc/omni/certs/server.key
+  # Cloudflare API token for certbot's DNS-01 challenge. Scoped to
+  # Zone: DNS: Edit on the stawi.org zone — operator creates the token
+  # via the CF dashboard once and stores it as the CF_DNS_API_TOKEN
+  # GitHub secret. omni-cert-bootstrap.service consumes this on first
+  # boot to issue a real Let's Encrypt cert for cp.<zone> + cpd.<zone>.
+  # Talos clients validate the LE chain against their default trust
+  # store; the CF Origin Cert path (privately signed, untrusted by
+  # Talos) is gone.
+  - path: /etc/letsencrypt/cloudflare.ini
     permissions: "0600"
     owner: root:root
     content: |
-      ${indent(6, tls_key_pem)}
+      dns_cloudflare_api_token = ${cf_dns_api_token}
 
   - path: /etc/dex/config.yaml
     permissions: "0644"
@@ -239,13 +237,80 @@ write_files:
         }
       }
 
+  # Issue / renew Let's Encrypt cert via Cloudflare DNS-01 challenge
+  # before the stack starts. Talos clients dialing cpd.<zone>:8090 for
+  # SideroLink registration validate the chain against the public
+  # Mozilla CA bundle, so a CF Origin Cert won't work — only a public
+  # CA cert (LE) is trusted. DNS-01 keeps port 80 closed.
+  #
+  # Idempotent: if /etc/letsencrypt/live/cpd.<zone>/fullchain.pem
+  # already exists, certbot's --keep-until-expiring flag plus the
+  # systemd If= guard keeps the unit a no-op until ~30 days before
+  # expiry. Renewals: certbot.timer (shipped with the package) runs
+  # twice daily and reloads nginx on success.
+  - path: /usr/local/bin/omni-cert-bootstrap.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      domains=(${siderolink_api_advertised_host} ${siderolink_wireguard_advertised_host})
+      primary=$${domains[0]}
+      live="/etc/letsencrypt/live/$${primary}/fullchain.pem"
+      if [ ! -f "$${live}" ]; then
+        certbot_args=()
+        for d in "$${domains[@]}"; do certbot_args+=(-d "$$d"); done
+        certbot certonly \
+          --non-interactive --agree-tos \
+          --email ${eula_email} \
+          --dns-cloudflare \
+          --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
+          --dns-cloudflare-propagation-seconds 30 \
+          "$${certbot_args[@]}"
+      fi
+      install -m 0644 -o root -g root \
+        "/etc/letsencrypt/live/$${primary}/fullchain.pem" \
+        /etc/omni/certs/server.crt
+      install -m 0600 -o root -g root \
+        "/etc/letsencrypt/live/$${primary}/privkey.pem" \
+        /etc/omni/certs/server.key
+
+  - path: /etc/systemd/system/omni-cert-bootstrap.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Issue/renew LE cert for cp + cpd, copy into /etc/omni/certs
+      After=network-online.target
+      Wants=network-online.target
+      Before=omni-stack.service
+      [Service]
+      Type=oneshot
+      RemainAfterExit=true
+      ExecStart=/usr/local/bin/omni-cert-bootstrap.sh
+      [Install]
+      WantedBy=multi-user.target
+
+  # Renewal hook — certbot.timer triggers cert renewal twice daily;
+  # this deploy hook copies fresh cert into /etc/omni/certs and
+  # reloads nginx so it picks up the new cert without a full restart.
+  - path: /etc/letsencrypt/renewal-hooks/deploy/omni-reload.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      install -m 0644 -o root -g root \
+        "$$RENEWED_LINEAGE/fullchain.pem" /etc/omni/certs/server.crt
+      install -m 0600 -o root -g root \
+        "$$RENEWED_LINEAGE/privkey.pem"   /etc/omni/certs/server.key
+      docker compose -f /etc/omni/docker-compose.yaml exec -T nginx \
+        nginx -s reload || true
+
   - path: /etc/systemd/system/omni-stack.service
     permissions: "0644"
     content: |
       [Unit]
       Description=Omni stack (omni + dex + nginx)
-      Requires=docker.service omni-keys.service
-      After=docker.service network-online.target omni-keys.service omni-restore.service
+      Requires=docker.service omni-keys.service omni-cert-bootstrap.service
+      After=docker.service network-online.target omni-keys.service omni-restore.service omni-cert-bootstrap.service
       [Service]
       Type=oneshot
       RemainAfterExit=true
@@ -606,8 +671,14 @@ runcmd:
   - systemctl reload ssh.service
   - systemctl enable --now omni-restore.service
   - systemctl enable --now omni-keys.service
+  - systemctl enable --now omni-cert-bootstrap.service
   - systemctl enable --now omni-stack.service
   - systemctl enable --now omni-backup.timer
+  # certbot.timer (shipped with the certbot package) runs cert
+  # renewals twice daily; the deploy hook in
+  # /etc/letsencrypt/renewal-hooks/deploy/omni-reload.sh refreshes
+  # /etc/omni/certs and reloads nginx on each successful renewal.
+  - systemctl enable --now certbot.timer
   # Ready-check is started here too so its exit code surfaces in the
   # final cloud-init log — runcmd entries with non-zero exit codes
   # are visible in cloud-init.service's status.

@@ -64,16 +64,16 @@ variable "ssh_authorized_keys" {
   description = "Operator SSH public keys (sourced from the CONTABO_PUBLIC_SSH_KEY github secret). Authorised for root login on the omni-host VPS — used for diagnostics (Omni stack troubleshooting, container log inspection)."
 }
 
-variable "tls_cert_pem" {
+variable "cf_dns_api_token" {
   type        = string
   sensitive   = true
-  description = "PEM-encoded TLS certificate (Cloudflare Origin Cert, multi-SAN covering siderolink_api_advertised_host + siderolink_wireguard_advertised_host in both zones)."
-}
-
-variable "tls_key_pem" {
-  type        = string
-  sensitive   = true
-  description = "PEM-encoded private key matching tls_cert_pem."
+  description = <<-EOT
+    Cloudflare API token for certbot's DNS-01 challenge. Scoped to
+    Zone:DNS:Edit on the stawi.org zone. Operator creates the token
+    in the CF dashboard once and stores it as the CF_DNS_API_TOKEN
+    GitHub secret. omni-cert-bootstrap.service issues Let's Encrypt
+    certs on first boot; certbot.timer renews them.
+  EOT
 }
 
 variable "initial_users" {
