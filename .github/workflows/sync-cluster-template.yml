@@ -64,16 +64,19 @@ jobs:
       - name: Verify omnictl auth
         run: omnictl get user --output json | head -20
 
-      # Apply MachineClass resources first. Cluster templates can
-      # only carry Cluster / ControlPlane / Workers / ConfigPatch
-      # kinds — top-level resources like MachineClass go through
-      # `omnictl apply`. Doing this BEFORE the template sync
-      # guarantees the cluster's machine-set references resolve.
-      - name: Apply machine classes
-        if: env.DRY_RUN != 'true'
-        run: |
-          set -euo pipefail
-          omnictl apply -f tofu/shared/clusters/machine-classes.yaml
+      # MachineClass apply is currently operator-driven (via the Omni
+      # dashboard's MachineClasses → Create flow). The COSI YAML
+      # format that `omnictl apply` expects for MachineClassSpec
+      # consistently fails the parser with "illegal base64 data at
+      # input byte 6" regardless of the field-name spelling we try
+      # (snake_case `match_labels`, lowercase `matchlabels`, camel
+      # `matchLabels`). Tracking the right format upstream is a
+      # follow-up; until then, the cluster template's
+      # `machineClass: { name: cp | workers }` references resolve
+      # against dashboard-created classes.
+      #
+      # See the README in `tofu/shared/clusters/` for the one-time
+      # setup the operator runs.
 
       # Validate before sync — catches schema typos that would
       # otherwise fail mid-apply with partial state changes.
