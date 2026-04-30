@@ -66,14 +66,18 @@ env:
   # (oracle/<account>/auth.yaml etc). It stays private — readers
   # use SigV4 with the R2 access keys.
   R2_BUCKET: cluster-tofu-state
-  # Dedicated public-read bucket for Talos image bytes. Operator
-  # binds `images.stawi.org` to it via R2 dashboard → Custom
-  # Domains. Path-style `<account>.r2.cloudflarestorage.com` URLs
-  # would require SigV4 auth (Contabo / OCI image-import / on-prem
-  # cloud-init can't fetch those); the custom domain serves the
-  # bucket anonymously, which is what those clients expect.
-  R2_IMAGE_BUCKET: cluster-image-registry
-  IMAGES_PUBLIC_HOST: images.stawi.org
+  # Public-read bucket for Talos image bytes, operator-bound to a
+  # public custom domain (default pkgs.stawi.org). Path-style
+  # `<account>.r2.cloudflarestorage.com` URLs require SigV4 auth
+  # (Contabo / OCI image-import / on-prem cloud-init can't fetch
+  # those); the custom domain serves the bucket anonymously.
+  #
+  # Both values are sourced from GitHub Actions repo Variables so
+  # the operator can rebind to a different bucket / hostname
+  # without code changes. Defaults match the operator's current
+  # binding (cluster-image-registry → pkgs.stawi.org).
+  R2_IMAGE_BUCKET: ${{ vars.R2_IMAGE_BUCKET || 'cluster-image-registry' }}
+  IMAGES_PUBLIC_HOST: ${{ vars.IMAGES_PUBLIC_HOST || 'pkgs.stawi.org' }}
   OMNI_VERSION: v1.7.1 # Pinned to match the running Omni server.
 
 jobs:
