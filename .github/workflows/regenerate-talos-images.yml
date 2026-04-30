@@ -536,14 +536,14 @@ jobs:
             echo "::notice::reusing existing image ${existing}"
             ocid="${existing}"
           else
-            # `image import from-object` waits for the import to
-            # complete and emits the image OCID as JSON. --launch-mode
-            # is omitted so OCI auto-detects from the archive metadata
-            # (CUSTOM with the launchOptions we encoded).
+            # `image import from-object` returns immediately with the
+            # new image OCID in IMPORTING state — `--wait-for-state`
+            # isn't supported on this subcommand (OCI CLI ≥ 3.x).
+            # We poll `image get` until AVAILABLE ourselves.
             #
-            # Capture stdout to a file (not via $(...)) so any stderr
-            # surfaces on the action log — OCI CLI's exit-code-2
-            # validation errors otherwise vanish into the void.
+            # --launch-mode is omitted so OCI auto-detects from the
+            # archive metadata (CUSTOM with the launchOptions we
+            # encoded).
             echo "::notice::importing ${ARCHIVE_OBJECT} as custom image"
             tmp=$(mktemp)
             if ! oci --profile "${PROFILE}" compute image import from-object \
@@ -552,8 +552,6 @@ jobs:
                   --bucket-name "${BUCKET}" \
                   --name "${ARCHIVE_OBJECT}" \
                   --display-name "${display_name}" \
-                  --wait-for-state AVAILABLE \
-                  --max-wait-seconds 1800 \
                   > "$tmp"; then
               echo "::error::oci compute image import from-object failed"
               echo "::group::oci response"
@@ -567,7 +565,32 @@ jobs:
               cat "$tmp" >&2
               exit 1
             fi
-            echo "::notice::imported as ${ocid}"
+            echo "::notice::queued import as ${ocid}; polling for AVAILABLE"
+
+            # Cap at 30min (60 × 30s = 1800s). Image imports for
+            # ~100MB qcow2 archives typically settle in 5-10 min.
+            for i in $(seq 1 60); do
+              state=$(oci --profile "${PROFILE}" compute image get \
+                --image-id "${ocid}" \
+                --query 'data."lifecycle-state"' --raw-output 2>/dev/null || true)
+              case "${state:-UNKNOWN}" in
+                AVAILABLE)
+                  echo "::notice::image AVAILABLE after $((i * 30))s"
+                  break
+                  ;;
+                IMPORTING|PROVISIONING)
+                  sleep 30
+                  ;;
+                *)
+                  echo "::error::image entered unexpected state ${state} (attempt ${i})"
+                  exit 1
+                  ;;
+              esac
+              if [[ $i -eq 60 ]]; then
+                echo "::error::image still ${state} after 30min"
+                exit 1
+              fi
+            done
           fi
           echo "ocid=${ocid}" >> "$GITHUB_OUTPUT"
 
