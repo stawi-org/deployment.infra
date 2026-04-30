@@ -1,27 +1,43 @@
-# Talos image inventory — populated by .github/workflows/regenerate-talos-images.yml.
-#
-# Each apply of the regen workflow downloads Omni-aware Talos images
-# (with SideroLink baked in by Omni at build time) and uploads them to
-# R2. Tofu's node-* modules read this file for the URL/OCID of the
-# image to provision against — never re-computed at apply time.
-#
-# This file is committed to the repo as the source of truth, so that
-# every plan from any worktree sees the same images. CI opens a PR
-# when the schematic-relevant inputs change (extensions, kernel args,
-# Talos version).
-#
-# Empty stub — the first regen-workflow run populates it. Until then
-# downstream consumers read defaults from their own modules.
-schematic_id: ""
-talos_version: ""
-generated_at: ""
+# Talos image inventory — managed by .github/workflows/regenerate-talos-images.yml.
+# DO NOT edit by hand. To regenerate: run that workflow with force=true,
+# or bump tofu/shared/schematics/cluster.yaml and merge.
+schematic_id: "09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0"
+talos_version: "v1.13.0"
+generated_at: "2026-04-30T10:19:25Z"
 formats:
   contabo:
-    url: ""
-    sha256: ""
+    url: "https://c358ea38bde6fd03d13bf87068635230.r2.cloudflarestorage.com/cluster-tofu-state/production/talos-images/09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0/metal-amd64-omni-stawi-v1.13.0-6e47f8.xz"
+    sha256: "d8d56c78eb5e8fcdf1a91eb59369d5e42157465e6d1e9ca6173f72c6f4b2ed9c"
   onprem:
-    url: ""
-    sha256: ""
+    url: "https://c358ea38bde6fd03d13bf87068635230.r2.cloudflarestorage.com/cluster-tofu-state/production/talos-images/09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0/metal-amd64-omni-stawi-v1.13.0-6e47f8.iso"
+    sha256: "56d1477a326ef3b57ab239d87d47256626f173ff592c5acc732f5bef342219c7"
   oracle:
-    qcow2_url: ""
-    qcow2_sha256: ""
+    qcow2_url: "https://c358ea38bde6fd03d13bf87068635230.r2.cloudflarestorage.com/cluster-tofu-state/production/talos-images/09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0/oracle-arm64-omni-stawi-v1.13.0-6e47f8.qcow2"
+    qcow2_sha256: "95748d4cc8911cdfcda59ee021411f51a51504e0c50b525fda0e39a269b07171"
+    archive_url: "https://c358ea38bde6fd03d13bf87068635230.r2.cloudflarestorage.com/cluster-tofu-state/production/talos-images/09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0/talos-v1.13.0-09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0-oracle-arm64.oci"
+    archive_sha256: "616711869cf390639c9f4c2daaf73eb3330e435c0e3dccdfb71dbe31c5440477"
+    accounts:
+      alimbacho67:
+        ocid: "ocid1.image.oc1.eu-frankfurt-1.aaaaaaaafu3t4eevnuggzxmwfzsuqipyg5zn3sd5ows37xxcviebb3amaoaa"
+        region: "eu-frankfurt-1"
+        namespace: "frkcct5ousx4"
+        bucket: "talos-images-alimbacho67"
+        object: "talos-v1.13.0-09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0-oracle-arm64.oci"
+      ambetera:
+        ocid: "ocid1.image.oc1.uk-london-1.aaaaaaaamccb7dks3t5wbdpy3g6pdcyldeyl6tjv4k37vnk2pa5e5niwvrga"
+        region: "uk-london-1"
+        namespace: "lrxjfm8ftnia"
+        bucket: "talos-images-ambetera"
+        object: "talos-v1.13.0-09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0-oracle-arm64.oci"
+      brianelvis33:
+        ocid: "ocid1.image.oc1.eu-frankfurt-1.aaaaaaaaf4ngvjhds3t2r3kqwufblitewpa6sgju4nq36jknjlmbm7jljuta"
+        region: "eu-frankfurt-1"
+        namespace: "frbrxjzxjaq1"
+        bucket: "talos-images-brianelvis33"
+        object: "talos-v1.13.0-09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0-oracle-arm64.oci"
+      bwire:
+        ocid: "ocid1.image.oc1.eu-frankfurt-1.aaaaaaaacsomhi7s4mohtv5a7ezxxtfobk5lm4nap3jkbsymjzcukuzq2bea"
+        region: "eu-frankfurt-1"
+        namespace: "frosk7nwicev"
+        bucket: "talos-images-bwire"
+        object: "talos-v1.13.0-09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0-oracle-arm64.oci"
