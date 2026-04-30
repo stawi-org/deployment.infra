@@ -1,0 +1,16 @@
+operation: reinstall
+scope: all
+nodes: []
+reason: |-
+  Roll every node onto the Omni-aware Talos image (raw URL via
+  pkgs.stawi.org / Oracle OCID per account from talos-images.yaml).
+  Existing nodes are still on the pre-Omni image and don't carry
+  SideroLink kernel args, so they don't auto-register with the
+  Omni control plane. This reinstall drops them onto the new
+  ISO whose kernel cmdline includes siderolink.api=cpd.stawi.org
+  — first boot, they appear in Omni's machine inventory, and the
+  cluster template (machineClass cp/workers) assigns roles.
+requested_by: pitabwire
+requested_at: 2026-04-30T13:33:26Z
+source_run_id: "manual"
+source_run_url: omni-takeover-cutover
