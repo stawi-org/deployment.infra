@@ -35,12 +35,18 @@ command -v omnictl >/dev/null || { echo "[sync-machine-labels] omnictl not in PA
 command -v jq >/dev/null      || { echo "[sync-machine-labels] jq not in PATH"      >&2; exit 1; }
 [[ -n "${OMNI_SERVICE_ACCOUNT_KEY:-}" ]] || { echo "[sync-machine-labels] OMNI_SERVICE_ACCOUNT_KEY unset" >&2; exit 1; }
 
-# All registered Machines for this cluster. `-l omni.sidero.dev/cluster=<name>`
-# filters server-side; the unfiltered list would include unbonded or other-
-# cluster machines. We tolerate an empty result (cluster has no machines yet).
-machines_json=$(omnictl get machinestatus \
-  --selector "omni.sidero.dev/cluster=${OMNI_CLUSTER:-stawi}" \
-  --output json 2>/dev/null || true)
+# Fetch ALL registered Machines, regardless of cluster binding —
+# `--selector omni.sidero.dev/cluster=<name>` only matches machines
+# already bound to a MachineSet. The labels we apply here are what
+# DRIVES the binding: `node.antinvestor.io/role=…` matches the cp /
+# workers MachineClass selectors, MachineProvisionController then
+# binds the machine to the cluster. So the right time to label is
+# BEFORE binding, when the machine is still unattached.
+#
+# We tolerate empty/no-output (no machines yet) gracefully — the
+# script is idempotent and will pick up newly-registered machines
+# on the next apply.
+machines_json=$(omnictl get machinestatus --output json 2>/dev/null || true)
 
 # omnictl emits one JSON object per resource (NDJSON, not a single array).
 # Slurp into a single array so jq can index by hostname.
