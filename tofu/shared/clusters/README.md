@@ -4,27 +4,13 @@
 [`sync-cluster-template`](../../../.github/workflows/sync-cluster-template.yml)
 workflow pushes it to the running Omni server on every change.
 
-## One-time operator setup: machine classes
+## Machine classes
 
 The cluster spec's `ControlPlane` and `Workers` machine sets reference
-two machine classes by name (`cp` and `workers`). Until the cluster
-template format for `MachineClass` resources is figured out, the
-operator creates these manually:
-
-1. Open <https://cp.stawi.org/omni> → **MachineClasses** → **Create
-   MachineClass**.
-2. Class name: `cp`. Match labels: `role=cp`. Save.
-3. Class name: `workers`. Match labels: `role=worker`. Save.
-
-Or via `omnictl` once the YAML format is verified — `omnictl apply`
-currently fails parsing `MachineClassSpec` ("illegal base64 data at
-input byte 6") regardless of the field-name spelling, so the
-dashboard is the working path.
-
-After the classes exist in Omni, the next push to `main` touching
-`tofu/shared/clusters/**` will sync the cluster template; the
-`ControlPlane` / `Workers` references resolve against the
-dashboard-created classes.
+machine classes named `cp` and `workers`. Both classes are declared in
+[`machine-classes.yaml`](machine-classes.yaml) and applied via
+`omnictl apply` by the sync workflow on every push that touches this
+directory — no manual dashboard step required.
 
 ## Machine assignment
 
