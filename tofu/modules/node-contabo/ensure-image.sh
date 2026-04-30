@@ -244,7 +244,19 @@ do_provision() {
   # Readiness probe — sole trustworthy "disk has booted OS" signal.
   # Works for both modes: verify (just-POSTed instance finishing first
   # boot) and reinstall (fresh boot after wipe).
+  #
+  # Under the Omni-takeover, Talos's API (port 50000) only listens on
+  # the SideroLink WireGuard tunnel — NOT the public IP. The
+  # Contabo-side `status=running` signal (verified by the LEFT_RUNNING
+  # + BACK_RUNNING loops above) is sufficient proof the disk was
+  # reimaged; Talos's actual boot is verified by Omni's machine
+  # inventory, not by tofu. Set READY_CHECK=skip to bypass the
+  # network probe entirely.
   case "$READY_CHECK" in
+    skip)
+      echo "READY_CHECK=skip — relying on Contabo status transitions for reinstall verification (Omni-managed node)"
+      return 0
+      ;;
     tcp:*)
       probe_port="${READY_CHECK#tcp:}"
       probe_label="${INSTANCE_IP}:${probe_port}"
@@ -260,7 +272,7 @@ do_provision() {
       }
       ;;
     *)
-      echo "READY_CHECK must be 'tcp:<port>' or 'https:<url>', got: $READY_CHECK" >&2
+      echo "READY_CHECK must be 'tcp:<port>', 'https:<url>', or 'skip'; got: $READY_CHECK" >&2
       return 1
       ;;
   esac
