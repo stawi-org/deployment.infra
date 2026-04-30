@@ -1,19 +1,16 @@
 # tofu/layers/03-talos/main.tf
-data "terraform_remote_state" "secrets" {
-  backend = "s3"
-  config = {
-    bucket                      = "cluster-tofu-state"
-    key                         = "production/00-talos-secrets.tfstate"
-    region                      = "auto"
-    endpoints                   = { s3 = "https://${var.r2_account_id}.r2.cloudflarestorage.com" }
-    use_path_style              = true
-    skip_credentials_validation = true
-    skip_metadata_api_check     = true
-    skip_region_validation      = true
-    skip_requesting_account_id  = true
-    skip_s3_checksum            = true
-  }
-}
+#
+# Reads each upstream infra layer's `nodes` output across every account
+# (Contabo + Oracle + on-prem), folds them into one map keyed by the
+# globally-unique node name, and feeds two things downstream:
+#
+#   - dns.tf publishes cp-N + prod.<zone> records (cross-provider).
+#   - cluster.tf drives Omni: applies machine-classes, syncs cluster
+#     template, and labels each registered Omni Machine with this
+#     node's derived_labels.
+#
+# 00-talos-secrets is no longer read here — Talos cluster secrets
+# (PKI, etcd, kubelet) are owned by Omni now, not by tofu.
 
 # All three infra layers (contabo, oracle, onprem) are per-account:
 # each entry in accounts.yaml's `<provider>:` list owns its own state
@@ -122,21 +119,8 @@ locals {
     })
   }
 
-  controlplane_nodes   = { for k, v in local.all_nodes_from_state : k => v if try(v.role, "") == "controlplane" }
-  worker_nodes         = { for k, v in local.all_nodes_from_state : k => v if try(v.role, "") == "worker" }
-  contabo_worker_nodes = { for k, v in local.worker_nodes : k => v if try(v.provider, "") == "contabo" }
-  ci_applied_nodes     = { for k, v in local.all_nodes_from_state : k => v if try(v.config_apply_source, "") == "ci" }
-  # Prefer a reachable CP when picking the bootstrap / kubeconfig host;
-  # fall back to any CP if the reachable set is empty (shouldn't happen
-  # in practice — that would mean no CPs can be talosctl-applied at all).
-  bootstrap_node_key = length(local.direct_controlplane_nodes) > 0 ? keys(local.direct_controlplane_nodes)[0] : (length(local.controlplane_nodes) > 0 ? keys(local.controlplane_nodes)[0] : null)
-  bootstrap_node     = local.bootstrap_node_key != null ? local.all_nodes_from_state[local.bootstrap_node_key] : null
-  all_node_addresses = compact(flatten([
-    for n in local.all_nodes_from_state : [
-      try(n.ipv4, null),
-      try(n.ipv6, null),
-    ]
-  ]))
+  controlplane_nodes = { for k, v in local.all_nodes_from_state : k => v if try(v.role, "") == "controlplane" }
+  worker_nodes       = { for k, v in local.all_nodes_from_state : k => v if try(v.role, "") == "worker" }
 }
 
 locals {

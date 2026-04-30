@@ -5,48 +5,27 @@ variable "r2_account_id" {
   description = "Cloudflare R2 account ID. Used to construct the S3-compatible endpoint for cross-layer terraform_remote_state reads."
 }
 
-variable "talos_version" {
-  type = string
-}
-
-variable "kubernetes_version" {
-  type = string
-}
-
-variable "flux_version" {
-  type = string
-}
-
 variable "cluster_name" {
-  type    = string
-  default = "antinvestor-cluster"
-}
-
-variable "cluster_endpoint" {
-  type = string
-}
-
-variable "force_talos_reapply_generation" {
   type        = string
-  default     = "1"
-  description = "Bump this (1 -> 2) to force all talos_machine_configuration_apply resources to be destroyed + recreated on the next apply. Use when nodes are stuck in a bad state (e.g. kubelet ImagePullBackOff) and need a reboot triggered by tofu. Feeds into terraform_data config-hash inputs and replace_triggered_by fires on change."
+  default     = "stawi"
+  description = "Omni cluster name. Must match tofu/shared/clusters/main.yaml's `Cluster.name` and the `omni.sidero.dev/cluster=<name>` label Omni stamps onto each Machine."
 }
 
 variable "age_recipients" {
   type        = string
-  description = "Comma-separated age recipient pubkeys. Used to re-encrypt on write."
+  description = "Comma-separated age recipient pubkeys. Used by the SOPS health-check fixture in sops-check.tf."
 }
 
 variable "ci_run_id" {
   type        = string
   default     = "local"
-  description = "Set by CI to $GITHUB_RUN_ID; used only for audit metadata in machine-configs.yaml."
+  description = "Set by CI to $GITHUB_RUN_ID; surfaced in any artifact metadata this layer emits."
 }
 
 variable "local_inventory_dir" {
   type        = string
   default     = "/tmp/inventory"
-  description = "Local directory where the workflow syncs R2 production/inventory/ before plan. Module reads use this; writes go directly to R2."
+  description = "Local directory where the workflow syncs R2 production/inventory/ before plan."
 }
 
 variable "cloudflare_api_token" {
@@ -59,44 +38,33 @@ variable "cp_dns_zones" {
   type = list(object({
     zone       = string
     zone_id    = string
-    cp_label   = optional(string, "cp")
     prod_label = optional(string, "prod")
   }))
   default     = []
   description = <<-EOT
     Cloudflare zones to publish cluster DNS into, computed from every
-    controlplane node across every provider (Contabo + OCI + on-prem).
+    load-balancer node across every provider (Contabo + OCI + on-prem).
 
     Per zone:
-      - <cp_label>.<zone>      round-robin A/AAAA across ALL CPs
-      - <cp_label>-<N>.<zone>  per-CP A/AAAA, 1-indexed by sorted node key
-      - <prod_label>.<zone>    round-robin A/AAAA across nodes carrying
-                               node.kubernetes.io/external-load-balancer="true";
-                               omitted when no nodes match
+      - <prod_label>.<zone>  round-robin A/AAAA across nodes carrying
+                             node.kubernetes.io/external-load-balancer="true";
+                             omitted when no nodes match
 
-    Defaults: cp_label="cp", prod_label="prod".
+    Default: prod_label="prod".
 
-    cp-* names are added to apiserver + talosd cert SANs locally. prod-*
-    aren't — they point at LB workers, not apiserver.
+    The bare `cp.<zone>` round-robin is owned by the 00-omni-server
+    layer (it points at the Omni dashboard host, orange-cloud) — this
+    layer does not publish it. Per-CP `cp-<N>.<zone>` records are
+    gone too: cluster API access is mediated by Omni's k8s-proxy at
+    cp.<zone>, no direct talosctl-by-node DNS need.
+
     zone_id is passed directly (no Cloudflare API lookup), so a token
     scoped only to Zone:DNS:Edit is sufficient.
   EOT
 }
 
-variable "extra_cert_sans" {
-  type        = list(string)
-  default     = []
-  description = "Additional DNS names to add to apiserver + talosd cert SANs (resolved externally, not published by this layer)."
-}
-
-variable "admin_cidrs" {
-  type        = list(string)
-  default     = []
-  description = "Optional operator-supplied CIDRs (IPv4 or IPv6) allowed to reach Talos API (:50000) in addition to GitHub Actions runner ranges. kube-apiserver (:6443) stays open and is gated by auth, not network ACLs."
-}
-
-variable "omni_siderolink_url" {
+variable "omni_endpoint" {
   type        = string
-  default     = ""
-  description = "Full siderolink URL injected into the schematic kernel cmdline, e.g. https://cp.antinvestor.com?jointoken=<token>. Empty string omits the arg (Phase A transitional; non-empty after Phase B cutover). Must match the value used in layers 01 and 02 so the schematic_id is stable across layers."
+  default     = "https://cpd.stawi.org"
+  description = "Omni machine-api endpoint omnictl dials for cluster-template sync and per-machine label updates. cpd.<zone> (gray-cloud, direct-to-VPS, real LE cert) is the supported path; cp.<zone> is CF-proxied and the free plan downgrades HTTP/2 to HTTP/1.1, which breaks omnictl's gRPC client."
 }

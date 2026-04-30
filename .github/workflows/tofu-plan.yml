@@ -146,7 +146,11 @@ jobs:
     with: { layer: 03-talos, mode: plan }
     secrets: inherit
     needs: [contabo-infra, oracle-infra, onprem-infra]
+  # 04-flux disabled until Task 8 part 2 re-introduces Flux as an
+  # Omni cluster extension. Layer 04 currently consumes 03-talos's
+  # retired kubeconfig / talosconfig outputs.
   flux:
+    if: false
     permissions:
       contents: read
       id-token: write

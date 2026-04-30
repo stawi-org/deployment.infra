@@ -50,6 +50,11 @@ on:
       # omni-host VPS — diagnostics only (Omni stack troubleshooting).
       # Used by 00-omni-server; other layers ignore.
       CONTABO_PUBLIC_SSH_KEY:        { required: false }
+      # Service-account key minted in the Omni dashboard (Operator
+      # role). Used by layer-03's cluster.tf null_resources to apply
+      # machine-classes, sync the cluster template, and label
+      # registered machines via omnictl. Other layers ignore.
+      OMNI_SERVICE_ACCOUNT_KEY:      { required: false }
       # OCI accounts now come exclusively from production/config/ under R2.
       # The workflow syncs the provider/account YAML files and aggregates them.
       # Repository variable:
@@ -85,76 +90,22 @@ jobs:
             --region us-east-1 \
             --delete
 
-      # Only layer 03 needs talosctl for the null_resource.reboot_cp provisioner.
-      - name: Install talosctl
+      # Layer 03 drives Omni via omnictl shell-outs from null_resources.
+      # Pinned to the same omnictl release used by sync-cluster-template /
+      # regenerate-talos-images so the resource shapes match what's running
+      # on the omni-host.
+      - name: Install omnictl
         if: inputs.layer == '03-talos'
-        # talos_version comes from tofu/shared/versions.auto.tfvars.json
-        # (the same file every tofu layer auto-loads via symlink). One
-        # source of truth — bumping the JSON updates the runner-side
-        # talosctl install + the in-cluster Talos version together.
+        env:
+          OMNI_VERSION: v1.7.1
         run: |
           set -euo pipefail
-          TALOS_VERSION=$(jq -r '.talos_version' tofu/shared/versions.auto.tfvars.json)
-          ASSET_URL="https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64"
-          curl -fsSL -o /tmp/talosctl "${ASSET_URL}"
-          chmod +x /tmp/talosctl
-          sudo install -m 0755 /tmp/talosctl /usr/local/bin/talosctl
-          rm /tmp/talosctl
-          talosctl version --client
-
-      - name: Pre-resolve cp.<zone> + cp-N.<zone> into /etc/hosts
-        if: inputs.layer == '03-talos'
-        # Talos provider + apply provisioner connect via DNS for both
-        # `node` and `endpoint`:
-        #   - cp.<zone> (round-robin) — used by talos provider for
-        #     general cluster ops
-        #   - cp-N.<zone> (per-CP) — used by talos_machine_bootstrap
-        #     and the per-node apply provisioner (talosctl --endpoints)
-        # Both names are in the apid serving cert SANs, but the
-        # cp-N names go through systemd-resolved on the runner —
-        # observed to time out under load when the cluster is
-        # mid-reinstall (high churn). Pre-resolve against Cloudflare
-        # (1.1.1.1) and pin into /etc/hosts so gRPC dials skip the
-        # local resolver entirely.
-        #
-        # cp-N records are enumerated by counting the cp.<zone>
-        # round-robin answer set — that's exactly the CP count.
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq dnsutils
-
-          # Pin both A AND a synthetic AAAA = ::ffff:<ipv4> for each
-          # CP DNS name. The runner is IPv4-only — if AAAA is left to
-          # systemd-resolved → Cloudflare, the resolver returns the
-          # cluster's real public IPv6, talosctl/gRPC dials it, and
-          # the runner kernel returns "network is unreachable" because
-          # IPv6 isn't reachable on Azure-hosted runners. Pinning the
-          # IPv4-mapped IPv6 form (::ffff:x.x.x.x) in /etc/hosts gets
-          # the resolver to return that synthetic AAAA instead, which
-          # the kernel routes via IPv4. /etc/hosts entries take
-          # precedence over DNS, so the real cluster AAAA is never
-          # consulted from the runner.
-          pin() {
-            local host="$1"
-            local ip
-            ip=$(dig +short +time=5 +tries=2 @1.1.1.1 "$host" A | head -n1)
-            if [[ -n "$ip" ]]; then
-              echo "$ip $host"            | sudo tee -a /etc/hosts >/dev/null
-              echo "::ffff:$ip $host"     | sudo tee -a /etc/hosts >/dev/null
-            else
-              echo "::warning::no A record for $host on 1.1.1.1" >&2
-            fi
-          }
-
-          for zone in antinvestor.com stawi.org; do
-            cp_count=$(dig +short +time=5 +tries=2 @1.1.1.1 "cp.${zone}" A | wc -l)
-            pin "cp.${zone}"
-            for i in $(seq 1 "$cp_count"); do
-              pin "cp-${i}.${zone}"
-            done
-          done
-          grep -E "cp[-.]" /etc/hosts || true
+          curl -fsSL -o /tmp/omnictl \
+            "https://github.com/siderolabs/omni/releases/download/$OMNI_VERSION/omnictl-linux-amd64"
+          chmod +x /tmp/omnictl
+          sudo install -m 0755 /tmp/omnictl /usr/local/bin/omnictl
+          rm /tmp/omnictl
+          omnictl --version
 
       - name: OCI workload-identity federation
         if: inputs.layer == '02-oracle-infra'
@@ -451,6 +402,11 @@ jobs:
           TF_VAR_account_key:                      ${{ inputs.account }}
           SOPS_AGE_KEY:                            ${{ secrets.SOPS_AGE_KEY }}
           EXTRA_PLAN_ARGS:                         ${{ inputs.extra_plan_args }}
+          # Layer-03 cluster.tf null_resources call omnictl to apply
+          # machine-classes, sync the cluster template, and label
+          # machines. omnictl reads the service-account key + endpoint
+          # from env. Other layers don't reference these.
+          OMNI_SERVICE_ACCOUNT_KEY:                ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
         # Downstream layers (02/03/04) read upstream remote state that doesn't
         # exist until the first apply lands on main. On a PR pre-bootstrap those
         # plans will fail with "No stored state was found" — that's expected, so
@@ -511,6 +467,10 @@ jobs:
           TF_VAR_account_key:    ${{ inputs.account }}
           SOPS_AGE_KEY:          ${{ secrets.SOPS_AGE_KEY }}
           LAYER:                 ${{ inputs.layer }}
+          # Layer-03 cluster.tf null_resources need omnictl auth at
+          # apply time too (the local-exec provisioners run during
+          # apply, not plan).
+          OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
         run: |
           set -uo pipefail
           # Stream tofu output to console + capture for post-mortem

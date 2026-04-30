@@ -1,35 +1,17 @@
 # tofu/layers/03-talos/terraform.tfvars
 #
-# cluster_endpoint is the Talos/Kubernetes API endpoint embedded in every
-# machine config generated in this layer. kubernetes-controlplane-api-1's
-# public IPv4 on Contabo is preserved across reinstalls, so it's stable.
-cluster_endpoint = "https://cp.antinvestor.com:6443"
+# Layer-03 drives Omni cluster-template sync, per-machine label
+# assignment via omnictl, and cross-provider cluster DNS (cp-N +
+# prod.<zone>). Its only required vars are the SOPS health-check
+# fixture's age recipient and the Cloudflare zones to publish into.
 
 age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt"
-
-# Bump this to force all talos_machine_configuration_apply resources to be
-# replaced (destroy + recreate) on the next apply. Used for recovery when
-# nodes are stuck in a bad state — e.g. kubelet ImagePullBackOff from a
-# previously-staged config that never got rebooted. Combined with
-# apply_mode = "reboot", the replacement triggers a fresh config push and
-# node reboot, unblocking image pulls.
-#
-# Bump history:
-#   1 -> 2 (#17): introduced; no-op (terraform_data new).
-#   2 -> 3 (#18): would have triggered replace_triggered_by but apply errored before
-#                 state persisted the new resources, so plan still showed "create".
-#   3 -> 4 (this): pairs with new null_resource.reboot_cp — the generation trigger
-#                  forces an explicit `talosctl reboot --wait` per CP node, which
-#                  bypasses the Talos-provider-doesn't-reboot-on-config-change
-#                  issue entirely. This is the deterministic fix.
-force_talos_reapply_generation = "4"
 
 # Cloudflare zones for cluster DNS. zone_id values come from the
 # Cloudflare dashboard (zone "Overview" page) — not from the API, so a
 # token scoped only to Zone:DNS:Edit works.
 #
 # For each zone this layer publishes:
-#   cp.<zone>         — round-robin A/AAAA across every controlplane node
 #   cp-<N>.<zone>     — per-CP A/AAAA, 1-indexed by sorted node key
 #   prod.<zone>       — round-robin across nodes carrying
 #                       node.kubernetes.io/external-load-balancer="true"
