@@ -537,19 +537,36 @@ jobs:
             ocid="${existing}"
           else
             # `image import from-object` waits for the import to
-            # complete and emits the image OCID. --launch-mode is
-            # omitted so OCI auto-detects from the archive metadata
+            # complete and emits the image OCID as JSON. --launch-mode
+            # is omitted so OCI auto-detects from the archive metadata
             # (CUSTOM with the launchOptions we encoded).
+            #
+            # Capture stdout to a file (not via $(...)) so any stderr
+            # surfaces on the action log — OCI CLI's exit-code-2
+            # validation errors otherwise vanish into the void.
             echo "::notice::importing ${ARCHIVE_OBJECT} as custom image"
-            ocid=$(oci --profile "${PROFILE}" compute image import from-object \
-              --compartment-id "${COMPARTMENT}" \
-              --namespace "${NAMESPACE}" \
-              --bucket-name "${BUCKET}" \
-              --name "${ARCHIVE_OBJECT}" \
-              --display-name "${display_name}" \
-              --wait-for-state AVAILABLE \
-              --max-wait-seconds 1800 \
-              --query 'data.id' --raw-output)
+            tmp=$(mktemp)
+            if ! oci --profile "${PROFILE}" compute image import from-object \
+                  --compartment-id "${COMPARTMENT}" \
+                  --namespace "${NAMESPACE}" \
+                  --bucket-name "${BUCKET}" \
+                  --name "${ARCHIVE_OBJECT}" \
+                  --display-name "${display_name}" \
+                  --wait-for-state AVAILABLE \
+                  --max-wait-seconds 1800 \
+                  > "$tmp"; then
+              echo "::error::oci compute image import from-object failed"
+              echo "::group::oci response"
+              cat "$tmp" || true
+              echo "::endgroup::"
+              exit 1
+            fi
+            ocid=$(jq -r '.data.id // empty' "$tmp")
+            if [[ -z "$ocid" ]]; then
+              echo "::error::oci import returned no .data.id"
+              cat "$tmp" >&2
+              exit 1
+            fi
             echo "::notice::imported as ${ocid}"
           fi
           echo "ocid=${ocid}" >> "$GITHUB_OUTPUT"
