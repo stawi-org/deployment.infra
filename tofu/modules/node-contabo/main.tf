@@ -83,6 +83,12 @@ resource "null_resource" "ensure_image" {
       # call Contabo's reinstall PUT directly and wait for Talos to
       # come back up. Wipes the disk.
       MODE = var.reinstall_request_hash != "" ? "reinstall" : "verify"
+      # Skip the post-reinstall TCP-probe to :50000. Talos's API now
+      # only listens on the SideroLink WireGuard tunnel (Omni-managed
+      # cluster), not on the public IP. Contabo's own status=running
+      # signal already confirms the disk was reimaged; whether Talos
+      # came up healthy is Omni's verification surface.
+      READY_CHECK = "skip"
     }
     command = "${path.module}/ensure-image.sh"
   }
