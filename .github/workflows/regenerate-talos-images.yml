@@ -347,7 +347,10 @@ jobs:
                   nodes_p = os.path.join(base, entry, "nodes.yaml")
                   if not (os.path.exists(auth_p) and os.path.exists(nodes_p)):
                       continue
-                  auth = (yaml.safe_load(open(auth_p)) or {}).get("auth", {})
+                  data = yaml.safe_load(open(auth_p)) or {}
+                  # Match build-oci-auth-json.py: prefer .auth block,
+                  # fall back to top-level keys (real layouts vary).
+                  auth = data.get("auth", data)
                   nodes = yaml.safe_load(open(nodes_p)) or {}
                   required = ("oidc_client_identifier", "domain_base_url", "tenancy_ocid", "region")
                   if not all(auth.get(k) for k in required):
@@ -593,8 +596,15 @@ jobs:
           } > tofu/shared/inventory/talos-images.yaml
 
           # Per-account block. Sorted by profile for stable diffs.
+          # nullglob makes the unmatched glob expand to nothing; without
+          # it `ls /tmp/oci-artifacts/*.json` would receive the literal
+          # `*.json` and list PWD instead, so a previous bug let the
+          # repo's own json files leak in. Use a safe glob expansion
+          # directly into the array — no `ls` involved.
           shopt -s nullglob
-          mapfile -t artifacts < <(ls /tmp/oci-artifacts/*.json 2>/dev/null | sort)
+          artifacts=(/tmp/oci-artifacts/*.json)
+          shopt -u nullglob
+          IFS=$'\n' artifacts=($(printf '%s\n' "${artifacts[@]}" | sort))
           if (( ${#artifacts[@]} == 0 )); then
             echo "      {}" >> tofu/shared/inventory/talos-images.yaml
           else
