@@ -85,16 +85,28 @@ locals {
 # produces a tofu cycle: module → outputs → root local → import →
 # module's resource → module-close).
 locals {
+  # Note: the bare `cp.<zone>` round-robin (used to be A/AAAA across
+  # every CP node so kubectl could dial the cluster directly) is now
+  # owned exclusively by the 00-omni-server layer, which points it at
+  # the Omni dashboard host (orange-cloud). Cluster access is mediated
+  # by Omni; direct-to-CP DNS would shadow the Omni record because CF
+  # returns BOTH proxied + DNS-only A records to clients (browser
+  # round-robins, lands on a Talos node IP, gets refused). Per-CP
+  # records (cp-1, cp-2, …) and the prod LB record are still useful for
+  # break-glass operations, so they stay.
+  #
+  # The cp-<N>.<zone> records are also load-bearing for `apply.tf`'s
+  # cp_apply_target — talos_machine_configuration_apply and
+  # talos_machine_bootstrap dial each CP at `cp-N.<zone>:50000` over
+  # mTLS, and the Talos cluster cert pins those hostnames as SANs.
+  # Raw IPs aren't in SANs because OCI ephemeral IPv4 churns on every
+  # instance recreate. Removing cp-N would break every Talos apply
+  # until apply.tf is rewired to push machine configs through Omni's
+  # machine-api instead.
   cluster_dns_records_per_zone = {
     for z in var.cp_dns_zones : z.zone => merge(
-      # cp.<zone> — round-robin across every CP
-      {
-        (z.cp_label) = {
-          ipv4 = local.cp_all_ipv4
-          ipv6 = local.cp_all_ipv6
-        }
-      },
-      # cp-<N>.<zone> — per-CP
+      # cp-<N>.<zone> — per-CP (talosctl-by-node, also load-bearing
+      # for apply.tf's cp_apply_target hostname-pinned mTLS dial).
       {
         for idx, rec in local.cp_indexed_records :
         "${z.cp_label}-${idx}" => rec
