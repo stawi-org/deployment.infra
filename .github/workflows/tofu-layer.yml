@@ -46,11 +46,6 @@ on:
       # under OMNI_DEX_*.
       OMNI_DEX_GITHUB_CLIENT_ID:     { required: false }
       OMNI_DEX_GITHUB_CLIENT_SECRET: { required: false }
-      # Cloudflare Origin Certificate (multi-SAN, PEM-encoded). One-time
-      # generated via the CF dashboard, valid for 15 years. Used by
-      # 00-omni-server only; other layers ignore.
-      OMNI_TLS_CERT:                 { required: false }
-      OMNI_TLS_KEY:                  { required: false }
       # Operator SSH public key authorised for root login on the
       # omni-host VPS — diagnostics only (Omni stack troubleshooting).
       # Used by 00-omni-server; other layers ignore.
@@ -435,8 +430,6 @@ jobs:
           TF_VAR_cloudflare_zone_id_stawi:       ${{ vars.CLOUDFLARE_ZONE_ID_STAWI }}
           TF_VAR_github_oidc_client_id:          ${{ secrets.OMNI_DEX_GITHUB_CLIENT_ID }}
           TF_VAR_github_oidc_client_secret:      ${{ secrets.OMNI_DEX_GITHUB_CLIENT_SECRET }}
-          TF_VAR_omni_tls_cert:                  ${{ secrets.OMNI_TLS_CERT }}
-          TF_VAR_omni_tls_key:                   ${{ secrets.OMNI_TLS_KEY }}
           TF_VAR_contabo_public_ssh_key:         ${{ secrets.CONTABO_PUBLIC_SSH_KEY }}
           # Operator identity for Sidero EULA + Omni initial-admin
           # promotion. Stored as repo Variables (not secrets) — the

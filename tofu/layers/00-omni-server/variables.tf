@@ -50,17 +50,6 @@ variable "dex_version" {
   default = "v2.41.1"
 }
 
-variable "omni_tls_cert" {
-  type        = string
-  sensitive   = true
-  description = "PEM-encoded Cloudflare Origin Certificate covering cp.<zone> and cpd.<zone> in both DNS zones (antinvestor.com + stawi.org). Sourced from a GitHub secret."
-}
-
-variable "omni_tls_key" {
-  type        = string
-  sensitive   = true
-  description = "PEM-encoded private key matching omni_tls_cert. Sourced from a GitHub secret."
-}
 
 variable "contabo_public_ssh_key" {
   type        = string
