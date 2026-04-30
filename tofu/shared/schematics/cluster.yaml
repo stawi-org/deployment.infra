@@ -1,0 +1,19 @@
+# Cluster Talos image schematic — fed to Omni's image factory.
+#
+# Omni mints images from this customization YAML; the factory ID is a
+# SHA256 of the rendered output. When this file changes, the image URL
+# at https://cp.stawi.org/image/<schematic-id>/<version>/<format>
+# changes too, and the regenerate-talos-images workflow uploads the new
+# variants to R2 (and to OCI Object Storage for the OCI accounts).
+#
+# Omni adds the SideroLink kernel args itself when serving the image —
+# we deliberately do NOT include `siderolink.api=` here so the same
+# schematic stays valid across Omni reinstalls (the URL changes on a
+# new Omni master key but the schematic doesn't).
+customization:
+  extraKernelArgs:
+    - ipv6.disable=0
+    - ipv6.autoconf=0
+  systemExtensions:
+    officialExtensions:
+      - siderolabs/util-linux-tools
