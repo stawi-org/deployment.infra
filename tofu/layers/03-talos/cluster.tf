@@ -104,17 +104,24 @@ resource "null_resource" "omnictl_cluster_template" {
 #                                    machine config, not Omni metadata)
 #   - any empty-key entries        (defensive)
 locals {
-  omni_labels_per_node = {
+  # Per-node labels-and-ip envelope. The script matches Omni Machines
+  # by hostname first (works for OCI), then falls back to ipv4 (works
+  # for Contabo, where Talos doesn't pick up the friendly platform
+  # hostname and falls back to the system UUID).
+  omni_machine_apply_per_node = {
     for k, v in local.all_nodes_from_state : k => {
-      for lk, lv in try(v.derived_labels, {}) : lk => lv
-      if !startswith(lk, "node-role.kubernetes.io/") && lk != ""
+      labels = {
+        for lk, lv in try(v.derived_labels, {}) : lk => lv
+        if !startswith(lk, "node-role.kubernetes.io/") && lk != ""
+      }
+      ipv4 = try(v.ipv4, null)
     }
   }
 }
 
 resource "local_sensitive_file" "node_labels_json" {
   filename        = "${path.module}/.terraform/node-labels.json"
-  content         = jsonencode(local.omni_labels_per_node)
+  content         = jsonencode(local.omni_machine_apply_per_node)
   file_permission = "0600"
 }
 
@@ -131,10 +138,14 @@ resource "null_resource" "omnictl_machine_labels" {
   #                instance phones home, and we need to relabel it
   #                because labels are NOT carried over by Omni
   #                between Machine identities.
+  #   script_sha — re-run when the reconciler script changes. Without
+  #                this, a script-side bug fix wouldn't get picked up
+  #                until something else in the trigger set changed.
   #   endpoint / cluster — invalidate on env target changes.
   triggers = {
     labels_sha = sha256(local_sensitive_file.node_labels_json.content)
     nodes_sha  = sha256(jsonencode(local.all_nodes_from_state))
+    script_sha = filesha256(local.sync_machine_labels_path)
     endpoint   = var.omni_endpoint
     cluster    = var.cluster_name
   }
