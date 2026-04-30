@@ -103,9 +103,18 @@ main() {
   # untouched). Including userData + sshKeys + defaultUser forces the
   # disk-wipe path. Talos ignores cloud-init; the siderolink kernel arg
   # comes from the image itself.
+  #
+  # The default user_data MUST contain real newlines — Contabo's PUT
+  # validates the field as YAML and rejects single-line input with
+  # `{"message":["Invalid yaml format"],"statusCode":400}`. Bash's
+  # default-substitution `${var:-...}` is parsed inside a regular
+  # double-quoted context that doesn't interpret `\n`, so the literal
+  # default has to contain actual line breaks (ANSI-C quoting).
+  local default_ud
+  default_ud=$'#cloud-config\nusers: []\n'
   local body
   body=$(jq -n --arg img "$TARGET_IMAGE_ID" \
-                --arg ud "${USER_DATA:-#cloud-config\nusers: []\n}" \
+                --arg ud "${USER_DATA:-$default_ud}" \
     '{imageId:$img, userData:$ud, sshKeys:[], defaultUser:"root"}')
 
   echo "issuing PUT with imageId=${TARGET_IMAGE_ID}"
