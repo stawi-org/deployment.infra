@@ -172,9 +172,17 @@ write_files:
 
         # Omni's gRPC-Web from the browser arrives on :443 + same path
         # as plain HTTP — only Content-Type distinguishes them.
+        # Native gRPC clients (omnictl, anything using grpc-go) send
+        # `application/grpc+proto` (sometimes `application/grpc;
+        # charset=utf-8`); the browser's gRPC-Web sends
+        # `application/grpc-web+proto`. Match all three native-gRPC
+        # forms (`application/grpc`, `…+proto`, `…;…`) but NOT
+        # `application/grpc-web…` — the latter must keep going through
+        # @http (proxy_pass) so nginx unwraps the gRPC-Web framing
+        # properly.
         map $http_content_type $is_grpc {
-          default              0;
-          "application/grpc"   1;
+          default                                  0;
+          "~^application/grpc(\+|;|$)"             1;
         }
 
         server {
