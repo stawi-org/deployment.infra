@@ -73,12 +73,20 @@ while IFS= read -r entry; do
   labels=$(jq -c '.value.labels // {}' <<< "$entry")
   ipv4=$(jq -r '.value.ipv4 // ""' <<< "$entry")
 
-  # Match by hostname first; fall back to IP.
+  # Match by hostname first; fall back to IP. Omni's
+  # spec.network.addresses are CIDR-formatted (e.g. `164.68.121.237/24`),
+  # so split on `/` before comparing to the bare ipv4 we have from
+  # tofu state.
   machine_id=$(jq -r --arg n "$node_name" --arg ip "$ipv4" '
     # 1. exact hostname match
     (.[] | select((.spec.network.hostname // "") == $n) | .metadata.id),
-    # 2. ipv4 match in addresses
-    (.[] | select(($ip != "") and (any(.spec.network.addresses // [] | .[]; . == $ip))) | .metadata.id)
+    # 2. ipv4 match against any address (CIDR-stripped)
+    (.[] | select(
+       ($ip != "") and (
+         any(.spec.network.addresses // [] | .[];
+             (split("/")[0]) == $ip)
+       )
+     ) | .metadata.id)
   ' <<< "$machines_arr" | head -n1)
 
   if [[ -z "$machine_id" ]]; then
@@ -95,10 +103,10 @@ while IFS= read -r entry; do
 
   echo "[sync-machine-labels] $node_name (id=$machine_id): $label_count label(s)"
 
-  # Build a MachineLabels resource manifest as JSON (omnictl apply
-  # accepts JSON or YAML — JSON is easier to construct safely from
-  # arbitrary label keys/values). Labels live in metadata.labels
-  # (COSI-style); MachineLabelsSpec is empty.
+  # Build a MachineLabels resource manifest. Labels live in
+  # metadata.labels (COSI-style); MachineLabelsSpec is empty. omnictl
+  # apply accepts JSON or YAML but doesn't support stdin (`-f -` tries
+  # to stat `-` as a filename and fails); use a per-machine temp file.
   manifest=$(jq -n --arg id "$machine_id" --argjson labels "$labels" '{
     metadata: {
       namespace: "default",
@@ -108,13 +116,16 @@ while IFS= read -r entry; do
     },
     spec: {},
   }')
+  manifest_file=$(mktemp -t "machinelabels-${machine_id}.XXXXXX.json")
+  printf '%s\n' "$manifest" > "$manifest_file"
 
-  if printf '%s\n' "$manifest" | omnictl apply -f - 2>&1 | sed 's/^/  /'; then
+  if omnictl apply -f "$manifest_file" 2>&1 | sed 's/^/  /'; then
     applied=$((applied + 1))
   else
     echo "[sync-machine-labels] ERROR $node_name: omnictl apply MachineLabels failed"
     errored=$((errored + 1))
   fi
+  rm -f "$manifest_file"
 done < <(jq -c 'to_entries[]' "$LABELS_JSON")
 
 echo "[sync-machine-labels] done: applied=$applied skipped=$skipped errored=$errored"
