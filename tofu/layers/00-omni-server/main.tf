@@ -73,7 +73,7 @@ module "omni_host" {
   siderolink_wireguard_advertised_host = "cpd.stawi.org"
   github_oidc_client_id                = var.github_oidc_client_id
   github_oidc_client_secret            = var.github_oidc_client_secret
-  cf_dns_api_token                     = var.cf_dns_api_token
+  cf_dns_api_token                     = var.cloudflare_api_token
   initial_users                        = [for e in split(",", var.omni_initial_users) : trimspace(e) if trimspace(e) != ""]
   eula_name                            = var.omni_eula_name
   eula_email                           = var.omni_eula_email

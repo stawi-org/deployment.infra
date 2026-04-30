@@ -62,14 +62,14 @@ write_files:
     content: |
       ${indent(6, docker_compose_yaml)}
 
-  # Cloudflare API token for certbot's DNS-01 challenge. Scoped to
-  # Zone: DNS: Edit on the stawi.org zone — operator creates the token
-  # via the CF dashboard once and stores it as the CF_DNS_API_TOKEN
-  # GitHub secret. omni-cert-bootstrap.service consumes this on first
-  # boot to issue a real Let's Encrypt cert for cp.<zone> + cpd.<zone>.
-  # Talos clients validate the LE chain against their default trust
-  # store; the CF Origin Cert path (privately signed, untrusted by
-  # Talos) is gone.
+  # Cloudflare API token for certbot's DNS-01 challenge. Reuses the
+  # existing CLOUDFLARE_API_TOKEN GitHub secret (already feeds DNS
+  # record management); needs Zone:DNS:Edit on the stawi.org zone.
+  # omni-cert-bootstrap.service consumes this on first boot to issue
+  # a real Let's Encrypt cert for cp.<zone> + cpd.<zone>. Talos
+  # clients validate the LE chain against their default trust store;
+  # the CF Origin Cert path (privately signed, untrusted by Talos) is
+  # gone.
   - path: /etc/letsencrypt/cloudflare.ini
     permissions: "0600"
     owner: root:root

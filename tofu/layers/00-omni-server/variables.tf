@@ -50,11 +50,6 @@ variable "dex_version" {
   default = "v2.41.1"
 }
 
-variable "cf_dns_api_token" {
-  type        = string
-  sensitive   = true
-  description = "Cloudflare API token for certbot's DNS-01 challenge (scoped to Zone:DNS:Edit on stawi.org). Sourced from CF_DNS_API_TOKEN GitHub secret."
-}
 
 variable "contabo_public_ssh_key" {
   type        = string

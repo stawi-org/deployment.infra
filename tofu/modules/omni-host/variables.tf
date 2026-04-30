@@ -68,11 +68,11 @@ variable "cf_dns_api_token" {
   type        = string
   sensitive   = true
   description = <<-EOT
-    Cloudflare API token for certbot's DNS-01 challenge. Scoped to
-    Zone:DNS:Edit on the stawi.org zone. Operator creates the token
-    in the CF dashboard once and stores it as the CF_DNS_API_TOKEN
-    GitHub secret. omni-cert-bootstrap.service issues Let's Encrypt
-    certs on first boot; certbot.timer renews them.
+    Cloudflare API token for certbot's DNS-01 challenge.
+    omni-cert-bootstrap.service issues Let's Encrypt certs on first
+    boot; certbot.timer renews them. Reuses the existing
+    CLOUDFLARE_API_TOKEN secret (already required for DNS record
+    management) — needs Zone:DNS:Edit on the stawi.org zone.
   EOT
 }
 

@@ -54,6 +54,7 @@ locals {
       github_oidc_client_secret            = var.github_oidc_client_secret
       github_oidc_allowed_orgs             = var.github_oidc_allowed_orgs
       cf_dns_api_token                     = var.cf_dns_api_token
+      eula_email                           = var.eula_email
       ssh_authorized_keys                  = var.ssh_authorized_keys
       r2_account_id                        = var.r2_account_id
       r2_access_key_id                     = var.r2_access_key_id
