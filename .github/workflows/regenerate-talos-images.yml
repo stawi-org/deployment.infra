@@ -1,0 +1,194 @@
+# Regenerates Omni-aware Talos images and uploads them to R2 (and to OCI
+# Object Storage in a follow-up workflow). Output is consumed by the
+# node-* tofu modules via tofu/shared/inventory/talos-images.yaml.
+#
+# Why this exists: tofu used to drive image generation by computing a
+# Talos Image Factory schematic at plan time and registering it with the
+# contabo/oci providers. With Omni in front of cluster lifecycle, images
+# need to be Omni-signed (so machines auto-register via SideroLink), so
+# `omnictl download` is the build step now. Doing it from CI keeps tofu
+# out of the image-build path entirely.
+#
+# Auth: needs OMNI_SERVICE_ACCOUNT_KEY (operator creates a service
+# account in the Omni dashboard once: Service Accounts → Create →
+# role Operator → copy key once → store as repo secret).
+name: regenerate-talos-images
+on:
+  workflow_dispatch:
+    inputs:
+      talos_version:
+        description: Talos version to bake into the image (default v1.13.0)
+        type: string
+        default: v1.13.0
+      force:
+        description: Open a PR even if the schematic is unchanged
+        type: boolean
+        default: false
+  # Weekly catch-up — Mondays 06:00 UTC. Talos and Omni both publish
+  # patch releases at unpredictable cadence; weekly is enough to avoid
+  # falling far behind without bumping VPS reinstalls every push.
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# A second concurrent run would race on the inventory file. Cancel any
+# in-flight regen so the latest one wins.
+concurrency:
+  group: regenerate-talos-images
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+      TALOS_VERSION: ${{ inputs.talos_version || 'v1.13.0' }}
+      FORCE: ${{ inputs.force }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_BUCKET: cluster-tofu-state
+      R2_PREFIX: production/talos-images
+    steps:
+      - uses: actions/checkout@v5
+
+      # omnictl version pinned to match the running Omni server (v1.7.1
+      # — bumped together when we upgrade Omni).
+      - name: Install omnictl
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl \
+            https://github.com/siderolabs/omni/releases/download/v1.7.1/omnictl-linux-amd64
+          chmod +x /usr/local/bin/omnictl
+          omnictl --version
+
+      # Smoke-test the service account credentials before we try
+      # anything destructive. Failure here means OMNI_SERVICE_ACCOUNT_KEY
+      # is wrong / expired.
+      - name: Verify omnictl auth
+        run: omnictl get user --output json | head -20
+
+      # The whole pipeline runs in a single bash step so we can use
+      # arrays (safe quoting of customization values) without
+      # round-tripping through GITHUB_OUTPUT.
+      - name: Build / upload / render inventory
+        id: build
+        run: |
+          set -euo pipefail
+          R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+
+          # ----- Hash the schematic source (file + version) -----
+          src_hash=$(sha256sum tofu/shared/schematics/cluster.yaml | cut -d' ' -f1)
+          schematic_id="${src_hash}-${TALOS_VERSION}"
+          echo "::notice::schematic source hash = ${schematic_id}"
+
+          # ----- Skip if unchanged and not forced -----
+          stored=$(yq -r '.schematic_id // ""' tofu/shared/inventory/talos-images.yaml)
+          if [[ "${stored}" == "${schematic_id}" && "${FORCE}" != "true" ]]; then
+            echo "::notice::schematic unchanged (${stored}); skipping rebuild — pass force=true to override"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "skipped=false" >> "$GITHUB_OUTPUT"
+
+          # ----- Parse customization into bash arrays (safe quoting) -----
+          mapfile -t extensions < <(yq -r '.customization.systemExtensions.officialExtensions // [] | .[]' \
+            tofu/shared/schematics/cluster.yaml)
+          mapfile -t kargs < <(yq -r '.customization.extraKernelArgs // [] | .[]' \
+            tofu/shared/schematics/cluster.yaml)
+          ext_args=()
+          for e in "${extensions[@]}"; do ext_args+=("--extensions" "$e"); done
+          karg_args=()
+          for k in "${kargs[@]}"; do karg_args+=("--extra-kernel-args" "$k"); done
+          echo "::notice::extensions=[${extensions[*]:-}] kargs=[${kargs[*]:-}]"
+
+          # ----- Download images per cloud profile -----
+          mkdir -p /tmp/images
+          download_image() {
+            local profile=$1 arch=$2
+            echo "::group::download ${profile}/${arch}"
+            omnictl download "$profile" \
+              --arch "$arch" \
+              --talos-version "${TALOS_VERSION}" \
+              "${ext_args[@]}" \
+              "${karg_args[@]}" \
+              --output /tmp/images/
+            echo "::endgroup::"
+          }
+          download_image metal  amd64   # contabo
+          download_image iso    amd64   # on-prem
+          download_image oracle amd64   # oci
+          ls -la /tmp/images/
+
+          # ----- Resolve filenames produced by omnictl -----
+          contabo_file=$(cd /tmp/images && ls metal-amd64.raw.zst 2>/dev/null | head -1 || true)
+          onprem_file=$(cd /tmp/images  && ls metal-amd64.iso     2>/dev/null | head -1 || true)
+          oracle_file=$(cd /tmp/images  && ls oracle-amd64.qcow2  2>/dev/null | head -1 || true)
+          for v in "$contabo_file" "$onprem_file" "$oracle_file"; do
+            if [[ -z "$v" ]]; then
+              echo "::error::expected image file missing — omnictl output naming may have changed"
+              exit 1
+            fi
+          done
+
+          # ----- Upload to R2 -----
+          dest_prefix="s3://${R2_BUCKET}/${R2_PREFIX}/${schematic_id}"
+          for f in /tmp/images/*; do
+            name=$(basename "$f")
+            aws s3 cp "$f" "${dest_prefix}/${name}" --endpoint-url "${R2_ENDPOINT}"
+          done
+          echo "::notice::uploaded to ${dest_prefix}/"
+
+          # ----- Render inventory file -----
+          base="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${R2_BUCKET}/${R2_PREFIX}/${schematic_id}"
+          contabo_sha=$(sha256sum "/tmp/images/${contabo_file}" | cut -d' ' -f1)
+          onprem_sha=$(sha256sum  "/tmp/images/${onprem_file}"  | cut -d' ' -f1)
+          oracle_sha=$(sha256sum  "/tmp/images/${oracle_file}"  | cut -d' ' -f1)
+          generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          # heredoc with explicit quoted vars — no value comes from the
+          # env or a workflow output that could carry shell metachars.
+          cat > tofu/shared/inventory/talos-images.yaml <<EOF
+          # Talos image inventory — managed by .github/workflows/regenerate-talos-images.yml.
+          # DO NOT edit by hand. To regenerate: run that workflow with force=true,
+          # or bump tofu/shared/schematics/cluster.yaml and merge.
+          schematic_id: "${schematic_id}"
+          talos_version: "${TALOS_VERSION}"
+          generated_at: "${generated_at}"
+          formats:
+            contabo:
+              url: "${base}/${contabo_file}"
+              sha256: "${contabo_sha}"
+            onprem:
+              url: "${base}/${onprem_file}"
+              sha256: "${onprem_sha}"
+            oracle:
+              qcow2_url: "${base}/${oracle_file}"
+              qcow2_sha256: "${oracle_sha}"
+          EOF
+          echo "::group::rendered inventory"
+          cat tofu/shared/inventory/talos-images.yaml
+          echo "::endgroup::"
+
+      # Open a PR rather than push directly: image bumps trigger VPS
+      # reinstalls when applied, so a human review beat is required.
+      - name: Open / update PR
+        if: steps.build.outputs.skipped != 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: bot/talos-images-bump
+          base: main
+          title: "talos-images: refresh"
+          commit-message: |
+            talos-images: refresh from regenerate-talos-images workflow
+          body: |
+            Auto-generated by `regenerate-talos-images`. Verify the
+            extensions / kernel args in `tofu/shared/schematics/cluster.yaml`
+            still match what we want, then merge. Merging triggers the
+            normal `tofu-apply` chain, which will swap each cloud's VPS
+            image to the new variant on the next reinstall window.
+          delete-branch: true

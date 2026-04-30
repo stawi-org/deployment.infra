@@ -1,0 +1,27 @@
+# Talos image inventory — populated by .github/workflows/regenerate-talos-images.yml.
+#
+# Each apply of the regen workflow downloads Omni-aware Talos images
+# (with SideroLink baked in by Omni at build time) and uploads them to
+# R2. Tofu's node-* modules read this file for the URL/OCID of the
+# image to provision against — never re-computed at apply time.
+#
+# This file is committed to the repo as the source of truth, so that
+# every plan from any worktree sees the same images. CI opens a PR
+# when the schematic-relevant inputs change (extensions, kernel args,
+# Talos version).
+#
+# Empty stub — the first regen-workflow run populates it. Until then
+# downstream consumers read defaults from their own modules.
+schematic_id: ""
+talos_version: ""
+generated_at: ""
+formats:
+  contabo:
+    url: ""
+    sha256: ""
+  onprem:
+    url: ""
+    sha256: ""
+  oracle:
+    qcow2_url: ""
+    qcow2_sha256: ""
