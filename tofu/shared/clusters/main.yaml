@@ -1,0 +1,77 @@
+# Omni cluster template for the `stawi` cluster.
+#
+# Applied via `omnictl cluster template sync` from
+# .github/workflows/sync-cluster-template.yml whenever this file
+# changes on main. Defines the canonical cluster spec; tofu's role is
+# only to provision machines that auto-register against Omni — Omni
+# decides what goes where based on the machine class selectors below.
+#
+# Multi-document YAML: one resource per top-level kind. Order is
+# Cluster → ControlPlane / Workers → MachineClass, mirroring the
+# layout in Omni's docs (https://omni.siderolabs.com/how-to-guides/
+# manage-clusters-using-templates/cluster-template-reference).
+#
+# Machine assignment:
+#   Until per-role kernel cmdline initial-labels are baked into the
+#   image build pipeline (see `regenerate-talos-images.yml` — TODO),
+#   the operator must label machines manually after they register.
+#   Either via the Omni dashboard, or:
+#     omnictl machine update <machine-id> \
+#       --label role=cp           # for control planes
+#     omnictl machine update <machine-id> \
+#       --label role=worker       # for workers
+#   Once labelled, the machine joins the matching machine set
+#   automatically (Cluster reconciler).
+
+kind: Cluster
+name: stawi
+kubernetes:
+  # Pinned to match tofu/shared/versions.auto.tfvars.json's
+  # `kubernetes_version`. Bumps to the cluster k8s version go in BOTH
+  # files in lock-step so tofu and Omni agree.
+  version: v1.35.2
+talos:
+  # Pinned to match tofu/shared/versions.auto.tfvars.json's
+  # `talos_version`. The image inventory in
+  # tofu/shared/inventory/talos-images.yaml is built with this same
+  # version; mismatch produces an upgrade-on-bootstrap.
+  version: v1.13.0
+features:
+  # workload-proxy lets `kubectl --kubeconfig <omni-issued>` route via
+  # the Omni dashboard's k8s-proxy without needing direct CP IP
+  # access. With the cluster behind CF-proxied DNS, this is the only
+  # supported access mode.
+  enableWorkloadProxy: true
+
+---
+# Control-plane machine set. Reads from the `cp` machine class. Size
+# is intentionally omitted: any machine matching the class joins as a
+# CP. The cluster works with 1 / 3 / 5 CPs (etcd quorum); tofu drives
+# CP count by labelling that many machines as `role=cp`.
+kind: ControlPlane
+machineClass:
+  name: cp
+
+---
+# Worker machine set. Same shape as ControlPlane.
+kind: Workers
+machineClass:
+  name: workers
+
+---
+# Machine class definitions — the selector above for each set.
+kind: MachineClass
+name: cp
+matchLabels:
+  - role: cp
+description: |
+  Control plane machines. Operator-labelled until the image build
+  pipeline emits per-role variants with initial-labels baked in.
+
+---
+kind: MachineClass
+name: workers
+matchLabels:
+  - role: worker
+description: |
+  Worker machines. Operator-labelled.
