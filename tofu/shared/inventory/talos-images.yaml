@@ -3,19 +3,19 @@
 # or bump tofu/shared/schematics/cluster.yaml and merge.
 schematic_id: "09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0"
 talos_version: "v1.13.0"
-generated_at: "2026-04-30T10:19:25Z"
+generated_at: "2026-04-30T11:57:23Z"
 formats:
   contabo:
-    url: "https://c358ea38bde6fd03d13bf87068635230.r2.cloudflarestorage.com/cluster-tofu-state/production/talos-images/09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0/metal-amd64-omni-stawi-v1.13.0-6e47f8.xz"
+    url: "https://pkgs.stawi.org/09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0/metal-amd64-omni-stawi-v1.13.0-6e47f8.xz"
     sha256: "d8d56c78eb5e8fcdf1a91eb59369d5e42157465e6d1e9ca6173f72c6f4b2ed9c"
   onprem:
-    url: "https://c358ea38bde6fd03d13bf87068635230.r2.cloudflarestorage.com/cluster-tofu-state/production/talos-images/09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0/metal-amd64-omni-stawi-v1.13.0-6e47f8.iso"
+    url: "https://pkgs.stawi.org/09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0/metal-amd64-omni-stawi-v1.13.0-6e47f8.iso"
     sha256: "56d1477a326ef3b57ab239d87d47256626f173ff592c5acc732f5bef342219c7"
   oracle:
-    qcow2_url: "https://c358ea38bde6fd03d13bf87068635230.r2.cloudflarestorage.com/cluster-tofu-state/production/talos-images/09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0/oracle-arm64-omni-stawi-v1.13.0-6e47f8.qcow2"
+    qcow2_url: "https://pkgs.stawi.org/09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0/oracle-arm64-omni-stawi-v1.13.0-6e47f8.qcow2"
     qcow2_sha256: "95748d4cc8911cdfcda59ee021411f51a51504e0c50b525fda0e39a269b07171"
-    archive_url: "https://c358ea38bde6fd03d13bf87068635230.r2.cloudflarestorage.com/cluster-tofu-state/production/talos-images/09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0/talos-v1.13.0-09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0-oracle-arm64.oci"
-    archive_sha256: "616711869cf390639c9f4c2daaf73eb3330e435c0e3dccdfb71dbe31c5440477"
+    archive_url: "https://pkgs.stawi.org/09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0/talos-v1.13.0-09a9f9b8d2af6039a0e8ee58572f2df9a1b0d8ea91c048dc7bd39a1b73830d5c-v1.13.0-oracle-arm64.oci"
+    archive_sha256: "539b3dad0e860018f1db39a1d1be88884ccbdd8dd0bf4bced642e88fd97d9a3d"
     accounts:
       alimbacho67:
         ocid: "ocid1.image.oc1.eu-frankfurt-1.aaaaaaaafu3t4eevnuggzxmwfzsuqipyg5zn3sd5ows37xxcviebb3amaoaa"
