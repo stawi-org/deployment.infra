@@ -57,7 +57,7 @@ jobs:
             id=$(echo "$id" | tr -d ' ')
             [[ -z "$id" ]] && continue
             echo "::group::deleting Machines.omni.sidero.dev/$id"
-            omnictl delete "Machines.omni.sidero.dev/$id" || echo "(delete failed or already absent)"
+            omnictl delete Machines.omni.sidero.dev "$id" || echo "(delete failed or already absent)"
             echo "::endgroup::"
           done
 
