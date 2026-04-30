@@ -117,15 +117,19 @@ jobs:
 
       # Surface the cluster's reconciliation status so the action
       # log shows whether the cluster has converged. Non-fatal —
-      # sync is the source-of-truth, status is observability.
+      # sync is the source-of-truth, status is observability. The
+      # `cluster template status` subcommand watches indefinitely for
+      # the cluster to reach Ready; with 0 machines registered that
+      # never happens, so cap the watch at a single status snapshot.
       - name: Cluster status
         if: env.DRY_RUN != 'true'
+        continue-on-error: true
         run: |
           set +e
-          echo "::group::cluster status"
-          omnictl cluster template status \
+          echo "::group::cluster status (one-shot, 30s cap)"
+          timeout 30 omnictl cluster template status \
             -f tofu/shared/clusters/main.yaml
           echo "::endgroup::"
           echo "::group::machine inventory (cluster=stawi)"
-          omnictl get machinestatus -l "omni.sidero.dev/cluster=stawi" -o table || true
+          omnictl get machinestatus -l "omni.sidero.dev/cluster=stawi" -o table
           echo "::endgroup::"
