@@ -341,7 +341,7 @@ jobs:
           mkdir -p /tmp/oracle-inv
           aws s3 sync "s3://${R2_BUCKET}/production/inventory/oracle/" /tmp/oracle-inv/ \
             --endpoint-url "$R2_ENDPOINT" --region us-east-1 \
-            --exclude "*" --include "*/auth.yaml" --include "*/nodes.yaml" || true
+            --exclude "*" --include "*/auth.yaml" || true
           pip install --quiet pyyaml
           python3 - <<'PY' > /tmp/accounts.json
           import json, os
@@ -352,26 +352,31 @@ jobs:
           if os.path.isdir(base):
               for entry in sorted(os.listdir(base)):
                   auth_p = os.path.join(base, entry, "auth.yaml")
-                  nodes_p = os.path.join(base, entry, "nodes.yaml")
                   if not os.path.exists(auth_p):
                       skipped.append(f"{entry}: auth.yaml missing")
                       continue
-                  if not os.path.exists(nodes_p):
-                      skipped.append(f"{entry}: nodes.yaml missing")
-                      continue
                   data = yaml.safe_load(open(auth_p)) or {}
-                  # Match build-oci-auth-json.py: prefer .auth block,
-                  # fall back to top-level keys (real layouts vary).
+                  # auth.yaml shape (per layer 02-oracle-infra/main.tf):
+                  #   { auth: { oidc_client_identifier, domain_base_url,
+                  #             tenancy_ocid, region, ... },
+                  #     compartment_ocid: "...",
+                  #     region: "...",  (sometimes top-level too)
+                  #     ... }
+                  # auth credentials live under .auth (or top-level on
+                  # legacy layouts); compartment_ocid lives at the
+                  # top-level (NOT under .auth, NOT in nodes.yaml).
                   auth = data.get("auth", data)
-                  nodes = yaml.safe_load(open(nodes_p)) or {}
                   required = ("oidc_client_identifier", "domain_base_url", "tenancy_ocid", "region")
                   missing = [k for k in required if not auth.get(k)]
                   if missing:
                       skipped.append(f"{entry}: auth missing {missing}; auth keys = {sorted(auth.keys())}")
                       continue
-                  comp = nodes.get("compartment_ocid") or nodes.get("compartment_id")
+                  # Compartment + region come from the top-level of
+                  # auth.yaml — same place tofu reads them from
+                  # (oracle_auth_from_module[k].compartment_ocid).
+                  comp = data.get("compartment_ocid") or data.get("compartment_id")
                   if not comp:
-                      skipped.append(f"{entry}: nodes missing compartment_ocid; nodes keys = {sorted(nodes.keys())}")
+                      skipped.append(f"{entry}: top-level missing compartment_ocid; data keys = {sorted(data.keys())}")
                       continue
                   out.append({
                       "profile": entry,
