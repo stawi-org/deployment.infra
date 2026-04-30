@@ -2,18 +2,17 @@
 # the sync-cluster-template workflow before the cluster template
 # itself, so the template's machine-set references resolve.
 #
-# Cluster templates only accept Cluster / ControlPlane / Workers /
-# ConfigPatch kinds. MachineClass is a top-level Omni resource and
-# must be created/updated via `omnictl apply`. Splitting the resources
-# into two files makes the workflow's two-step apply explicit:
-#   1. omnictl apply -f machine-classes.yaml
-#   2. omnictl cluster template sync -f main.yaml
+# Format mirrors the upstream test fixtures
+# (https://github.com/siderolabs/omni-infra-provider-libvirt/blob/main/test/machineclass.yaml):
+# COSI resource shape with metadata.type = "MachineClasses.omni.sidero.dev",
+# spec carries match_labels (the protobuf field is `match_labels`
+# []string per client/api/omni/specs/omni.pb.go MachineClassSpec).
+# Each label is a single key=value string.
 #
-# Format: standard Omni resource shape (apiVersion implied, metadata +
-# spec blocks). Reference: https://omni.siderolabs.com/reference/
-# resources/omni.machine-classes.
-
----
+# No `description` field — MachineClassSpec only has match_labels and
+# auto_provision; arbitrary keys made omnictl fail at parse time
+# ("illegal base64 data at input byte 6" — Omni's apply pipeline
+# treated unknown fields as opaque bytes).
 metadata:
   namespace: default
   type: MachineClasses.omni.sidero.dev
@@ -21,10 +20,6 @@ metadata:
 spec:
   match_labels:
     - role=cp
-  description: |
-    Control plane machines. Operator-labelled until the image build
-    pipeline emits per-role variants with initial-labels baked in.
-
 ---
 metadata:
   namespace: default
@@ -33,5 +28,3 @@ metadata:
 spec:
   match_labels:
     - role=worker
-  description: |
-    Worker machines. Operator-labelled.
