@@ -299,10 +299,25 @@ jobs:
           echo "::notice::built $(stat -c%s "${oracle_archive_path}") byte .oci archive"
 
           # ----- Upload everything to R2 -----
+          # Explicit content-type per file. R2 doesn't infer one from
+          # the extension, so without --content-type the served object
+          # has no Content-Type header and Contabo's image API rejects
+          # the registration with HTTP 415 Unsupported Media Type.
+          # `application/octet-stream` is the standard fallback for
+          # opaque binary blobs and is what Contabo's pre-Omni
+          # factory.talos.dev URLs returned.
           dest_prefix="s3://${R2_IMAGE_BUCKET}/${schematic_id}"
+          content_type_for() {
+            case "$1" in
+              *.iso)   echo "application/x-iso-stream" ;;
+              *)       echo "application/octet-stream" ;;
+            esac
+          }
           for f in "/tmp/images/${contabo_file}" "/tmp/images/${onprem_file}" "/tmp/images/${oracle_file}" "${oracle_archive_path}"; do
             name=$(basename "$f")
-            aws s3 cp "$f" "${dest_prefix}/${name}" --endpoint-url "${R2_ENDPOINT}"
+            aws s3 cp "$f" "${dest_prefix}/${name}" \
+              --content-type "$(content_type_for "$name")" \
+              --endpoint-url "${R2_ENDPOINT}"
           done
           echo "::notice::uploaded to ${dest_prefix}/"
 

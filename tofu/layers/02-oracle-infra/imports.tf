@@ -74,40 +74,8 @@ import {
   id = each.value.id
 }
 
-# Object Storage bucket. data.oci_objectstorage_namespace is queried
-# inside the module already; here we need it again for the import-side
-# bucket lookup.
-data "oci_objectstorage_namespace" "by_account" {
-  for_each       = toset(local.oracle_account_keys)
-  provider       = oci.account[each.key]
-  compartment_id = try(local.oracle_auth_from_module[each.key].compartment_ocid, "")
-}
-
-# data.oci_objectstorage_bucket errors if the bucket doesn't exist, so
-# use the list endpoint and pick by name.
-data "oci_objectstorage_bucket_summaries" "talos_images" {
-  for_each       = toset(local.oracle_account_keys)
-  provider       = oci.account[each.key]
-  compartment_id = try(local.oracle_auth_from_module[each.key].compartment_ocid, "")
-  namespace      = data.oci_objectstorage_namespace.by_account[each.key].namespace
-}
-
-locals {
-  # Per-account: existing talos-images-<acct> bucket if present, else null.
-  oracle_image_bucket_present = {
-    for acct in local.oracle_account_keys : acct => length([
-      for b in data.oci_objectstorage_bucket_summaries.talos_images[acct].bucket_summaries :
-      b if b.name == "talos-images-${acct}"
-    ]) > 0
-  }
-}
-
-import {
-  for_each = {
-    for k in local.oracle_account_keys : k => k
-    if try(local.oracle_image_bucket_present[k], false)
-  }
-  # Bucket import id format: n/<namespace>/b/<bucket-name>
-  to = module.oracle_account[each.key].oci_objectstorage_bucket.talos_images[0]
-  id = "n/${data.oci_objectstorage_namespace.by_account[each.key].namespace}/b/talos-images-${each.key}"
-}
+# Object Storage bucket and image imports were removed in Task 5 of
+# the Omni-takeover migration — the regenerate-talos-images workflow
+# now owns those resources end-to-end. The module's removed{} blocks
+# drop the prior tofu-managed counterparts from state without
+# destroying the live OCI artifacts.
