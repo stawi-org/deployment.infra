@@ -1,0 +1,37 @@
+# Omni MachineClass resources — applied via `omnictl apply` from
+# the sync-cluster-template workflow before the cluster template
+# itself, so the template's machine-set references resolve.
+#
+# Cluster templates only accept Cluster / ControlPlane / Workers /
+# ConfigPatch kinds. MachineClass is a top-level Omni resource and
+# must be created/updated via `omnictl apply`. Splitting the resources
+# into two files makes the workflow's two-step apply explicit:
+#   1. omnictl apply -f machine-classes.yaml
+#   2. omnictl cluster template sync -f main.yaml
+#
+# Format: standard Omni resource shape (apiVersion implied, metadata +
+# spec blocks). Reference: https://omni.siderolabs.com/reference/
+# resources/omni.machine-classes.
+
+---
+metadata:
+  namespace: default
+  type: MachineClasses.omni.sidero.dev
+  id: cp
+spec:
+  match_labels:
+    - role=cp
+  description: |
+    Control plane machines. Operator-labelled until the image build
+    pipeline emits per-role variants with initial-labels baked in.
+
+---
+metadata:
+  namespace: default
+  type: MachineClasses.omni.sidero.dev
+  id: workers
+spec:
+  match_labels:
+    - role=worker
+  description: |
+    Worker machines. Operator-labelled.

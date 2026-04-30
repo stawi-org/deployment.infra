@@ -64,6 +64,17 @@ jobs:
       - name: Verify omnictl auth
         run: omnictl get user --output json | head -20
 
+      # Apply MachineClass resources first. Cluster templates can
+      # only carry Cluster / ControlPlane / Workers / ConfigPatch
+      # kinds — top-level resources like MachineClass go through
+      # `omnictl apply`. Doing this BEFORE the template sync
+      # guarantees the cluster's machine-set references resolve.
+      - name: Apply machine classes
+        if: env.DRY_RUN != 'true'
+        run: |
+          set -euo pipefail
+          omnictl apply -f tofu/shared/clusters/machine-classes.yaml
+
       # Validate before sync — catches schema typos that would
       # otherwise fail mid-apply with partial state changes.
       - name: Validate template
