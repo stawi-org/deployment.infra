@@ -67,13 +67,12 @@ resource "oci_core_instance" "this" {
   source_details {
     source_type = "image"
     source_id   = var.image_id
-    # OCI A1.Flex requires boot volume ≥ 50 GB and the Talos factory
-    # QCOW2 reports 47 GB which CreateInstance rejects. Operator wants
-    # 200 GB — comfortable headroom for image cache + ephemeral
-    # container-writable-layer + etcd snapshots. OCI always-free tier
-    # covers up to 200 GB of boot volume across all instances, so no
-    # charge for this.
-    boot_volume_size_in_gbs = 200
+    # Capped at var.boot_volume_size_in_gbs (default 190, hard
+    # ceiling 195) — see variables.tf. Stays under OCI's always-free
+    # 200 GB-per-tenancy block-volume quota with margin so the
+    # tenancy never bills. Floor is ~50 GB (Talos QCOW2 base).
+    # Reductions force destroy+create (OCI rejects in-place shrink).
+    boot_volume_size_in_gbs = var.boot_volume_size_in_gbs
   }
 
   # No instance launch_options. The image (created via the CLI script
