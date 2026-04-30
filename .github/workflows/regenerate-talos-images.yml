@@ -166,25 +166,32 @@ jobs:
           # archive metadata also pins A1.Flex. Adding x86 OCI nodes
           # would mean a second oracle download here AND a metadata
           # update — flag now so we don't silently break it.
+          #
+          # `omnictl download <name>` matches by spec.Name, spec.Profile,
+          # or spec.Overlay (omnictl/download.go). Bare profile names
+          # like `metal` match multiple variants (iso, raw.xz, raw.zst)
+          # and fail with "multiple images found". We pass the FULL
+          # spec.Name (e.g. `metal-amd64.raw.xz`) instead so each
+          # download resolves to exactly one variant.
           mkdir -p /tmp/images
           download_image() {
-            local profile=$1 arch=$2
-            echo "::group::download ${profile}/${arch}"
-            omnictl download "$profile" \
-              --arch "$arch" \
+            local image_name=$1 arch=$2
+            echo "::group::download ${image_name} (${arch})"
+            omnictl download "${image_name}" \
+              --arch "${arch}" \
               --talos-version "${TALOS_VERSION}" \
               "${ext_args[@]}" \
               "${karg_args[@]}" \
               --output /tmp/images/
             echo "::endgroup::"
           }
-          download_image metal  amd64   # contabo
-          download_image iso    amd64   # on-prem
-          download_image oracle arm64   # oci (A1.Flex)
+          download_image metal-amd64.raw.xz amd64   # contabo (xz, not zst — Omni's image factory output)
+          download_image metal-amd64.iso    amd64   # on-prem
+          download_image oracle-arm64.qcow2 arm64   # oci (A1.Flex)
           ls -la /tmp/images/
 
           # ----- Resolve filenames produced by omnictl -----
-          contabo_file=$(cd /tmp/images && ls metal-amd64.raw.zst 2>/dev/null | head -1 || true)
+          contabo_file=$(cd /tmp/images && ls metal-amd64.raw.xz  2>/dev/null | head -1 || true)
           onprem_file=$(cd /tmp/images  && ls metal-amd64.iso     2>/dev/null | head -1 || true)
           oracle_file=$(cd /tmp/images  && ls oracle-arm64.qcow2  2>/dev/null | head -1 || true)
           for v in "$contabo_file" "$onprem_file" "$oracle_file"; do
