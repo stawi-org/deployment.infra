@@ -452,15 +452,17 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Reconstruct the archive URL locally — oracle_archive_url
-          # can't be a job-level output because R2_ACCOUNT_ID is a
-          # secret (GitHub strips outputs that contain secrets).
-          archive_url="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${R2_BUCKET}/${R2_PREFIX}/${SCHEMATIC_ID}/${ARCHIVE_OBJECT}"
-
-          # Download the .oci archive built by the build job.
+          # Download the .oci archive built by the build job. R2's
+          # path-style host requires SigV4 auth even for GETs (curl
+          # would 400), so fetch via `aws s3 cp` using the same R2
+          # creds we already have for upload.
+          R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           mkdir -p /tmp/oci-stage
           archive_local="/tmp/oci-stage/${ARCHIVE_OBJECT}"
-          curl -fsSL -o "${archive_local}" "${archive_url}"
+          aws s3 cp \
+            "s3://${R2_BUCKET}/${R2_PREFIX}/${SCHEMATIC_ID}/${ARCHIVE_OBJECT}" \
+            "${archive_local}" \
+            --endpoint-url "${R2_ENDPOINT}"
           echo "::notice::downloaded $(stat -c%s "${archive_local}") byte archive"
 
           # Resolve the OCI Object Storage namespace for this tenancy.
