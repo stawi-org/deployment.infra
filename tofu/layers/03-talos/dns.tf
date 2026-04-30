@@ -1,46 +1,31 @@
 # tofu/layers/03-talos/dns.tf
 #
-# Cross-provider DNS publishing. Replaces the Contabo-only DNS that used
-# to live in layer 01 — now any controlplane, regardless of provider,
-# gets cp-<N> and participates in the cp.<zone> round-robin. Nodes
-# labelled node.kubernetes.io/external-load-balancer="true" additionally
-# land in prod.<zone>.
+# Cross-provider cluster DNS — publishes the public-load-balancer
+# round-robin only.
 #
-# Runs in layer 03 because that's the first layer with a global view of
-# every node (layer 01 sees only Contabo; layer 02 sees only one cloud
-# at a time). cert SANs are computed here too, so the CP machine config
-# and the Cloudflare records share a single source of truth — add a
-# zone, and both the DNS and the SANs update in the same apply.
+#   prod.<zone>      A/AAAA across every node carrying
+#                    `node.kubernetes.io/external-load-balancer="true"`.
+#                    Frontends ingress traffic into the cluster. The
+#                    LB itself terminates TLS via cert-manager inside
+#                    the cluster, so this record is plain DNS-only.
+#
+# Per-CP `cp-<N>.<zone>` records used to live here for talosctl-by-
+# node mTLS dialing. They were dropped in 2026-04 along with the rest
+# of the talosctl-bootstrap path — the cluster's k8s API is now
+# reached via Omni's k8s-proxy at `cp.<zone>` (owned by the
+# 00-omni-server layer, orange-cloud), and Talos node access is via
+# Omni's machine-api passthrough. Tofu has no per-CP record need.
+#
+# Runs in layer 03 because that's the first layer with a global view
+# of every node (layer 01 sees only Contabo; layer 02 sees only one
+# cloud at a time). LB nodes can come from any provider.
 
 locals {
-  # ---- ALL CPs, ordered stably ---------------------------------------
-  # Sorting by node_key makes the cp-<N> index deterministic across
-  # applies even if node ordering in state changes. Provider prefixes
-  # sort alphabetically (contabo-*, oci-*, onprem-*) so cp-1 stays
-  # pointed at the same Contabo node unless that node is deleted.
-  cp_sorted_keys = sort(keys(local.controlplane_nodes))
-
-  cp_all_ipv4 = compact([
-    for k in local.cp_sorted_keys : try(local.controlplane_nodes[k].ipv4, null)
-  ])
-  cp_all_ipv6 = compact([
-    for k in local.cp_sorted_keys : try(local.controlplane_nodes[k].ipv6, null)
-  ])
-
-  # Per-CP 1-indexed records. Empty v4/v6 lists are fine — the
-  # cloudflare-dns module flattens and simply skips them.
-  cp_indexed_records = {
-    for i, k in local.cp_sorted_keys :
-    (i + 1) => {
-      ipv4 = compact([try(local.controlplane_nodes[k].ipv4, null)])
-      ipv6 = compact([try(local.controlplane_nodes[k].ipv6, null)])
-    }
-  }
-
-  # ---- Nodes behind the public load balancer -------------------------
-  # Filter by the external-load-balancer label regardless of role. A CP
-  # and a worker can both be LB-ingress entrypoints; any node with the
-  # label participates in prod.<zone>.
+  # Filter by the external-load-balancer label regardless of role. A
+  # CP and a worker can both be LB-ingress entrypoints; any node with
+  # the label participates in prod.<zone>. The label key matches
+  # what kube-proxy / cloud-controller-managers expect on a node so
+  # the same label can drive in-cluster service-IP allocation later.
   lb_nodes = {
     for k, v in local.all_nodes_from_state : k => v
     if try(v.derived_labels["node.kubernetes.io/external-load-balancer"], "false") == "true"
@@ -53,71 +38,23 @@ locals {
     for k in local.lb_sorted_keys : try(local.lb_nodes[k].ipv6, null)
   ])
   lb_has_any = length(local.lb_all_ipv4) + length(local.lb_all_ipv6) > 0
-
-  # ---- apiserver + talosd cert SANs ---------------------------------
-  # cp.<zone>          (round-robin, every CP carries it)
-  # cp-<N>.<zone>      (per-CP, N is 1-based index in cp_sorted_keys)
-  #
-  # Per-CP names are required for talos_machine_configuration_apply,
-  # which is a per-node RPC: each apply must dial the node it's
-  # configuring, and TLS validates the dial target against a SAN. By
-  # giving every CP both the round-robin name AND its own cp-<N>.<zone>,
-  # tofu can address each one without relying on Talos's auto-discovery
-  # of NIC-bound public IPs (which OCI's NAT'd ephemeral doesn't have).
-  # No node IPs in this list — DNS records are tofu-managed and stable
-  # under instance recreates. prod-* is excluded — those front the LB,
-  # which has its own cert-manager TLS termination inside the cluster.
-  cp_cert_sans = distinct(concat(
-    [for z in var.cp_dns_zones : "${z.cp_label}.${z.zone}"],
-    flatten([
-      for z in var.cp_dns_zones : [
-        for i, _ in local.cp_sorted_keys : "${z.cp_label}-${i + 1}.${z.zone}"
-      ]
-    ]),
-    var.extra_cert_sans,
-  ))
 }
 
 # Records map per zone, lifted to a root-level local so the import
-# block below can derive flat-keys from the same source without
-# routing through module.cluster_dns outputs (any reference to module
-# outputs from an import block targeting that same module's resources
-# produces a tofu cycle: module → outputs → root local → import →
-# module's resource → module-close).
+# block below can derive flat-keys without routing through
+# module.cluster_dns outputs (any reference to module outputs from an
+# import block targeting that same module's resources produces a tofu
+# cycle: module → outputs → root local → import → module's resource →
+# module-close).
 locals {
-  # Note: the bare `cp.<zone>` round-robin (used to be A/AAAA across
-  # every CP node so kubectl could dial the cluster directly) is now
-  # owned exclusively by the 00-omni-server layer, which points it at
-  # the Omni dashboard host (orange-cloud). Cluster access is mediated
-  # by Omni; direct-to-CP DNS would shadow the Omni record because CF
-  # returns BOTH proxied + DNS-only A records to clients (browser
-  # round-robins, lands on a Talos node IP, gets refused). Per-CP
-  # records (cp-1, cp-2, …) and the prod LB record are still useful for
-  # break-glass operations, so they stay.
-  #
-  # The cp-<N>.<zone> records are also load-bearing for `apply.tf`'s
-  # cp_apply_target — talos_machine_configuration_apply and
-  # talos_machine_bootstrap dial each CP at `cp-N.<zone>:50000` over
-  # mTLS, and the Talos cluster cert pins those hostnames as SANs.
-  # Raw IPs aren't in SANs because OCI ephemeral IPv4 churns on every
-  # instance recreate. Removing cp-N would break every Talos apply
-  # until apply.tf is rewired to push machine configs through Omni's
-  # machine-api instead.
   cluster_dns_records_per_zone = {
-    for z in var.cp_dns_zones : z.zone => merge(
-      # cp-<N>.<zone> — per-CP (talosctl-by-node, also load-bearing
-      # for apply.tf's cp_apply_target hostname-pinned mTLS dial).
-      {
-        for idx, rec in local.cp_indexed_records :
-        "${z.cp_label}-${idx}" => rec
-      },
-      # prod.<zone> — round-robin across LB-labelled nodes (if any)
+    for z in var.cp_dns_zones : z.zone => (
       local.lb_has_any ? {
         (z.prod_label) = {
           ipv4 = local.lb_all_ipv4
           ipv6 = local.lb_all_ipv6
         }
-      } : {},
+      } : {}
     )
   }
 }
@@ -130,7 +67,7 @@ module "cluster_dns" {
   zone_suffix = each.value.zone
   records     = local.cluster_dns_records_per_zone[each.value.zone]
 
-  proxied = false # Raw TCP required for talosctl (50000) and apiserver (6443).
+  proxied = false # Plain DNS-only — LB nodes terminate TLS in-cluster.
   ttl     = 60    # Short so node replacements propagate quickly.
 }
 
@@ -141,9 +78,8 @@ module "cluster_dns" {
 # (e.g. partial-apply failure, state-clear, operator-created record
 # that happens to match what the module wants to manage), tofu's
 # create attempt POSTs an identical record and CF returns 400
-# "An identical record already exists". The two stawi.org prod/AAAA
-# records that surfaced this whole class of failure motivated the
-# self-heal below.
+# "An identical record already exists". The self-heal below queries
+# CF for existing records and imports them.
 #
 # Both the data source and the import block live at the root because:
 #   - import blocks aren't allowed in child modules.
@@ -151,10 +87,6 @@ module "cluster_dns" {
 #     output flowing into a root-level import that targets the
 #     module's own resource produces a tofu cycle
 #     (module.cluster_dns ↔ module.cluster_dns (close)).
-# Putting both at root breaks the cycle: the data source has no
-# dependency on the module's resources, and the import block reads
-# only root-locals + module outputs (flat_keys, zone_id) that don't
-# transit the resource.
 data "cloudflare_dns_records" "existing_per_zone" {
   for_each = { for z in var.cp_dns_zones : z.zone_id => z }
   zone_id  = each.key
@@ -169,10 +101,9 @@ locals {
   # the resource — must match the module's local.flat keying exactly)
   # AND a canonical_key (IPv6 normalised via cidrhost) for matching
   # against CF's as-returned content. AAAA content drift between tofu
-  # state (expanded "2a02:c207:2272:7782:0000:0000:0000:0001") and
-  # CF storage (compressed "2a02:c207:2272:7782::1") makes flat-key
-  # equality alone unreliable; canonicalising both sides via cidrhost
-  # gives the lookup a stable spelling.
+  # state (expanded form) and CF storage (compressed form) makes flat-
+  # key equality alone unreliable; canonicalising via cidrhost gives
+  # the lookup a stable spelling.
   cluster_dns_intended_records = merge([
     for zone, recs in local.cluster_dns_records_per_zone : {
       for entry in flatten([
@@ -215,21 +146,17 @@ locals {
     }
     if contains(keys(local.existing_records_by_zone_canonical_key), "${v.zone}::${v.canonical_key}")
   }
+
+  # Reverse index: zone_suffix → zone_id, used by the import block's
+  # `id` so we don't reference module outputs.
+  zones_by_id_to_zone_id = { for z in var.cp_dns_zones : z.zone => z.zone_id }
 }
 
 import {
   for_each = local.cluster_dns_to_import
   to       = module.cluster_dns[each.value.zone].cloudflare_dns_record.this[each.value.flat_key]
   # Cloudflare resource-import id format: "<zone_id>/<record_id>".
-  # zone_id sourced directly from var (NOT from module output) to keep
-  # the import block out of the module-close cycle.
   id = "${local.zones_by_id_to_zone_id[each.value.zone]}/${each.value.record_id}"
-}
-
-locals {
-  # Reverse index: zone_suffix → zone_id, used by the import block's
-  # `id` so we don't reference module outputs.
-  zones_by_id_to_zone_id = { for z in var.cp_dns_zones : z.zone => z.zone_id }
 }
 
 # Diagnostic outputs surfaced as `tofu output` for debugging the

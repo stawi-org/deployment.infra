@@ -1,24 +1,29 @@
-# Omni MachineClass resources, applied via `omnictl apply` from
-# the sync-cluster-template workflow before the cluster template.
+# Omni MachineClass resources, applied via `omnictl apply` by tofu's
+# layer-03 cluster.tf (null_resource.omnictl_machine_classes) before
+# the cluster template sync.
 #
-# Format mirrors the upstream libvirt-provider test fixture
-# (https://github.com/siderolabs/omni-infra-provider-libvirt/blob/main/test/machineclass.yaml).
-# COSI resource shape: metadata.type = MachineClasses.omni.sidero.dev,
-# protobuf-go-generated MachineClassSpec has the field MatchLabels;
-# go-yaml/v4 reflection lowercases it to `matchlabels` (no
-# underscore) — same flattening that produces `providerid` /
-# `providerdata` in the libvirt fixture for `provider_id` /
-# `provider_data`. Snake-case `match_labels` parses without error
-# but leaves the spec empty, which Omni rejects with
-# "machine class should either have auto provision or match labels
-# set" (validated against client/api/omni/specs/omni.proto).
+# Selector keys match the labels tofu's per-node `derived_labels`
+# emits — see `tofu/modules/node-{contabo,oracle,onprem}/main.tf`.
+# Layer-03's `null_resource.omnictl_machine_labels` reconciles those
+# labels onto each registered Omni Machine, so machines end up in the
+# `cp` or `workers` set automatically.
+#
+# Format note: COSI resource shape requires metadata.type =
+# MachineClasses.omni.sidero.dev. The MachineClassSpec field is
+# protobuf MatchLabels; go-yaml/v4 reflection lowercases it to
+# `matchlabels` (no underscore) — same flattening that produces
+# `providerid` / `providerdata` in the libvirt-provider test fixture
+# for `provider_id` / `provider_data`. Snake-case `match_labels`
+# parses without error but leaves the spec empty, which Omni rejects
+# with "machine class should either have auto provision or match
+# labels set".
 metadata:
   namespace: default
   type: MachineClasses.omni.sidero.dev
   id: cp
 spec:
   matchlabels:
-    - role=cp
+    - node.antinvestor.io/role=controlplane
 ---
 metadata:
   namespace: default
@@ -26,4 +31,4 @@ metadata:
   id: workers
 spec:
   matchlabels:
-    - role=worker
+    - node.antinvestor.io/role=worker
