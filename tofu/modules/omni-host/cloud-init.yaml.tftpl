@@ -258,7 +258,7 @@ write_files:
       live="/etc/letsencrypt/live/$${primary}/fullchain.pem"
       if [ ! -f "$${live}" ]; then
         certbot_args=()
-        for d in "$${domains[@]}"; do certbot_args+=(-d "$$d"); done
+        for d in "$${domains[@]}"; do certbot_args+=(-d "$d"); done
         certbot certonly \
           --non-interactive --agree-tos \
           --email ${eula_email} \
@@ -298,9 +298,9 @@ write_files:
       #!/usr/bin/env bash
       set -euo pipefail
       install -m 0644 -o root -g root \
-        "$$RENEWED_LINEAGE/fullchain.pem" /etc/omni/certs/server.crt
+        "$RENEWED_LINEAGE/fullchain.pem" /etc/omni/certs/server.crt
       install -m 0600 -o root -g root \
-        "$$RENEWED_LINEAGE/privkey.pem"   /etc/omni/certs/server.key
+        "$RENEWED_LINEAGE/privkey.pem"   /etc/omni/certs/server.key
       docker compose -f /etc/omni/docker-compose.yaml exec -T nginx \
         nginx -s reload || true
 
