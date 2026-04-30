@@ -1,0 +1,104 @@
+# Pushes the canonical Omni cluster template to the running Omni
+# server. The template is the source of truth for cluster identity,
+# k8s + Talos versions, and machine-class selectors. `omnictl cluster
+# template sync` is idempotent — running on every change to the file
+# produces zero-noop applies when the template is already in sync.
+#
+# Triggers:
+#   - push to main touching tofu/shared/clusters/** (or this workflow)
+#   - manual workflow_dispatch
+#
+# Auth: same OMNI_SERVICE_ACCOUNT_KEY used by regenerate-talos-images.
+#
+# Security: this workflow does NOT consume untrusted GitHub-event
+# inputs (no PR titles, issue bodies, or commit messages). The only
+# user-supplied input is the `dry_run` workflow_dispatch boolean,
+# routed through env: into a workflow expression — no shell expansion.
+name: sync-cluster-template
+on:
+  push:
+    branches: [main]
+    paths:
+      - tofu/shared/clusters/**
+      - .github/workflows/sync-cluster-template.yml
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Validate + diff only; do not apply
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Two concurrent template syncs would race on the cluster spec.
+# Cancel any in-flight run so the latest template wins.
+concurrency:
+  group: sync-cluster-template
+  cancel-in-progress: true
+
+env:
+  OMNI_VERSION: v1.7.1 # Pinned to match the omnictl used in regenerate-talos-images.
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+      DRY_RUN: ${{ inputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install omnictl
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl \
+            "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl
+          omnictl --version
+
+      # Smoke-test the service account key. Any failure here means
+      # OMNI_SERVICE_ACCOUNT_KEY is wrong / expired (operator must
+      # rotate via Omni dashboard).
+      - name: Verify omnictl auth
+        run: omnictl get user --output json | head -20
+
+      # Validate before sync — catches schema typos that would
+      # otherwise fail mid-apply with partial state changes.
+      - name: Validate template
+        run: |
+          set -euo pipefail
+          omnictl cluster template validate \
+            -f tofu/shared/clusters/main.yaml
+
+      # Show the diff before applying. Useful in CI logs even on
+      # auto-apply runs — gives operators a quick "what changed" view.
+      - name: Diff template
+        run: |
+          set -euo pipefail
+          omnictl cluster template diff \
+            -f tofu/shared/clusters/main.yaml || true
+
+      - name: Sync template
+        if: env.DRY_RUN != 'true'
+        run: |
+          set -euo pipefail
+          omnictl cluster template sync \
+            -f tofu/shared/clusters/main.yaml \
+            --verbose
+
+      # Surface the cluster's reconciliation status so the action
+      # log shows whether the cluster has converged. Non-fatal —
+      # sync is the source-of-truth, status is observability.
+      - name: Cluster status
+        if: env.DRY_RUN != 'true'
+        run: |
+          set +e
+          echo "::group::cluster status"
+          omnictl cluster template status \
+            -f tofu/shared/clusters/main.yaml
+          echo "::endgroup::"
+          echo "::group::machine inventory (cluster=stawi)"
+          omnictl get machinestatus -l "omni.sidero.dev/cluster=stawi" -o table || true
+          echo "::endgroup::"
