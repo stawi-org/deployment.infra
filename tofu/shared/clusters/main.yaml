@@ -50,16 +50,21 @@ features:
   enableWorkloadProxy: true
 
 ---
-# Control-plane machine set. Reads from the `cp` machine class. Size
-# is intentionally omitted: any machine matching the class joins as a
-# CP. The cluster works with 1 / 3 / 5 CPs (etcd quorum); tofu drives
-# CP count by labelling that many machines as `role=cp`.
+# Control-plane machine set. `size` MUST be explicit — leaving it
+# unset (or 0) makes Omni's MachineSetController treat the set as
+# Static-with-zero-members and bind nothing, even when matching
+# machines exist. Three CPs gives etcd quorum tolerance for one CP
+# loss; bump to 5 once we have the spare nodes.
 kind: ControlPlane
 machineClass:
   name: cp
+  size: 3
 
 ---
-# Worker machine set. Same shape as ControlPlane.
+# Worker machine set. Same shape; size matches the number of
+# machines carrying `node.antinvestor.io/role=worker` in the
+# inventory yaml files (oracle-side workers + the on-prem node).
 kind: Workers
 machineClass:
   name: workers
+  size: 3
