@@ -222,16 +222,24 @@ jobs:
           # match per slot. Oracle ships qcow2-inside-xz (per
           # InstallationMedia ContentType="application/x-xz"), so we
           # decompress for the .oci archive build below.
-          contabo_file=$(cd /tmp/images && ls metal-amd64-*.xz   2>/dev/null | head -1 || true)
+          contabo_xz=$(cd   /tmp/images && ls metal-amd64-*.xz   2>/dev/null | head -1 || true)
           onprem_file=$(cd  /tmp/images && ls metal-amd64-*.iso  2>/dev/null | head -1 || true)
           oracle_xz=$(cd    /tmp/images && ls oracle-arm64-*.xz  2>/dev/null | head -1 || true)
-          for v in "$contabo_file" "$onprem_file" "$oracle_xz"; do
+          for v in "$contabo_xz" "$onprem_file" "$oracle_xz"; do
             if [[ -z "$v" ]]; then
               echo "::error::expected image file missing — omnictl output naming may have changed"
               ls -la /tmp/images/
               exit 1
             fi
           done
+
+          # Rename contabo upload to .raw.xz extension. Contabo's
+          # image API does format detection via the URL filename:
+          # bare `.xz` is rejected (HTTP 415, "Unsupported Media
+          # Type") because Contabo can't tell whether the xz wraps
+          # raw, qcow2, vhd, etc. `.raw.xz` makes it explicit.
+          contabo_file="${contabo_xz%.xz}.raw.xz"
+          mv "/tmp/images/${contabo_xz}" "/tmp/images/${contabo_file}"
 
           # Decompress oracle xz → qcow2 for the .oci archive build.
           # The .xz wrapper is Omni's transport format; OCI image
