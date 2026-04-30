@@ -4,12 +4,18 @@
 # .github/workflows/sync-cluster-template.yml whenever this file
 # changes on main. Defines the canonical cluster spec; tofu's role is
 # only to provision machines that auto-register against Omni — Omni
-# decides what goes where based on the machine class selectors below.
+# decides what goes where based on the machine class selectors.
+#
+# Cluster templates accept ONLY the cluster-scoped kinds: Cluster,
+# ControlPlane, Workers, ConfigPatch (cluster-level patches). Top-
+# level Omni resources like MachineClass live in their own file
+# (machine-classes.yaml) and are applied via `omnictl apply` — the
+# template references them by name.
 #
 # Multi-document YAML: one resource per top-level kind. Order is
-# Cluster → ControlPlane / Workers → MachineClass, mirroring the
-# layout in Omni's docs (https://omni.siderolabs.com/how-to-guides/
-# manage-clusters-using-templates/cluster-template-reference).
+# Cluster → ControlPlane → Workers, mirroring the layout in Omni's
+# docs (https://omni.siderolabs.com/how-to-guides/manage-clusters-
+# using-templates/cluster-template-reference).
 #
 # Machine assignment:
 #   Until per-role kernel cmdline initial-labels are baked into the
@@ -57,21 +63,3 @@ machineClass:
 kind: Workers
 machineClass:
   name: workers
-
----
-# Machine class definitions — the selector above for each set.
-kind: MachineClass
-name: cp
-matchLabels:
-  - role: cp
-description: |
-  Control plane machines. Operator-labelled until the image build
-  pipeline emits per-role variants with initial-labels baked in.
-
----
-kind: MachineClass
-name: workers
-matchLabels:
-  - role: worker
-description: |
-  Worker machines. Operator-labelled.
