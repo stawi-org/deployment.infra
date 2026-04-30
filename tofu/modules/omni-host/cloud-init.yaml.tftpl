@@ -253,6 +253,7 @@ write_files:
     content: |
       #!/usr/bin/env bash
       set -euo pipefail
+      install -d -m 0755 /etc/omni/certs
       domains=(${siderolink_api_advertised_host} ${siderolink_wireguard_advertised_host})
       primary=$${domains[0]}
       live="/etc/letsencrypt/live/$${primary}/fullchain.pem"
