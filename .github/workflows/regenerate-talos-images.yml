@@ -69,20 +69,25 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # NOTE: we intentionally do NOT emit *_url outputs. Anything
+    # interpolating ${R2_ACCOUNT_ID} (a registered secret) gets
+    # `##[warning]Skip output ... since it may contain secret.` and
+    # arrives at downstream jobs as the empty string. We pass the
+    # basenames + schematic_id and let assemble-and-pr stitch the
+    # URLs from the R2_ACCOUNT_ID secret it loads from `secrets`.
     outputs:
       skipped: ${{ steps.build.outputs.skipped }}
       schematic_id: ${{ steps.build.outputs.schematic_id }}
       talos_version: ${{ steps.build.outputs.talos_version }}
       generated_at: ${{ steps.build.outputs.generated_at }}
-      contabo_url: ${{ steps.build.outputs.contabo_url }}
+      contabo_file: ${{ steps.build.outputs.contabo_file }}
       contabo_sha256: ${{ steps.build.outputs.contabo_sha256 }}
-      onprem_url: ${{ steps.build.outputs.onprem_url }}
+      onprem_file: ${{ steps.build.outputs.onprem_file }}
       onprem_sha256: ${{ steps.build.outputs.onprem_sha256 }}
-      oracle_qcow2_url: ${{ steps.build.outputs.oracle_qcow2_url }}
+      oracle_qcow2_file: ${{ steps.build.outputs.oracle_qcow2_file }}
       oracle_qcow2_sha256: ${{ steps.build.outputs.oracle_qcow2_sha256 }}
-      oracle_archive_url: ${{ steps.build.outputs.oracle_archive_url }}
-      oracle_archive_sha256: ${{ steps.build.outputs.oracle_archive_sha256 }}
       oracle_archive_object: ${{ steps.build.outputs.oracle_archive_object }}
+      oracle_archive_sha256: ${{ steps.build.outputs.oracle_archive_sha256 }}
     env:
       # cpd.<zone> is gray-cloud direct (no CF in front). cp.<zone>
       # is orange-cloud — CF's free plan downgrades HTTP/2 to HTTP/1.1
@@ -288,7 +293,10 @@ jobs:
           echo "::notice::uploaded to ${dest_prefix}/"
 
           # ----- Compute SHA-256s and emit job outputs -----
-          base="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${R2_BUCKET}/${R2_PREFIX}/${schematic_id}"
+          # Pass basenames + sha256s only — assemble-and-pr stitches
+          # the URLs from R2_ACCOUNT_ID. GitHub filters any output
+          # value that contains a registered secret, so emitting the
+          # full URL here would arrive empty downstream.
           contabo_sha=$(sha256sum "/tmp/images/${contabo_file}" | cut -d' ' -f1)
           onprem_sha=$(sha256sum  "/tmp/images/${onprem_file}"  | cut -d' ' -f1)
           oracle_sha=$(sha256sum  "/tmp/images/${oracle_file}"  | cut -d' ' -f1)
@@ -299,15 +307,14 @@ jobs:
             echo "schematic_id=${schematic_id}"
             echo "talos_version=${TALOS_VERSION}"
             echo "generated_at=${generated_at}"
-            echo "contabo_url=${base}/${contabo_file}"
+            echo "contabo_file=${contabo_file}"
             echo "contabo_sha256=${contabo_sha}"
-            echo "onprem_url=${base}/${onprem_file}"
+            echo "onprem_file=${onprem_file}"
             echo "onprem_sha256=${onprem_sha}"
-            echo "oracle_qcow2_url=${base}/${oracle_file}"
+            echo "oracle_qcow2_file=${oracle_file}"
             echo "oracle_qcow2_sha256=${oracle_sha}"
-            echo "oracle_archive_url=${base}/${oracle_archive_object}"
-            echo "oracle_archive_sha256=${archive_sha}"
             echo "oracle_archive_object=${oracle_archive_object}"
+            echo "oracle_archive_sha256=${archive_sha}"
           } >> "$GITHUB_OUTPUT"
 
   # Enumerates oracle accounts in R2 inventory and emits a matrix that
@@ -338,14 +345,19 @@ jobs:
           pip install --quiet pyyaml
           python3 - <<'PY' > /tmp/accounts.json
           import json, os
-          import yaml
+          import sys, yaml
           base = "/tmp/oracle-inv"
           out = []
+          skipped = []
           if os.path.isdir(base):
               for entry in sorted(os.listdir(base)):
                   auth_p = os.path.join(base, entry, "auth.yaml")
                   nodes_p = os.path.join(base, entry, "nodes.yaml")
-                  if not (os.path.exists(auth_p) and os.path.exists(nodes_p)):
+                  if not os.path.exists(auth_p):
+                      skipped.append(f"{entry}: auth.yaml missing")
+                      continue
+                  if not os.path.exists(nodes_p):
+                      skipped.append(f"{entry}: nodes.yaml missing")
                       continue
                   data = yaml.safe_load(open(auth_p)) or {}
                   # Match build-oci-auth-json.py: prefer .auth block,
@@ -353,10 +365,13 @@ jobs:
                   auth = data.get("auth", data)
                   nodes = yaml.safe_load(open(nodes_p)) or {}
                   required = ("oidc_client_identifier", "domain_base_url", "tenancy_ocid", "region")
-                  if not all(auth.get(k) for k in required):
+                  missing = [k for k in required if not auth.get(k)]
+                  if missing:
+                      skipped.append(f"{entry}: auth missing {missing}; auth keys = {sorted(auth.keys())}")
                       continue
-                  comp = nodes.get("compartment_ocid")
+                  comp = nodes.get("compartment_ocid") or nodes.get("compartment_id")
                   if not comp:
+                      skipped.append(f"{entry}: nodes missing compartment_ocid; nodes keys = {sorted(nodes.keys())}")
                       continue
                   out.append({
                       "profile": entry,
@@ -364,6 +379,8 @@ jobs:
                       "tenancy_ocid": auth["tenancy_ocid"],
                       "compartment_ocid": comp,
                   })
+          for s in skipped:
+              print(f"::warning::skipped {s}", file=sys.stderr)
           print(json.dumps(out))
           PY
           accounts=$(cat /tmp/accounts.json)
@@ -417,17 +434,22 @@ jobs:
           PROFILE:        ${{ matrix.account.profile }}
           REGION:         ${{ matrix.account.region }}
           COMPARTMENT:    ${{ matrix.account.compartment_ocid }}
-          ARCHIVE_URL:    ${{ needs.build.outputs.oracle_archive_url }}
           ARCHIVE_OBJECT: ${{ needs.build.outputs.oracle_archive_object }}
           SCHEMATIC_ID:   ${{ needs.build.outputs.schematic_id }}
           TALOS_VERSION:  ${{ needs.build.outputs.talos_version }}
+          R2_ACCOUNT_ID:  ${{ secrets.R2_ACCOUNT_ID }}
         run: |
           set -euo pipefail
+
+          # Reconstruct the archive URL locally — oracle_archive_url
+          # can't be a job-level output because R2_ACCOUNT_ID is a
+          # secret (GitHub strips outputs that contain secrets).
+          archive_url="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${R2_BUCKET}/${R2_PREFIX}/${SCHEMATIC_ID}/${ARCHIVE_OBJECT}"
 
           # Download the .oci archive built by the build job.
           mkdir -p /tmp/oci-stage
           archive_local="/tmp/oci-stage/${ARCHIVE_OBJECT}"
-          curl -fsSL -o "${archive_local}" "${ARCHIVE_URL}"
+          curl -fsSL -o "${archive_local}" "${archive_url}"
           echo "::notice::downloaded $(stat -c%s "${archive_local}") byte archive"
 
           # Resolve the OCI Object Storage namespace for this tenancy.
@@ -561,16 +583,22 @@ jobs:
           SCHEMATIC_ID:           ${{ needs.build.outputs.schematic_id }}
           TALOS_VERSION:          ${{ needs.build.outputs.talos_version }}
           GENERATED_AT:           ${{ needs.build.outputs.generated_at }}
-          CONTABO_URL:            ${{ needs.build.outputs.contabo_url }}
+          CONTABO_FILE:           ${{ needs.build.outputs.contabo_file }}
           CONTABO_SHA256:         ${{ needs.build.outputs.contabo_sha256 }}
-          ONPREM_URL:             ${{ needs.build.outputs.onprem_url }}
+          ONPREM_FILE:            ${{ needs.build.outputs.onprem_file }}
           ONPREM_SHA256:          ${{ needs.build.outputs.onprem_sha256 }}
-          ORACLE_QCOW2_URL:       ${{ needs.build.outputs.oracle_qcow2_url }}
+          ORACLE_QCOW2_FILE:      ${{ needs.build.outputs.oracle_qcow2_file }}
           ORACLE_QCOW2_SHA256:    ${{ needs.build.outputs.oracle_qcow2_sha256 }}
-          ORACLE_ARCHIVE_URL:     ${{ needs.build.outputs.oracle_archive_url }}
+          ORACLE_ARCHIVE_OBJECT:  ${{ needs.build.outputs.oracle_archive_object }}
           ORACLE_ARCHIVE_SHA256:  ${{ needs.build.outputs.oracle_archive_sha256 }}
+          R2_ACCOUNT_ID:          ${{ secrets.R2_ACCOUNT_ID }}
         run: |
           set -euo pipefail
+
+          # Reconstruct URLs in this step (R2_ACCOUNT_ID is a secret;
+          # GH would have stripped any URL containing it from a job
+          # output and we'd render empty strings).
+          base="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com/${R2_BUCKET}/${R2_PREFIX}/${SCHEMATIC_ID}"
 
           # Header (committed to repo as source of truth).
           {
@@ -582,15 +610,15 @@ jobs:
             echo "generated_at: \"${GENERATED_AT}\""
             echo "formats:"
             echo "  contabo:"
-            echo "    url: \"${CONTABO_URL}\""
+            echo "    url: \"${base}/${CONTABO_FILE}\""
             echo "    sha256: \"${CONTABO_SHA256}\""
             echo "  onprem:"
-            echo "    url: \"${ONPREM_URL}\""
+            echo "    url: \"${base}/${ONPREM_FILE}\""
             echo "    sha256: \"${ONPREM_SHA256}\""
             echo "  oracle:"
-            echo "    qcow2_url: \"${ORACLE_QCOW2_URL}\""
+            echo "    qcow2_url: \"${base}/${ORACLE_QCOW2_FILE}\""
             echo "    qcow2_sha256: \"${ORACLE_QCOW2_SHA256}\""
-            echo "    archive_url: \"${ORACLE_ARCHIVE_URL}\""
+            echo "    archive_url: \"${base}/${ORACLE_ARCHIVE_OBJECT}\""
             echo "    archive_sha256: \"${ORACLE_ARCHIVE_SHA256}\""
             echo "    accounts:"
           } > tofu/shared/inventory/talos-images.yaml
