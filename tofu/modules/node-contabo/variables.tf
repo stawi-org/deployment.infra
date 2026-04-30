@@ -76,17 +76,3 @@ variable "contabo_api_password" {
   description = "Contabo API password."
   sensitive   = true
 }
-
-variable "reinstall_request_hash" {
-  type        = string
-  default     = ""
-  description = <<-EOT
-    SHA1 of the latest applicable reinstall-request file from
-    .github/reconstruction/, or "" when no request applies. Drives
-    null_resource.ensure_image's trigger and the script's MODE
-    inference: non-empty → MODE=reinstall (disk wipe via Contabo PUT);
-    empty → MODE=verify (just probe :50000).
-
-    Computed in layer 01's reconstruction.tf — never set by hand.
-  EOT
-}

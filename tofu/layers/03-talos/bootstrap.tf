@@ -25,11 +25,10 @@ removed {
 # for talos_machine_bootstrap.this, which calls the Bootstrap RPC and
 # seeds etcd.
 
-# Drop the legacy cluster_reinstall_marker from state without
-# destroying anything. The new resource below has a different name so
-# tofu treats it as a fresh create — replace_triggered_by only fires
-# on REPLACEMENT of a referenced resource, not creation, so the
-# bootstrap is preserved across this migration.
+# Drop the legacy cluster_reinstall_marker / cluster_wide_reinstall_marker
+# from state without destroying anything. The reconstruction request
+# mechanism is gone (the simplification PR); image drift on contabo_image
+# is the sole reinstall trigger now.
 removed {
   from = terraform_data.cluster_reinstall_marker
   lifecycle {
@@ -37,18 +36,11 @@ removed {
   }
 }
 
-# Re-fire the Bootstrap RPC when EVERY Contabo CP was just wiped.
-# Layer 01's cluster_reinstall_marker (per-account: SHA1 of all
-# scope=all reconstruction reinstall requests for that account) is
-# folded across contabo accounts in main.tf via
-# local.contabo_cluster_reinstall_marker — lexicographically-largest
-# hash wins so any account flipping its marker flips this aggregate.
-# When it drifts, every Contabo CP is mid-reinstall in parallel and
-# etcd needs to be seeded again. Per-node (scope=selected) requests
-# deliberately don't change this marker — those add a healthy node
-# to a quorate cluster instead.
-resource "terraform_data" "cluster_wide_reinstall_marker" {
-  triggers_replace = local.contabo_cluster_reinstall_marker
+removed {
+  from = terraform_data.cluster_wide_reinstall_marker
+  lifecycle {
+    destroy = false
+  }
 }
 
 resource "talos_machine_bootstrap" "this" {
@@ -60,10 +52,6 @@ resource "talos_machine_bootstrap" "this" {
   node                 = try(local.cp_apply_target[local.bootstrap_node_key], local.bootstrap_node.ipv4)
   endpoint             = try(local.cp_apply_target[local.bootstrap_node_key], local.bootstrap_node.ipv4)
   client_configuration = data.terraform_remote_state.secrets.outputs.client_configuration
-
-  lifecycle {
-    replace_triggered_by = [terraform_data.cluster_wide_reinstall_marker]
-  }
 }
 
 # Wait for kube-apiserver /healthz before this layer reports success.

@@ -1,68 +1,48 @@
 #!/usr/bin/env bash
 # tofu/modules/node-contabo/ensure-image.sh
 #
-# Two modes, controlled by $MODE:
+# Single, simple decision: does this Contabo instance currently
+# report imageId == TARGET_IMAGE_ID?
+#   - Yes  → no-op, exit 0.
+#   - No   → PUT /v1/compute/instances/<id> with the target imageId,
+#            wait for status to leave + return to "running", exit 0.
 #
-#   verify    — First-create path. contabo_instance.this just POST'd
-#               the target image to Contabo, which installed it on the
-#               fresh disk. We just wait for Talos to answer on :50000
-#               so downstream layers see a ready node. No reinstall,
-#               no disk wipe.
-#
-#   reinstall — Operator bumped force_reinstall_generation. Issue a
-#               full-payload PUT /v1/compute/instances/{id} (the proven
-#               contabo.py shape: imageId + sshKeys + rootPassword +
-#               defaultUser) — an image-only PUT is treated by Contabo
-#               as a metadata update, not a disk wipe, so the payload
-#               shape matters. Then wait for :50000 as above.
-#
-# Both modes end with a TCP probe to :50000 because that's the only
-# reliable "Talos is actually running on the disk" signal. Contabo's
-# own `status` / `imageId` API fields are set-only metadata.
+# That's the whole flow. There is no reinstall-request file, no
+# MODE flag, no readiness probe. Under Omni the cluster runtime
+# (machine inventory, Talos health, role assignment) is verified
+# entirely by Omni itself; tofu's only job is to make sure the disk
+# is on the right image.
 #
 # Env (set by null_resource.ensure_image in main.tf):
-#   MODE                   — "verify" | "reinstall"
 #   INSTANCE_ID            — Contabo instance numeric id
-#   TARGET_IMAGE_ID        — desired imageId (UUID)
-#   NODE_ROLE              — "controlplane" | "worker". Controls failure
-#                            handling: worker failures log a warning and
-#                            exit 0 so a single bad VPS doesn't block
-#                            sibling provisioning; controlplane failures
-#                            fail tofu (quorum matters).
-#   READY_CHECK            — readiness probe (default "tcp:50000" — Talos
-#                            apid). Also supports "https:<url>" — a curl
-#                            HEAD against <url>, success on any 2xx/3xx/
-#                            4xx. Reused by omni-host (https://cp.<zone>/).
-#   USER_DATA              — optional. When set, the reinstall PUT uses
-#                            this rendered cloud-init instead of the
-#                            minimal "users: []" stub. Used by omni-host
-#                            so the reinstalled disk runs the omni stack.
-#   CONTABO_CLIENT_ID/_SECRET/_API_USER/_API_PASSWORD — OAuth2 creds
+#   TARGET_IMAGE_ID        — desired imageId (UUID), per inventory
+#   NODE_ROLE              — "controlplane" | "worker". Worker
+#                            failures are warn-and-continue so a
+#                            single bad VPS doesn't block siblings.
+#   USER_DATA              — optional cloud-init blob. If set, it's
+#                            included in the reinstall PUT (used by
+#                            omni-host to bring the omni stack up).
+#                            Omitted = minimal `users: []` stub
+#                            (Talos ignores cloud-init entirely;
+#                            siderolink params come from the image).
+#   CONTABO_CLIENT_ID/_SECRET/_API_USER/_API_PASSWORD — OAuth2 creds.
 
 set -euo pipefail
 
-: "${MODE:?MODE must be 'verify' or 'reinstall'}"
+: "${INSTANCE_ID:?INSTANCE_ID required}"
+: "${TARGET_IMAGE_ID:?TARGET_IMAGE_ID required}"
 : "${NODE_ROLE:?NODE_ROLE must be set (controlplane|worker)}"
 
-# Readiness probe — TCP open on :PORT for Talos, or HTTPS reachability
-# for omni-host. Defaults preserve existing node-contabo callers.
-: "${READY_CHECK:=tcp:50000}"
-
-# Log everything to a file so failures are diagnosable even when
-# Terraform suppresses live stdout because env has sensitive values.
-LOG="/tmp/ensure-image-${INSTANCE_ID:-unknown}-$$.log"
+LOG="/tmp/ensure-image-${INSTANCE_ID}-$$.log"
 exec > >(tee -a "$LOG") 2>&1
-echo "[ensure-image] mode=$MODE log=$LOG"
 trap 'echo "[ensure-image] exit=$? log=$LOG"' EXIT
+echo "[ensure-image] instance=${INSTANCE_ID} target=${TARGET_IMAGE_ID} role=${NODE_ROLE}"
 
 uuid() { cat /proc/sys/kernel/random/uuid; }
 
+# Auth — fail-fast on terminal HTTP statuses so retries don't extend
+# KeyCloak's brute-force lockout. 5xx and network errors retry.
 auth_token() {
-  # Fail-fast on 401 invalid_grant. Each retry while KeyCloak is locked
-  # extends the lockout window, and the lockout makes subsequent attempts
-  # by every other layer (image-lookup, contabo provider Read, sibling
-  # ensure-image.sh runs in parallel matrix cells) more likely to fail.
-  # Retry only on transient signals (5xx, network errors).
   local resp tok attempt code body
   for attempt in 1 2 3 4 5; do
     resp=$(curl -sS -w $'\nHTTP_%{http_code}' -X POST 'https://auth.contabo.com/auth/realms/contabo/protocol/openid-connect/token' \
@@ -80,227 +60,98 @@ auth_token() {
       return 0
     fi
     if [[ "$code" == "400" || "$code" == "401" || "$code" == "403" ]]; then
-      # Terminal — these aren't transient. Likely either bad creds or a
-      # KeyCloak brute-force lockout. Retrying makes the lockout worse.
-      echo "Contabo auth: HTTP ${code} terminal (not transient). Body: ${body:0:300}" >&2
-      echo "Stop dispatching applies for ~15-30 min to let KeyCloak lockout clear." >&2
+      echo "Contabo auth: HTTP ${code} terminal. Body: ${body:0:300}" >&2
       return 1
     fi
-    echo "Contabo auth attempt ${attempt}/5: HTTP ${code:-error} body=${body:0:200}" >&2
+    echo "Contabo auth attempt ${attempt}/5: HTTP ${code:-error}" >&2
     sleep $((attempt * 3))
   done
-  echo "Contabo auth failed after 5 attempts (last HTTP=${code:-error})" >&2
   return 1
 }
 
 api_get() {
-  # Fail-fast on 4xx auth/auth errors — refreshing the token only helps
-  # if the token expired mid-run, but in our retry-at-tofu-layer pattern
-  # KeyCloak treats each token-fetch as a login attempt, so chasing 401
-  # here is exactly what triggers the lockout. Retry only on 5xx /
-  # connection errors.
-  local url="$1" resp body code attempt
-  for attempt in 1 2 3 4 5; do
-    resp=$(curl -sS -w $'\nHTTP_%{http_code}' \
-      -H "Authorization: Bearer ${TOKEN}" \
-      -H "x-request-id: $(uuid)" \
-      -H 'Accept: application/json' \
-      "$url" 2>/dev/null) || true
-    code=$(awk -F_ '/^HTTP_/{print $2; exit}' <<<"$resp")
-    body=$(awk '/^HTTP_/{exit} {print}' <<<"$resp")
-    if [[ "$code" == "200" ]]; then
-      printf '%s' "$body"
-      return 0
-    fi
-    if [[ "$code" =~ ^4[0-9][0-9]$ ]]; then
-      echo "api_get $url: HTTP $code terminal (4xx). Body: ${body:0:200}" >&2
-      return 1
-    fi
-    echo "api_get $url: HTTP=${code:-error} body=${body:0:200} (attempt $attempt)" >&2
-    sleep $((attempt * 5))
-  done
-  echo "api_get $url: giving up after 5 attempts (last HTTP=${code:-error})" >&2
-  return 1
+  local token=$1 url=$2
+  curl -sS -X GET "$url" \
+    -H "Authorization: Bearer $token" \
+    -H "x-request-id: $(uuid)"
 }
 
-# Wrap the provisioning body in a function so we can capture its exit
-# code and apply per-role failure policy (workers warn-and-continue,
-# controlplanes fail tofu). Use 'return' inside; never 'exit'.
-do_provision() {
-  TOKEN=$(auth_token)
+api_put() {
+  local token=$1 url=$2 body=$3
+  curl -sS -X PUT "$url" \
+    -H "Authorization: Bearer $token" \
+    -H "Content-Type: application/json" \
+    -H "x-request-id: $(uuid)" \
+    -d "$body"
+}
 
-  # Contabo's response shape: .data[0].ipConfig.v4 is an OBJECT with
-  # .ip (not an array). Confirmed via contabo.py's own accessor.
-  # On a freshly-POST'd instance, ipConfig may be empty for ~30-90s
-  # while Contabo allocates an IP — poll until populated.
-  INSTANCE_IP=""
-  for ip_attempt in $(seq 1 30); do
-    SNAP=$(api_get "https://api.contabo.com/v1/compute/instances/${INSTANCE_ID}")
-    INSTANCE_IP=$(jq -r '.data[0].ipConfig.v4.ip // empty' <<<"$SNAP")
-    if [[ -n "$INSTANCE_IP" && "$INSTANCE_IP" != "null" ]]; then
-      break
-    fi
-    INSTANCE_STATUS=$(jq -r '.data[0].status // "unknown"' <<<"$SNAP")
-    INSTANCE_NAME=$(jq -r '.data[0].name // "unknown"' <<<"$SNAP")
-    echo "  attempt ${ip_attempt}/30: instance ${INSTANCE_ID} name=${INSTANCE_NAME} status=${INSTANCE_STATUS} — no IP yet" >&2
+main() {
+  local token snap current status
+  token=$(auth_token)
+  snap=$(api_get "$token" "https://api.contabo.com/v1/compute/instances/${INSTANCE_ID}")
+  current=$(jq -r '.data[0].imageId // empty' <<<"$snap")
+  status=$(jq -r '.data[0].status  // empty' <<<"$snap")
+  echo "current imageId=${current} status=${status}"
+
+  if [[ "$current" == "$TARGET_IMAGE_ID" ]]; then
+    echo "already on target image — no-op"
+    return 0
+  fi
+
+  # Reinstall PUT — full payload mirrors contabo.py reinstall_instance().
+  # Image-only payloads are silently no-op'd by Contabo (HTTP 200, disk
+  # untouched). Including userData + sshKeys + defaultUser forces the
+  # disk-wipe path. Talos ignores cloud-init; the siderolink kernel arg
+  # comes from the image itself.
+  local body
+  body=$(jq -n --arg img "$TARGET_IMAGE_ID" \
+                --arg ud "${USER_DATA:-#cloud-config\nusers: []\n}" \
+    '{imageId:$img, userData:$ud, sshKeys:[], defaultUser:"root"}')
+
+  echo "issuing PUT with imageId=${TARGET_IMAGE_ID}"
+  local resp
+  resp=$(api_put "$token" "https://api.contabo.com/v1/compute/instances/${INSTANCE_ID}" "$body")
+  echo "PUT response: $(jq -c '.' <<<"$resp" || echo "$resp")"
+
+  # Wait for status to LEAVE running (confirms wipe started) then
+  # RETURN to running (wipe complete). 5min + 15min ceilings.
+  echo "waiting for status to leave running (reinstall starts)"
+  local i
+  for i in $(seq 1 30); do
+    snap=$(api_get "$token" "https://api.contabo.com/v1/compute/instances/${INSTANCE_ID}")
+    status=$(jq -r '.data[0].status' <<<"$snap")
+    [[ "$status" != "running" && -n "$status" && "$status" != "null" ]] && break
     sleep 10
   done
-  if [[ -z "$INSTANCE_IP" || "$INSTANCE_IP" == "null" ]]; then
-    echo "could not resolve IPv4 for instance ${INSTANCE_ID} after 5 minutes" >&2
-    echo "last snapshot: $SNAP" >&2
+  if [[ "$status" == "running" ]]; then
+    echo "instance never left running — Contabo silently no-op'd the PUT" >&2
     return 1
   fi
-  echo "instance=${INSTANCE_ID} ip=${INSTANCE_IP} target=${TARGET_IMAGE_ID}"
-
-  port_open() {
-    timeout 3 bash -c "echo >/dev/tcp/${INSTANCE_IP}/50000" 2>/dev/null
-  }
-
-  instance_snapshot() {
-    api_get "https://api.contabo.com/v1/compute/instances/${INSTANCE_ID}"
-  }
-
-  if [[ "$MODE" == "reinstall" ]]; then
-    PRE=$(instance_snapshot)
-    PRE_STATUS=$(jq -r '.data[0].status' <<<"$PRE")
-    PRE_IMAGE=$(jq -r '.data[0].imageId' <<<"$PRE")
-    echo "pre-reinstall: status=${PRE_STATUS} imageId=${PRE_IMAGE}"
-
-    # Full-payload PUT. Mirrors contabo.py reinstall_instance(). Observed:
-    # without userData, the PUT is accepted with HTTP 200 but silently
-    # ignored — no disk wipe, tofu state thinks the reinstall succeeded,
-    # downstream talos_machine_configuration_apply + bootstrap then run
-    # against the still-old disk. With a malformed userData (e.g. bare
-    # "#talos"), Contabo rejects HTTP 400 "Invalid yaml format".
-    # What works: a minimal valid cloud-config YAML document. Talos
-    # itself ignores cloud-init entirely — the siderolink.api kernel arg
-    # is baked into the boot image via the Image Factory schematic
-    # (schematic.yaml.tftpl), not via userData. Callers that DO need a
-    # full cloud-init (omni-host) supply USER_DATA env explicitly.
-    if [[ -n "${USER_DATA:-}" ]]; then
-      USER_DATA_JSON=$(jq -Rs '.' <<<"$USER_DATA")
-    else
-      USER_DATA_JSON=$(jq -Rs '.' <<<$'#cloud-config\nusers: []\n')
-    fi
-    echo "issuing PUT /compute/instances/${INSTANCE_ID} with imageId=${TARGET_IMAGE_ID}"
-    RESP=$(curl -sS -w $'\nHTTP_%{http_code}' -X PUT \
-      -H "Authorization: Bearer ${TOKEN}" \
-      -H "x-request-id: $(uuid)" \
-      -H 'Content-Type: application/json' \
-      "https://api.contabo.com/v1/compute/instances/${INSTANCE_ID}" \
-      -d "{\"imageId\":\"${TARGET_IMAGE_ID}\",\"sshKeys\":[],\"rootPassword\":0,\"userData\":${USER_DATA_JSON},\"defaultUser\":\"root\"}")
-    CODE=$(awk -F_ '/^HTTP_/{print $2; exit}' <<<"$RESP")
-    BODY=$(awk '/^HTTP_/{exit} {print}' <<<"$RESP")
-    echo "PUT response: HTTP=${CODE}"
-    echo "PUT body: ${BODY}"
-    if [[ "$CODE" -lt 200 || "$CODE" -ge 300 ]]; then
-      echo "reinstall PUT returned non-2xx HTTP ${CODE}" >&2
-      return 1
-    fi
-
-    # Authoritative signal that reinstall actually started: Contabo's
-    # status field transitions running → provisioning → running. If the
-    # instance never leaves "running", the PUT was accepted but no disk
-    # wipe happened (a silent no-op we've observed). Fail loudly so the
-    # apply surfaces it instead of proceeding on stale disk state.
-    echo "waiting for Contabo status to leave 'running' (confirms reinstall started)"
-    LEFT_RUNNING=false
-    for i in $(seq 1 30); do  # up to 5 min
-      SNAP=$(instance_snapshot)
-      STATUS=$(jq -r '.data[0].status' <<<"$SNAP")
-      echo "  attempt ${i}/30: contabo status=${STATUS}"
-      if [[ "$STATUS" != "running" && "$STATUS" != "null" && -n "$STATUS" ]]; then
-        LEFT_RUNNING=true
-        break
-      fi
-      sleep 10
-    done
-    if [[ "$LEFT_RUNNING" != "true" ]]; then
-      echo "Contabo reinstall PUT accepted but instance never left 'running' state." >&2
-      echo "Disk was not actually re-imaged. Cannot proceed." >&2
-      return 1
-    fi
-
-    # Then wait for it to return to running (reinstall finished on Contabo side).
-    echo "waiting for Contabo status to return to 'running' (reinstall finishing)"
-    BACK_RUNNING=false
-    for i in $(seq 1 90); do  # up to 15 min
-      SNAP=$(instance_snapshot)
-      STATUS=$(jq -r '.data[0].status' <<<"$SNAP")
-      IMG=$(jq -r '.data[0].imageId' <<<"$SNAP")
-      echo "  attempt ${i}/90: contabo status=${STATUS} imageId=${IMG}"
-      if [[ "$STATUS" == "running" ]]; then
-        BACK_RUNNING=true
-        break
-      fi
-      sleep 10
-    done
-    if [[ "$BACK_RUNNING" != "true" ]]; then
-      echo "Contabo reinstall didn't return to 'running' within 15 minutes" >&2
-      return 1
-    fi
-  fi
-
-  # Readiness probe — sole trustworthy "disk has booted OS" signal.
-  # Works for both modes: verify (just-POSTed instance finishing first
-  # boot) and reinstall (fresh boot after wipe).
-  #
-  # Under the Omni-takeover, Talos's API (port 50000) only listens on
-  # the SideroLink WireGuard tunnel — NOT the public IP. The
-  # Contabo-side `status=running` signal (verified by the LEFT_RUNNING
-  # + BACK_RUNNING loops above) is sufficient proof the disk was
-  # reimaged; Talos's actual boot is verified by Omni's machine
-  # inventory, not by tofu. Set READY_CHECK=skip to bypass the
-  # network probe entirely.
-  case "$READY_CHECK" in
-    skip)
-      echo "READY_CHECK=skip — relying on Contabo status transitions for reinstall verification (Omni-managed node)"
-      return 0
-      ;;
-    tcp:*)
-      probe_port="${READY_CHECK#tcp:}"
-      probe_label="${INSTANCE_IP}:${probe_port}"
-      probe_one() { timeout 3 bash -c "echo >/dev/tcp/${INSTANCE_IP}/${probe_port}" 2>/dev/null; }
-      ;;
-    https:*)
-      probe_url="${READY_CHECK#https:}"
-      probe_label="$probe_url"
-      probe_one() {
-        local code
-        code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$probe_url" 2>/dev/null || true)
-        [[ "$code" =~ ^[234][0-9][0-9]$ ]]
-      }
-      ;;
-    *)
-      echo "READY_CHECK must be 'tcp:<port>', 'https:<url>', or 'skip'; got: $READY_CHECK" >&2
-      return 1
-      ;;
-  esac
-
-  echo "waiting for ${probe_label} (up to 20 min)"
-  for i in $(seq 1 120); do
-    if probe_one; then
-      echo "attempt ${i}/120: ${probe_label} ready"
+  echo "left running (status=${status}); waiting for return"
+  for i in $(seq 1 90); do
+    snap=$(api_get "$token" "https://api.contabo.com/v1/compute/instances/${INSTANCE_ID}")
+    status=$(jq -r '.data[0].status' <<<"$snap")
+    current=$(jq -r '.data[0].imageId' <<<"$snap")
+    echo "  attempt ${i}/90: status=${status} imageId=${current}"
+    if [[ "$status" == "running" ]]; then
+      echo "back to running on imageId=${current}"
       return 0
     fi
-    echo "attempt ${i}/120: ${probe_label} not ready yet"
     sleep 10
   done
-  echo "${probe_label} not reachable after 20 min" >&2
+  echo "did not return to running within 15 min" >&2
   return 1
 }
 
-# Per-node failure isolation: a failed worker provision (bad VPS, stuck
-# reinstall, transient API error) must NOT abort sibling node creates
-# in the same apply. CP failures still fail tofu — they affect quorum.
-if do_provision; then
-  rc=0
-else
-  rc=$?
-fi
-
-if (( rc != 0 )) && [[ "$NODE_ROLE" == "worker" ]]; then
-  echo "::warning::worker provision failed (rc=$rc) — continuing per worker-failure isolation policy" >&2
+# Per-node failure isolation. Worker failures warn + exit 0 so a
+# single bad VPS doesn't block sibling node creates in the same
+# apply. CP failures fail tofu — quorum matters.
+if main; then
   exit 0
 fi
-exit $rc
+
+if [[ "$NODE_ROLE" == "worker" ]]; then
+  echo "::warning::worker ${INSTANCE_ID} failed but continuing per worker-isolation policy"
+  exit 0
+fi
+exit 1

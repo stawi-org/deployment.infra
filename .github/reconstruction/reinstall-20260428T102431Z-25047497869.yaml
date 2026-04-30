@@ -1,9 +1,0 @@
-operation: reinstall
-scope: all
-nodes: []
-reason: |-
-  Just switch storage to utilize topoLvm as opposed to local path provisioner
-requested_by: pitabwire
-requested_at: 2026-04-28T10:24:31Z
-source_run_id: "25047497869"
-source_run_url: https://github.com/stawi-org/deployment.infra/actions/runs/25047497869

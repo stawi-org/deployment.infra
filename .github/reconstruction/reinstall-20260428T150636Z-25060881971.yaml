@@ -1,9 +1,0 @@
-operation: reinstall
-scope: selected
-nodes: ["oci-bwire-node-1", "oci-brianelvis33-node-1", "oci-alimbacho67-node-1", "oci-ambetera-node-1"]
-reason: |-
-  Re-roll OCI nodes onto gen10 image (correct .oci archive launchOptions, real Talos v1.13.0 boot)
-requested_by: pitabwire
-requested_at: 2026-04-28T15:06:36Z
-source_run_id: "25060881971"
-source_run_url: https://github.com/stawi-org/deployment.infra/actions/runs/25060881971

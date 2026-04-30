@@ -45,21 +45,6 @@ locals {
     for k, s in data.terraform_remote_state.contabo :
     try(s.outputs.nodes, {})
   ]...)
-
-  # Cluster-wide reinstall marker: with N contabo accounts each
-  # publishing their own scope=all reinstall request hash, the talos
-  # bootstrap re-fire trigger needs ONE deterministic value. Pick the
-  # lexicographically-largest non-empty hash across accounts (sha1 hex
-  # sort is stable). All accounts contribute their reinstall-request
-  # signals — any account flipping its hash flips this aggregate too,
-  # which is the desired "re-bootstrap when ANY contabo account just
-  # got wiped cluster-wide" semantic. Empty string when no account
-  # reports a marker.
-  _contabo_reinstall_markers = compact([
-    for k, s in data.terraform_remote_state.contabo :
-    try(s.outputs.cluster_reinstall_marker, "")
-  ])
-  contabo_cluster_reinstall_marker = length(local._contabo_reinstall_markers) > 0 ? sort(local._contabo_reinstall_markers)[length(local._contabo_reinstall_markers) - 1] : ""
 }
 
 data "terraform_remote_state" "oracle" {
