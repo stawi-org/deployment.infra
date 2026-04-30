@@ -1,0 +1,65 @@
+# Deletes specific Machine resources from Omni's state, identified by
+# UUID. Used to unstick machines that ended up in a half-state on
+# /var/lib/omni after a backup-restore (e.g. "the machine is already
+# being reset" — a flag the restore preserved indefinitely because
+# the running node has long since completed the reset).
+#
+# After delete:
+#   - The Machine resource and its dependent ClusterMachineConfig +
+#     reset state are removed from Omni.
+#   - The node, still running, retries siderolink-api join via the
+#     kernel-cmdline jointoken; Omni mints a fresh Machine + Link.
+#   - tofu-apply on layer-03 then relabels the new Machine and the
+#     cluster reconciles into Ready.
+#
+# Trigger: workflow_dispatch only (operator decision — never auto).
+# Auth: same OMNI_SERVICE_ACCOUNT_KEY used by sync-cluster-template.
+name: omni-machine-delete
+on:
+  workflow_dispatch:
+    inputs:
+      machine_ids:
+        description: Comma-separated Machine UUIDs to delete.
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  OMNI_VERSION: v1.7.1
+
+jobs:
+  delete:
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT: https://cpd.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+      MACHINE_IDS: ${{ inputs.machine_ids }}
+    steps:
+      - name: Install omnictl
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/omnictl \
+            "https://github.com/siderolabs/omni/releases/download/$OMNI_VERSION/omnictl-linux-amd64"
+          chmod +x /tmp/omnictl
+          sudo install -m 0755 /tmp/omnictl /usr/local/bin/omnictl
+          omnictl --version
+
+      - name: Verify auth
+        run: omnictl get user --output json | head -20
+
+      - name: Delete Machines
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra IDS <<< "$MACHINE_IDS"
+          for id in "${IDS[@]}"; do
+            id=$(echo "$id" | tr -d ' ')
+            [[ -z "$id" ]] && continue
+            echo "::group::deleting Machines.omni.sidero.dev/$id"
+            omnictl delete "Machines.omni.sidero.dev/$id" || echo "(delete failed or already absent)"
+            echo "::endgroup::"
+          done
+
+      - name: Show remaining MachineStatus list
+        run: omnictl get machinestatus --output table || true
