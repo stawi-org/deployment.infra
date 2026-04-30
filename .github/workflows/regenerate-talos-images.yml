@@ -417,6 +417,12 @@ jobs:
       AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
       R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      # configure-oci-wif.sh writes profiles with `auth =
+      # security_token` (no `user` OCID). Without this env var, the
+      # OCI CLI's config validator rejects the profile with
+      # "Key `user` missing". OCI_CLI_AUTH overrides the default
+      # api_key auth for every `oci ...` invocation in this job.
+      OCI_CLI_AUTH: security_token
     steps:
       - uses: actions/checkout@v5
 
