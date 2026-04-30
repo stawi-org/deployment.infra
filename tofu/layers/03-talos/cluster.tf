@@ -121,8 +121,20 @@ resource "local_sensitive_file" "node_labels_json" {
 resource "null_resource" "omnictl_machine_labels" {
   depends_on = [null_resource.omnictl_cluster_template]
 
+  # Triggers on:
+  #   labels_sha — re-run when the desired-labels content changes (e.g.
+  #                operator adds a label to a node).
+  #   nodes_sha  — re-run when ANY upstream node attribute changes
+  #                (instance ID, ipv4, etc.). Critical for OCI's
+  #                destroy+create flow: the node name is stable but
+  #                Omni only sees a fresh Machine after the new
+  #                instance phones home, and we need to relabel it
+  #                because labels are NOT carried over by Omni
+  #                between Machine identities.
+  #   endpoint / cluster — invalidate on env target changes.
   triggers = {
     labels_sha = sha256(local_sensitive_file.node_labels_json.content)
+    nodes_sha  = sha256(jsonencode(local.all_nodes_from_state))
     endpoint   = var.omni_endpoint
     cluster    = var.cluster_name
   }
