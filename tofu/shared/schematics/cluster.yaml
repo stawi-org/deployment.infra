@@ -14,6 +14,13 @@ customization:
   extraKernelArgs:
     - ipv6.disable=0
     - ipv6.autoconf=0
+    # Vendor-namespaced no-op arg whose only purpose is to bump the
+    # rendered schematic_id when we need to force a fleet-wide reinstall
+    # without changing real Talos / k8s versions. The kernel logs unknown
+    # args at boot but ignores them. Bump the date+seq when re-rolling
+    # the cluster (e.g. to refresh SideroLink registrations after an
+    # Omni-host backup-restore left the public-key store stale).
+    - cluster.regen-token=2026-04-30-1
   systemExtensions:
     officialExtensions:
       - siderolabs/util-linux-tools
