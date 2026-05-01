@@ -48,6 +48,13 @@ features:
   # access. With the cluster behind CF-proxied DNS, this is the only
   # supported access mode.
   enableWorkloadProxy: true
+  # Use Omni's built-in discovery service rather than the public
+  # Sidero one (discovery.talos.dev). Omni already maintains the
+  # peer-endpoint map for SideroLink; reusing it for KubeSpan node
+  # discovery avoids an extra third-party dependency on the cluster
+  # bootstrap path. Per Omni docs this is a no-cost flip when Omni
+  # is the management plane.
+  useEmbeddedDiscoveryService: true
 patches:
   # Bootstrap-time manifest delivery: Talos fetches each URL once
   # during cluster bootstrap (initial CP bring-up) and applies the
@@ -75,6 +82,30 @@ patches:
         extraManifests:
           - https://github.com/fluxcd/flux2/releases/download/v2.4.0/install.yaml
 
+  # KubeSpan: direct node-to-node WireGuard mesh for ALL cluster
+  # traffic (etcd peer-url, kubelet→apiserver, pod CNI, service mesh).
+  # Solves cross-provider routing without per-component patches —
+  # nodes can advertise any local IP and KubeSpan tunnels the traffic
+  # via each peer's reachable WG endpoint.
+  #
+  # This is the correct architectural answer to "Contabo CP can't
+  # reach OCI CP at 10.0.2.106:2380 for etcd peer membership":
+  # KubeSpan establishes a WG tunnel from each Contabo node directly
+  # to each OCI node, advertised endpoints are the public IPs that
+  # ARE reachable, encrypted traffic flows direct (NOT relayed via
+  # the omni-host like SideroLink would do — SideroLink is
+  # hub-and-spoke, KubeSpan is full-mesh).
+  #
+  # Pairs with `features.useEmbeddedDiscoveryService: true` above —
+  # nodes learn each other's endpoint via Omni's discovery, then
+  # establish KubeSpan tunnels.
+  - name: kubespan-enable
+    inline:
+      machine:
+        network:
+          kubespan:
+            enabled: true
+
 ---
 # Control-plane machine set. `size` MUST be explicit — leaving it
 # unset (or 0) makes Omni's MachineSetController treat the set as
@@ -85,30 +116,14 @@ kind: ControlPlane
 machineClass:
   name: cp
   size: 3
-patches:
-  # Cross-provider etcd. Contabo CPs have routable public IPv4
-  # (164.68.x.x); OCI CPs sit behind NAT with primary interface on a
-  # private subnet (10.0.2.0/24) — Contabo can't dial OCI's primary
-  # IP. Without this patch Talos picks the primary-interface address
-  # for `--initial-advertise-peer-urls`, etcd quorum can't form
-  # across providers, and any non-Contabo CP gets stuck with
-  # `cannot fetch cluster info from peer urls` on bootstrap.
-  #
-  # Pinning advertisedSubnets to the SideroLink WireGuard ULA
-  # (fdae:41e4:649b:9303::/64) makes every CP advertise its WG IPv6
-  # for etcd peer-url. Omni maintains the WG mesh between every
-  # SideroLink-connected machine, so all CPs are bidirectionally
-  # routable on this subnet regardless of provider / NAT topology.
-  #
-  # listenSubnets is left at the default (0.0.0.0 / ::) — listening
-  # is provider-agnostic; only the *advertised* URL matters for
-  # cluster membership.
-  - name: etcd-via-siderolink
-    inline:
-      cluster:
-        etcd:
-          advertisedSubnets:
-            - fdae:41e4:649b:9303::/64
+# Cluster-wide KubeSpan handles all cross-CP networking (see the
+# Cluster.patches block above), so etcd needs no per-component
+# preferential treatment. Earlier iterations of this template
+# tried `cluster.etcd.advertisedSubnets` pinned to the SideroLink
+# ULA, but SideroLink is hub-and-spoke (every node tunnels to the
+# omni-host, no direct node-to-node) — etcd Raft would relay
+# through the management plane on every round-trip. KubeSpan fixes
+# this at the right layer.
 
 ---
 # Worker machine set. Same shape; size matches the number of
