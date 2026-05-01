@@ -82,38 +82,35 @@ features:
 # bootstrap reliability.
 
 ---
-# Control-plane machine set. `size` MUST be explicit — leaving it
-# unset (or 0) makes Omni's MachineSetController treat the set as
-# Static-with-zero-members and bind nothing, even when matching
-# machines exist. Three CPs gives etcd quorum tolerance for one CP
-# loss; bump to 5 once we have the spare nodes.
+# Control-plane machine set.
+#
+# size:1 reflects a deliberate architectural choice for this cluster.
+# With CPs spread across Contabo (public IPv4) and OCI (NAT'd private
+# IPv4 + ephemeral public IPv4), etcd peer URLs that work for one
+# provider are unreachable from the other:
+#   - Public IPv4 on Contabo → not reachable on OCI peers (their
+#     "public IPv4" is a NAT translation; inbound from internet doesn't
+#     hit the Talos node).
+#   - Private IPv4 on OCI → not reachable from Contabo (different VPC).
+#   - SideroLink ULA (fdae:.../64) — was the "obvious" pick because
+#     every CP has one and the WG mesh proves omni-host reaches each
+#     peer. But Omni's siderolink is hub-and-spoke, and the WG peer
+#     allowed-ips on each Talos node only cover the omni-host's own
+#     /128, so cross-CP packets get dropped at the WG layer even with
+#     IPv6 forwarding enabled on the hub. Proven empirically 2026-05:
+#     after gen=8 OCI bump + IPv6-forwarding on the hub, etcd ports
+#     2379/2380 stayed `connection refused` on every CP indefinitely.
+#
+# Single-CP avoids the cross-provider etcd peering problem entirely.
+# Trade-off: no HA — losing the CP loses the cluster API until it
+# recovers — but the omni-backup tarball captures /var/lib/omni
+# hourly, so a CP-host failure is recoverable via Contabo PUT-based
+# reinstall + omni-restore. We'll re-introduce HA as part of a
+# separate KubeSpan-or-equivalent full-mesh PR.
 kind: ControlPlane
 machineClass:
   name: cp
-  size: 3
-patches:
-  # Cross-provider etcd, working version. Contabo CPs have routable
-  # public IPv4 (164.68.x.x); OCI CPs sit behind NAT with primary
-  # interface on a private subnet (10.0.2.0/24) — Contabo can't dial
-  # OCI's primary IP. Without this patch Talos picks the primary-
-  # interface address for `--initial-advertise-peer-urls`, etcd
-  # quorum can't form across providers.
-  #
-  # Pinning advertisedSubnets to the SideroLink WireGuard ULA
-  # (fdae:41e4:649b:9303::/64) makes every CP advertise its WG IPv6
-  # for etcd peer-url. Omni's WG mesh routes between every CP
-  # regardless of provider / NAT topology.
-  #
-  # Yes, this routes etcd Raft through the omni-host (SideroLink is
-  # hub-and-spoke) — adds latency but at least the cluster forms.
-  # Replace with KubeSpan once we've validated KubeSpan's exact
-  # config requirements on a test cluster.
-  - name: etcd-via-siderolink
-    inline:
-      cluster:
-        etcd:
-          advertisedSubnets:
-            - fdae:41e4:649b:9303::/64
+  size: 1
 
 ---
 # Worker machine set. Same shape; size matches the number of
