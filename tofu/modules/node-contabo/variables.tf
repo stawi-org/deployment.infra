@@ -33,6 +33,33 @@ variable "image_id" {
   description = "Contabo custom image ID (Talos image)."
 }
 
+variable "force_reinstall_generation" {
+  type        = number
+  default     = 1
+  description = <<-EOT
+    Operator-controlled bump that forces a VPS reinstall without
+    requiring a schematic change. Bumping the value (e.g. 1 → 2)
+    re-keys the null_resource.ensure_image trigger map so the
+    resource is replaced; on apply, ensure-image.sh runs with
+    FORCE_REINSTALL=1 and PUTs unconditionally regardless of the
+    current imageId.
+
+    Use to recover stuck nodes (Talos in a bad state, kernel-cmdline
+    refresh needed, lost siderolink registration) without going
+    through the heavyweight schematic-bump → regen-talos-images →
+    merged-PR loop. Routine reinstalls driven by an actual image
+    change still happen automatically through the target_image_id
+    trigger; this knob is only for "I want a reinstall NOW".
+
+    Bump generation history:
+      1 — initial.
+  EOT
+  validation {
+    condition     = var.force_reinstall_generation >= 1
+    error_message = "force_reinstall_generation must be >= 1."
+  }
+}
+
 variable "labels" {
   type        = map(string)
   default     = {}

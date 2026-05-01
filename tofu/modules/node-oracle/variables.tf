@@ -14,6 +14,30 @@ variable "memory_gb" { type = number }
 variable "subnet_id" { type = string }
 variable "image_id" { type = string }
 variable "compartment_ocid" { type = string }
+variable "force_reinstall_generation" {
+  type        = number
+  default     = 1
+  description = <<-EOT
+    Operator-controlled bump that forces a destroy+create of the OCI
+    instance regardless of image_id stability. Bumping the value (e.g.
+    1 → 2) changes terraform_data.force_reinstall.input → fires the
+    replace_triggered_by → instance is recreated, gets a fresh boot,
+    re-registers with Omni via siderolink-api.
+
+    Mirrors var.force_reinstall_generation in node-contabo so a
+    single bump in both `02-oracle-infra/terraform.tfvars` and
+    `01-contabo-infra/terraform.tfvars` rolls every cluster node
+    without going through the schematic-bump round-trip.
+
+    Bump generation history:
+      1 — initial.
+  EOT
+  validation {
+    condition     = var.force_reinstall_generation >= 1
+    error_message = "force_reinstall_generation must be >= 1."
+  }
+}
+
 variable "boot_volume_size_in_gbs" {
   type        = number
   default     = 180

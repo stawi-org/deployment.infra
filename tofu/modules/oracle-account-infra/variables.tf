@@ -88,3 +88,13 @@ variable "omni_siderolink_url" {
   default     = ""
   description = "Full siderolink URL injected into the boot cmdline, e.g. https://cp.antinvestor.com?jointoken=<token>. Empty string disables (transitional during the migration; non-empty after Phase A lands)."
 }
+
+variable "force_reinstall_generation" {
+  type        = number
+  default     = 1
+  description = "See modules/node-oracle/variables.tf — pass-through from the layer's tfvars to each node."
+  validation {
+    condition     = var.force_reinstall_generation >= 1
+    error_message = "force_reinstall_generation must be >= 1."
+  }
+}

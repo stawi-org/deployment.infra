@@ -1,0 +1,38 @@
+name: cluster-template-validate
+on:
+  pull_request:
+    paths:
+      - tofu/shared/clusters/**
+      - .github/workflows/cluster-template-validate.yml
+  workflow_dispatch: {}
+permissions:
+  contents: read
+env:
+  OMNI_VERSION: v1.7.1
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install omnictl
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/omnictl \
+            "https://github.com/siderolabs/omni/releases/download/$OMNI_VERSION/omnictl-linux-amd64"
+          chmod +x /tmp/omnictl
+          sudo install -m 0755 /tmp/omnictl /usr/local/bin/omnictl
+          omnictl --version
+      - name: Validate cluster template
+        run: |
+          set -euo pipefail
+          omnictl cluster template validate \
+            -f tofu/shared/clusters/main.yaml
+      - name: Render cluster template (smoke check)
+        run: |
+          set -euo pipefail
+          omnictl cluster template render \
+            -f tofu/shared/clusters/main.yaml \
+            --output rendered.yaml || true
+          if [[ -s rendered.yaml ]]; then
+            echo "rendered $(wc -l < rendered.yaml) lines"
+          fi

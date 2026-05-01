@@ -50,3 +50,29 @@ variable "omni_siderolink_url" {
   default     = ""
   description = "Full siderolink URL injected into the boot cmdline, e.g. https://cp.antinvestor.com?jointoken=<token>. Empty string disables (transitional during the migration; non-empty after Phase A lands)."
 }
+
+variable "force_reinstall_generation" {
+  type        = number
+  default     = 1
+  description = <<-EOT
+    Operator escape hatch for forcing a fleet-wide Contabo VPS
+    reinstall on next apply, decoupled from schematic_id changes.
+    Bump in terraform.tfvars (e.g. 1 → 2) to invalidate every
+    null_resource.ensure_image trigger; ensure-image.sh runs with
+    FORCE_REINSTALL=1 and PUTs unconditionally regardless of
+    current imageId.
+
+    Use cases:
+      - Recover from "stuck Talos" / lost SideroLink registration.
+      - Refresh kernel cmdline after Omni's join token rotates.
+      - Smoke-test reinstall paths.
+
+    Routine reinstalls driven by a real schematic change still fire
+    automatically through the target_image_id trigger; this knob
+    only matters for "want a reinstall NOW".
+  EOT
+  validation {
+    condition     = var.force_reinstall_generation >= 1
+    error_message = "force_reinstall_generation must be >= 1."
+  }
+}

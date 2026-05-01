@@ -18,16 +18,32 @@
 # using-templates/cluster-template-reference).
 #
 # Machine assignment:
-#   Until per-role kernel cmdline initial-labels are baked into the
-#   image build pipeline (see `regenerate-talos-images.yml` — TODO),
-#   the operator must label machines manually after they register.
-#   Either via the Omni dashboard, or:
-#     omnictl machine update <machine-id> \
-#       --label role=cp           # for control planes
-#     omnictl machine update <machine-id> \
-#       --label role=worker       # for workers
-#   Once labelled, the machine joins the matching machine set
-#   automatically (Cluster reconciler).
+#   tofu/layers/03-talos/cluster.tf reconciles per-node labels onto
+#   each registered Omni Machine via `omnictl apply` of a
+#   `MachineLabels.omni.sidero.dev` resource (the `omnictl machine
+#   update --label k=v` README example was wrong — that subcommand
+#   doesn't exist). Labels come from each upstream node module's
+#   `derived_labels` output, including `node.antinvestor.io/role=
+#   {controlplane,worker}` which the machine-classes.yaml selectors
+#   match against. So machines auto-bind to `cp` / `workers`
+#   MachineSets once labelled.
+#
+#   TODO: bake the role label into per-role kernel-cmdline initial-
+#   labels at image build time so machines are bound to the correct
+#   MachineSet immediately on boot, dropping the post-registration
+#   label-sync loop entirely. Two paths to investigate:
+#     1. Omni's siderolink-api join URL accepts query params that
+#        become MachineLabels — would need per-role schematics with
+#        `siderolink.api=...?role=cp` (or `worker`) baked into the
+#        kernel cmdline.
+#     2. Talos's `talos.machine.label.<key>=<value>` kernel args
+#        (if supported in the version we're on) — same per-role
+#        schematic requirement.
+#   Either way needs the regenerate-talos-images workflow to mint
+#   N schematics and the talos-images.yaml schema to grow per-role
+#   entries; node modules then pick the right schematic_id based
+#   on `var.role`. Substantial pipeline rework; do as a focused PR
+#   after validating the exact Omni-side mechanism on a test cluster.
 
 kind: Cluster
 name: stawi

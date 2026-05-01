@@ -91,4 +91,5 @@ module "oracle_account" {
   force_image_generation               = var.force_image_generation
   shared_patches_dir                   = "${path.module}/../../shared/patches"
   omni_siderolink_url                  = var.omni_siderolink_url
+  force_reinstall_generation           = var.force_reinstall_generation
 }

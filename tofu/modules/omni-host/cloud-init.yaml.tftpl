@@ -435,10 +435,13 @@ write_files:
       R2_BUCKET=${r2_bucket_name}
       R2_PREFIX=${r2_backup_prefix}
 
-  # Backup script — taken at 03:00 daily by omni-backup.timer. Stops
-  # Omni first so embedded etcd + sqlite snapshots are consistent (a
-  # ~30s nightly outage is acceptable for our low-ops shape). Uploads
-  # tar.gz to R2, then prunes all but the most recent 14 snapshots.
+  # Backup script — taken hourly by omni-backup.timer. Stops Omni
+  # first so embedded etcd + sqlite snapshots are consistent (a ~30s
+  # outage per hour is the cost of a small RPO). Uploads tar.gz to
+  # R2, then prunes all but the most recent 48 snapshots — that's
+  # ~48 hours of rolling history, covering "registered an SA key,
+  # then VPS reinstalled before the next snapshot" which is the
+  # exact gap that bit us on 2026-04-30.
   - path: /usr/local/bin/omni-backup.sh
     permissions: "0755"
     content: |
@@ -462,10 +465,10 @@ write_files:
       aws s3 cp "$tmp/omni-$ts.tar.gz" \
         "s3://$R2_BUCKET/$R2_PREFIX/omni-$ts.tar.gz" \
         --endpoint-url "$R2_ENDPOINT"
-      echo "[omni-backup] pruning all but the latest 14"
+      echo "[omni-backup] pruning all but the latest 48"
       aws s3 ls "s3://$R2_BUCKET/$R2_PREFIX/" --endpoint-url "$R2_ENDPOINT" \
         | awk '{print $4}' | grep -E '^omni-.*\.tar\.gz$' | sort \
-        | head -n -14 \
+        | head -n -48 \
         | while read -r old; do
             [ -n "$old" ] && aws s3 rm "s3://$R2_BUCKET/$R2_PREFIX/$old" \
               --endpoint-url "$R2_ENDPOINT"
@@ -487,10 +490,14 @@ write_files:
     permissions: "0644"
     content: |
       [Unit]
-      Description=Daily Omni backup to R2
+      Description=Hourly Omni backup to R2
       [Timer]
-      OnCalendar=*-*-* 03:00:00
-      RandomizedDelaySec=15m
+      # Top of every hour. RandomizedDelaySec staggers the snapshot
+      # within a 5-minute window so back-to-back hourly pings don't
+      # all start exactly on :00 (smooths R2 PUT bursts and avoids a
+      # cluster-wide reconcile coinciding with the omni-stack outage).
+      OnCalendar=hourly
+      RandomizedDelaySec=5m
       Persistent=true
       [Install]
       WantedBy=timers.target
