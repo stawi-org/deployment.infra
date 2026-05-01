@@ -561,12 +561,23 @@ jobs:
           NAMESPACE:       ${{ steps.stage.outputs.namespace }}
           BUCKET:          ${{ steps.stage.outputs.bucket }}
           ARCHIVE_OBJECT:  ${{ needs.build.outputs.oracle_archive_object }}
+          ARCHIVE_SHA256:  ${{ needs.build.outputs.oracle_archive_sha256 }}
           SCHEMATIC_ID:    ${{ needs.build.outputs.schematic_id }}
           TALOS_VERSION:   ${{ needs.build.outputs.talos_version }}
         run: |
           set -euo pipefail
 
-          display_name="Talos ${TALOS_VERSION} arm64 ${SCHEMATIC_ID}"
+          # display_name MUST include a content fingerprint of the
+          # .oci archive bytes — the schematic_id is a cache key for
+          # the schematic *config*, not the served image bytes (Omni's
+          # image factory injects the SideroLink join token at serve
+          # time, so the same schematic_id produces different bytes
+          # whenever Omni's shared join token rotates). Without the
+          # archive sha here, a regen that picks up a fresh token
+          # reuses the prior OCID and tofu's image_change sentinel
+          # never fires. Including the first 12 chars of the archive
+          # sha ensures OCID changes whenever the served bytes change.
+          display_name="Talos ${TALOS_VERSION} arm64 ${SCHEMATIC_ID} ${ARCHIVE_SHA256:0:12}"
 
           # Re-use a prior import if the same display_name already
           # exists in the compartment. OCI's `image import` is
