@@ -94,8 +94,12 @@ main() {
   echo "current imageId=${current} status=${status}"
 
   if [[ "$current" == "$TARGET_IMAGE_ID" ]]; then
-    echo "already on target image — no-op"
-    return 0
+    if [[ "${FORCE_REINSTALL:-0}" == "1" ]]; then
+      echo "current imageId matches target, but FORCE_REINSTALL=1 — proceeding with PUT"
+    else
+      echo "already on target image — no-op"
+      return 0
+    fi
   fi
 
   # Reinstall PUT — full payload mirrors contabo.py reinstall_instance().

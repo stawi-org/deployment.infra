@@ -21,5 +21,10 @@ module "nodes" {
   contabo_api_user      = each.value.account.auth.oauth2_user
   contabo_api_password  = each.value.account.auth.oauth2_pass
 
+  # Operator escape hatch — bump force_reinstall_generation in this
+  # layer's terraform.tfvars to force a fleet PUT-reinstall on next
+  # apply without going through the schematic-bump round-trip.
+  force_reinstall_generation = var.force_reinstall_generation
+
   providers = { contabo = contabo.account[each.value.account_key] }
 }

@@ -103,7 +103,24 @@ resource "oci_core_instance" "this" {
     # SideroLink, registers in Omni. This is exactly the "node lacks
     # Omni image → install it" branch of the simplified flow.
     ignore_changes = [availability_domain]
+
+    # Force-reinstall escape hatch: bumping
+    # var.force_reinstall_generation invalidates the
+    # terraform_data.force_reinstall hash → replace_triggered_by
+    # destroys + creates the OCI instance even if image_id and other
+    # inputs are stable. Mirrors what
+    # force_reinstall_generation does on the Contabo side, so a
+    # single-bump in the operator-facing tfvars across both layers
+    # rolls every cluster node.
+    replace_triggered_by = [terraform_data.force_reinstall.id]
   }
+}
+
+# Hash resource keyed on var.force_reinstall_generation. Bumping the
+# variable changes the hash, which fires the replace_triggered_by
+# above. terraform_data has no real backend — pure state-only.
+resource "terraform_data" "force_reinstall" {
+  input = var.force_reinstall_generation
 }
 
 data "oci_core_vnic_attachments" "this" {

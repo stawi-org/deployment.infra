@@ -28,5 +28,11 @@ module "node" {
   account_key         = var.account_key
   region              = var.region
 
+  # Operator-controlled fleet-reinstall escape hatch — see
+  # `node-oracle` and `node-contabo` variables for the full story.
+  # Bumping in 02-oracle-infra/terraform.tfvars destroys+creates
+  # every OCI instance.
+  force_reinstall_generation = var.force_reinstall_generation
+
   providers = { oci = oci }
 }

@@ -53,3 +53,21 @@ variable "omni_siderolink_url" {
   default     = ""
   description = "Full siderolink URL injected into the boot cmdline, e.g. https://cp.antinvestor.com?jointoken=<token>. Empty string disables (transitional during the migration; non-empty after Phase A lands)."
 }
+
+variable "force_reinstall_generation" {
+  type        = number
+  default     = 1
+  description = <<-EOT
+    Operator escape hatch to force destroy+create on every OCI
+    instance on next apply, regardless of image_id stability.
+    Bumping this in this layer's terraform.tfvars (and the matching
+    01-contabo-infra/terraform.tfvars) rolls every cluster node
+    without going through the schematic-bump round-trip.
+
+    See `modules/node-oracle/variables.tf` for the full story.
+  EOT
+  validation {
+    condition     = var.force_reinstall_generation >= 1
+    error_message = "force_reinstall_generation must be >= 1."
+  }
+}

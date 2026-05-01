@@ -54,6 +54,14 @@ resource "null_resource" "ensure_image" {
   triggers = {
     instance_id     = contabo_instance.this.id
     target_image_id = var.image_id
+    # Bumping force_reinstall_generation re-keys the trigger map →
+    # null_resource is replaced → ensure-image.sh runs with
+    # FORCE_REINSTALL=1 and reinstalls the VPS regardless of the
+    # current imageId. Decouples "force fleet reinstall" from the
+    # heavyweight schematic-bump → regen-images-PR → merge → apply
+    # round-trip. Routine reinstalls (image drift) still use the
+    # target_image_id trigger.
+    force_reinstall_generation = var.force_reinstall_generation
   }
 
   provisioner "local-exec" {
@@ -67,6 +75,11 @@ resource "null_resource" "ensure_image" {
       CONTABO_API_PASSWORD  = var.contabo_api_password
       # Worker failures warn-and-continue; CP failures fail tofu.
       NODE_ROLE = var.role
+      # Set when the operator wants to force a reinstall without
+      # changing the schematic. ensure-image.sh skips the imageId-
+      # equality short-circuit and PUTs unconditionally when this
+      # is "1".
+      FORCE_REINSTALL = var.force_reinstall_generation > 1 ? "1" : "0"
     }
     command = "${path.module}/ensure-image.sh"
   }
