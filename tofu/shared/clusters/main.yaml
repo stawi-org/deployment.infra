@@ -64,6 +64,34 @@ features:
   # access. With the cluster behind CF-proxied DNS, this is the only
   # supported access mode.
   enableWorkloadProxy: true
+patches:
+  # Dual-stack networking. Adds IPv6 pod + service CIDRs alongside the
+  # existing IPv4 ones so workloads, services, and ClusterIPs all get
+  # both v4 and v6. Talos's default Flannel CNI supports this.
+  #
+  # ULA prefixes used:
+  #   pod IPv6:     fd00:10:244::/56  (mirrors the v4 10.244/16 by
+  #                                   convention; /56 leaves room for
+  #                                   ~256 nodes with /64 each)
+  #   service IPv6: fd00:10:96::/108  (Kubernetes recommends /108
+  #                                   for service CIDRs to keep
+  #                                   service IP allocation fast)
+  #
+  # Note: this is a CLUSTER-LEVEL setting that takes effect at first
+  # bootstrap only — Kubernetes can't switch from single-stack to
+  # dual-stack at runtime. Adding/removing this patch on a running
+  # cluster requires a cluster re-creation (omnictl cluster delete +
+  # template sync).
+  - name: dual-stack
+    inline:
+      cluster:
+        network:
+          podSubnets:
+            - 10.244.0.0/16
+            - fd00:10:244::/56
+          serviceSubnets:
+            - 10.96.0.0/12
+            - fd00:10:96::/108
 # NOTE: KubeSpan + Flux extraManifests patches were removed
 # 2026-05-01 after a 1+ hour cluster bootstrap stall — Talos apid
 # wasn't responding on any of the 5 nodes. Both will be re-introduced
