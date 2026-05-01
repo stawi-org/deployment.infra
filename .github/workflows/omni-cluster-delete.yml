@@ -1,0 +1,48 @@
+name: omni-cluster-delete
+on:
+  workflow_dispatch:
+    inputs:
+      cluster_name:
+        type: string
+        required: true
+        default: stawi
+      confirm:
+        type: string
+        required: true
+permissions:
+  contents: read
+env:
+  OMNI_VERSION: v1.7.1
+jobs:
+  delete:
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT: https://cpd.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+      CLUSTER_NAME: ${{ inputs.cluster_name }}
+      CONFIRM: ${{ inputs.confirm }}
+    steps:
+      - name: Confirm
+        run: |
+          set -euo pipefail
+          if [[ "$CLUSTER_NAME" != "$CONFIRM" ]]; then
+            echo "confirm does not match cluster_name; aborting" >&2
+            exit 1
+          fi
+      - name: Install omnictl
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/omnictl \
+            "https://github.com/siderolabs/omni/releases/download/$OMNI_VERSION/omnictl-linux-amd64"
+          chmod +x /tmp/omnictl
+          sudo install -m 0755 /tmp/omnictl /usr/local/bin/omnictl
+          omnictl --version
+      - name: Delete cluster
+        run: |
+          set -euo pipefail
+          omnictl cluster delete "$CLUSTER_NAME" || echo "(delete failed or absent)"
+      - name: Remaining state
+        run: |
+          set -euo pipefail
+          omnictl get clusters --output table || true
+          omnictl get machinestatus --output table || true
