@@ -129,3 +129,81 @@ variable "r2_backup_prefix" {
   default     = "production/omni-backups"
   description = "Object key prefix under r2_bucket_name where omni-*.tar.gz snapshots are written."
 }
+
+# ---- Contabo PUT-driven reinstall path ---------------------------------------
+# Contabo's image_id-only PUT is silently a metadata update, so the contabo
+# provider's own update path doesn't actually re-image a running disk. We use
+# the same ensure-image.sh script the cluster nodes use (in node-contabo), and
+# need the OAuth2 creds to call the Contabo API directly. Pulled from
+# module.contabo_account_state in layer 00-omni-server (same source the
+# contabo provider already reads from).
+variable "contabo_client_id" {
+  type      = string
+  sensitive = true
+}
+variable "contabo_client_secret" {
+  type      = string
+  sensitive = true
+}
+variable "contabo_api_user" {
+  type      = string
+  sensitive = true
+}
+variable "contabo_api_password" {
+  type      = string
+  sensitive = true
+}
+
+variable "force_reinstall_generation" {
+  type        = number
+  default     = 1
+  description = <<-EOT
+    Bump to force a Contabo reinstall of the omni-host VPS via
+    null_resource.ensure_image. The canonical path for any cloud-init
+    template change that needs to land on the running host (new
+    sysctl, systemd unit, certbot config). omni-restore.service pulls
+    the most recent /var/lib/omni snapshot from R2 on first boot, so
+    as long as omni-backup.timer has fired recently the reinstall is
+    non-destructive — every cluster, every Link, every machine UUID
+    survives.
+  EOT
+  validation {
+    condition     = var.force_reinstall_generation >= 1
+    error_message = "force_reinstall_generation must be >= 1."
+  }
+}
+
+# ---- WireGuard user-VPN ------------------------------------------------------
+# Adds users to the wg-users interface on the omni-host. The user-VPN is
+# distinct from SideroLink (Omni's own management mesh): different port,
+# different keys, different /etc/wireguard config name. Full-tunnel egress
+# (clients set AllowedIPs = 0.0.0.0/0,::/0) is supported via nftables NAT.
+#
+# Each user generates their own keypair locally and shares ONLY the
+# public key — the server never has access to the user's private key.
+# Auto-assigned VPN IP comes from sorted-by-name iteration order in
+# main.tf, so it's stable across plans for any given user.
+variable "vpn_users" {
+  type = map(object({
+    public_key = string
+  }))
+  default     = {}
+  description = <<-EOT
+    Map of user-name -> {public_key} for the wg-users user-VPN.
+
+    Workflow to add a user:
+      1. User runs locally:
+           wg genkey | tee priv | wg pubkey > pub
+         (private key stays on user device)
+      2. User shares only `pub` with operator (secure channel).
+      3. Operator adds an entry here, bumps force_reinstall_generation,
+         apply.
+      4. Operator runs `cat /etc/wireguard/wg-users.pubkey` on the
+         omni-host once (or fetches from a tofu output) and gives
+         the user the SERVER's public key plus the assigned VPN IP.
+      5. User assembles their .conf from the wg_user_client_config
+         output (placeholder for their own private key).
+
+    Removing a user: drop their entry, bump force_reinstall_generation.
+  EOT
+}

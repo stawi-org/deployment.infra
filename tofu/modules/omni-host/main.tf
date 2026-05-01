@@ -61,6 +61,20 @@ locals {
       r2_secret_access_key                 = var.r2_secret_access_key
       r2_bucket_name                       = var.r2_bucket_name
       r2_backup_prefix                     = var.r2_backup_prefix
+      # Auto-assign VPN IPs starting at 10.100.0.2 (.1 is the server)
+      # in the order tofu walks the map. Stable per name across plans
+      # — adding a new user only assigns them an unused IP, never
+      # rotates an existing user's. Empty map disables the user-VPN
+      # feature: the systemd service still starts, but the rendered
+      # wg-users.conf has no peers, so the interface is up with zero
+      # accept-listed traffic.
+      vpn_users = {
+        for idx, name in sort(keys(var.vpn_users)) :
+        name => {
+          public_key  = var.vpn_users[name].public_key
+          assigned_ip = "10.100.0.${idx + 2}"
+        }
+      }
     }
   )
 }
@@ -73,11 +87,92 @@ resource "contabo_instance" "this" {
   user_data    = local.user_data
   period       = 1
 
-  # No lifecycle.ignore_changes — the contabo provider's Update path is
-  # the canonical way to push image_id / user_data drift to a running
-  # VPS. Tofu plan surfaces the diff, the provider's PATCH /
-  # /v1/compute/instances/<id> handles the rest. No null_resource, no
-  # custom bash. If a particular provider version doesn't honour the
-  # update correctly, that's a provider bug to track upstream — not
-  # something to paper over with a script.
+  # Match node-contabo's pattern (modules/node-contabo/main.tf): the
+  # contabo provider's image_id-only PUT is silently treated as a
+  # metadata update (~40s, disk untouched) rather than a real
+  # reinstall. user_data drift is similar — the provider stores the
+  # new seed but the running VPS doesn't see it until reinstall.
+  # Pin both fields here so tofu state matches first-create values
+  # and let null_resource.ensure_image below own all reinstall
+  # decisions via the proven Contabo PUT path used for cluster nodes.
+  lifecycle {
+    ignore_changes = [image_id, user_data]
+  }
+}
+
+# Drive omni-host reinstalls via the same tofu/modules/node-contabo/
+# ensure-image.sh script the cluster nodes use. Idempotent: if the
+# instance is already on the target image AND force_reinstall_generation
+# hasn't been bumped past 1, the script no-ops. Bumping the generation
+# (or changing the rendered cloud-init) re-keys this null_resource's
+# trigger map, which fires a full Contabo PUT — disk wipe + cloud-init
+# re-run on first boot. Combined with omni-restore.service (cloud-init
+# unit that pulls the latest /var/lib/omni snapshot from R2 before
+# omni-stack starts), a force_reinstall_generation bump is the canonical
+# way to push live-config drift to the omni-host VPS without a manual
+# SSH workflow.
+resource "null_resource" "ensure_image" {
+  triggers = {
+    instance_id                = contabo_instance.this.id
+    target_image_id            = var.contabo_image_id
+    user_data_sha              = sha256(local.user_data)
+    force_reinstall_generation = var.force_reinstall_generation
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["bash"]
+    environment = {
+      INSTANCE_ID           = contabo_instance.this.id
+      TARGET_IMAGE_ID       = var.contabo_image_id
+      USER_DATA             = local.user_data
+      CONTABO_CLIENT_ID     = var.contabo_client_id
+      CONTABO_CLIENT_SECRET = var.contabo_client_secret
+      CONTABO_API_USER      = var.contabo_api_user
+      CONTABO_API_PASSWORD  = var.contabo_api_password
+      # Failure here is fatal — the omni-host is the cluster's whole
+      # management plane; we don't ever want a "partial" reinstall.
+      NODE_ROLE       = "controlplane"
+      FORCE_REINSTALL = var.force_reinstall_generation > 1 ? "1" : "0"
+    }
+    command = "${path.module}/../node-contabo/ensure-image.sh"
+  }
+}
+
+# Block on omni stack readiness post-reinstall so downstream layers
+# (01-contabo-infra, 02-oracle-infra, 03-talos) don't start their
+# Talos / omnictl operations against a still-restoring Omni. Polls
+# the workload-proxy / siderolink hostname's TLS handshake — once
+# nginx + omni + dex are all up the cert is served and TLS succeeds.
+# 10-minute ceiling matches the worst-case Contabo-reinstall +
+# omni-restore-pulls-from-R2 + omni-stack-ready window.
+resource "null_resource" "wait_for_omni_ready" {
+  depends_on = [null_resource.ensure_image]
+
+  triggers = {
+    ensure_image_id = null_resource.ensure_image.id
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["bash", "-c"]
+    environment = {
+      ENDPOINT = "https://${var.siderolink_api_advertised_host}/healthz"
+    }
+    command = <<-EOT
+      set -euo pipefail
+      echo "[wait_for_omni_ready] polling $ENDPOINT"
+      deadline=$(( $(date +%s) + 600 ))
+      while :; do
+        code=$(curl -ksS -o /dev/null -w '%%{http_code}' --max-time 5 "$ENDPOINT" 2>/dev/null || echo 000)
+        if [[ "$code" == "200" ]]; then
+          echo "[wait_for_omni_ready] $ENDPOINT returned 200"
+          exit 0
+        fi
+        if [[ $(date +%s) -ge $deadline ]]; then
+          echo "[wait_for_omni_ready] timed out after 10min waiting for $ENDPOINT (last code: $code)" >&2
+          exit 1
+        fi
+        sleep 10
+      done
+    EOT
+  }
 }

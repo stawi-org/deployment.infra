@@ -91,3 +91,33 @@ variable "r2_secret_access_key" {
   type      = string
   sensitive = true
 }
+
+variable "force_reinstall_generation" {
+  type        = number
+  default     = 1
+  description = <<-EOT
+    Bump to force a Contabo reinstall of the omni-host VPS via the
+    same ensure-image.sh path the cluster nodes use. The canonical
+    way to push live cloud-init template drift (sysctl rules,
+    systemd units, certbot config) to the running host —
+    omni-restore.service rehydrates /var/lib/omni from the most
+    recent R2 snapshot on first boot, so the reinstall is
+    non-destructive (every Cluster, Link, MachineLabel survives).
+
+    Pre-flight: confirm a fresh omni-backup.timer fire by checking
+    `s3://cluster-tofu-state/production/omni-backups/` for an entry
+    newer than ~1h.
+  EOT
+  validation {
+    condition     = var.force_reinstall_generation >= 1
+    error_message = "force_reinstall_generation must be >= 1."
+  }
+}
+
+variable "vpn_users" {
+  type = map(object({
+    public_key = string
+  }))
+  default     = {}
+  description = "Map of WireGuard user-VPN peers (name -> {public_key}). See modules/omni-host/variables.tf for the add-user workflow. Adding/removing entries needs a force_reinstall_generation bump to land on the running host."
+}

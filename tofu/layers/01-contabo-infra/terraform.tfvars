@@ -38,4 +38,9 @@ age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
 #                   the wait-for-registration fix in layer 03's
 #                   sync-machine-labels.sh so post-reinstall labelling
 #                   doesn't race the SideroLink phone-home.
-force_reinstall_generation = 5
+#   6 — 2026-05-01: fleet-wide reinstall paired with the omni-host
+#                   IPv6-forwarding fix landing on layer 00. Clean
+#                   start for cluster nodes once cross-CP etcd peering
+#                   actually works, so SideroLink Links are minted
+#                   against an Omni that can forward.
+force_reinstall_generation = 6
