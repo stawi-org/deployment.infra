@@ -47,26 +47,28 @@ FAIL=0
 pass() { echo "  PASS: $*"; }
 fail() { echo "::error::FAIL: $*"; FAIL=$((FAIL + 1)); }
 
-# ----- 0. Flannel preflight (fail-fast gate) -------------------------
-# Without a healthy CNI the rest of the checks (pod listings, flux,
-# etcd via talos) take many minutes to hang and time out, burning
-# pipeline minutes for a result we already know. Exit cleanly with
-# a notice when Flannel isn't fully ready so the workflow finishes
-# in seconds instead of half an hour.
-echo "::group::Flannel readiness preflight"
+# ----- 0. CNI status (informational, never gates) --------------------
+# The original early-exit gate skipped every other check when the CNI
+# wasn't fully ready — useful when the cluster was running but CNI
+# was flapping, but it makes this workflow useless for diagnosing
+# fresh-bootstrap state. Keep CNI as an informational signal and let
+# the per-check timeouts (10–30s each) handle the case where downstream
+# probes hang against an apiserver that's still warming up. Total
+# worst-case runtime stays under 3 min.
+echo "::group::CNI status (informational)"
 FLANNEL_DS_JSON=$(timeout 20 kubectl -n kube-system get ds kube-flannel \
   --request-timeout=10s -o json 2>/dev/null || echo '{}')
 DESIRED=$(jq -r '.status.desiredNumberScheduled // 0' <<<"$FLANNEL_DS_JSON")
 READY=$(jq -r '.status.numberReady // 0' <<<"$FLANNEL_DS_JSON")
 if [[ "$DESIRED" == "0" ]]; then
-  echo "::notice::Flannel daemonset not found yet — skipping rest of checks"
-  exit 0
+  echo "  INFO: kube-flannel daemonset not found (cluster may still be bootstrapping or running a non-default CNI)"
+  echo "  daemonsets in kube-system:"
+  timeout 10 kubectl -n kube-system get ds --request-timeout=10s 2>&1 | sed 's/^/    /' || true
+elif [[ "$READY" != "$DESIRED" ]]; then
+  echo "  INFO: Flannel not fully ready ($READY/$DESIRED) — proceeding with checks"
+else
+  echo "  Flannel ready ($READY/$DESIRED)"
 fi
-if [[ "$READY" != "$DESIRED" ]]; then
-  echo "::notice::Flannel not fully ready ($READY/$DESIRED) — skipping rest of checks to save pipeline minutes; re-run after CNI settles"
-  exit 0
-fi
-echo "  Flannel ready ($READY/$DESIRED)"
 echo "::endgroup::"
 
 # ----- 1. apiserver reachable ----------------------------------------
