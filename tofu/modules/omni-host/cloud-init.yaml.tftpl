@@ -56,6 +56,35 @@ packages:
   - python3-certbot-dns-cloudflare
 
 write_files:
+  # IPv6 forwarding on the omni-host. SideroLink is hub-and-spoke:
+  # every cluster node connects via WireGuard to this host, no
+  # direct node-to-node tunnel. The cluster's etcd-via-siderolink
+  # ConfigPatch (in tofu/shared/clusters/main.yaml) advertises
+  # etcd peer URLs on the SideroLink ULA `fdae:41e4:649b:9303::/64`,
+  # so cross-provider CPs (Contabo/OCI) reach each other via:
+  #   CP-A → omni-host → CP-B
+  # That hop only forwards if `net.ipv6.conf.all.forwarding=1`.
+  # Linux defaults it to 0; without this file the kernel silently
+  # drops every cross-CP etcd peer packet and the cluster gets
+  # stuck in `bootstrapping` indefinitely with `etcd members:
+  # context deadline exceeded` in Omni's logs. Lesson learnt the
+  # hard way 2026-05-01 — verified by sysctl-checking the host
+  # while the cluster wouldn't bootstrap; flipping the bit unblocks
+  # quorum within seconds.
+  #
+  # systemd-sysctl.service applies /etc/sysctl.d/*.conf on every
+  # boot, so this file is sufficient for fresh installs. For
+  # already-running hosts the file alone won't take effect — the
+  # tofu null_resource further down (`null_resource.host_sysctl`)
+  # SSHes in to apply on every content change.
+  - path: /etc/sysctl.d/99-omni-siderolink-forwarding.conf
+    permissions: "0644"
+    owner: root:root
+    content: |
+      # Required for SideroLink hub-and-spoke etcd peering.
+      # See cloud-init.yaml.tftpl for the rationale.
+      net.ipv6.conf.all.forwarding = 1
+
   - path: /etc/omni/docker-compose.yaml
     permissions: "0640"
     owner: root:root
@@ -654,6 +683,15 @@ write_files:
       banaction = iptables-multiport
 
 runcmd:
+  # Apply SideroLink IPv6-forwarding sysctl before anything else —
+  # the omni stack relies on cross-CP etcd peer traffic transiting
+  # this host (see /etc/sysctl.d/99-omni-siderolink-forwarding.conf
+  # rationale above). systemd-sysctl.service runs at boot and would
+  # apply it on next reboot anyway, but `sysctl --system` here makes
+  # the very first boot of a freshly-provisioned host correct
+  # without a reboot.
+  - sysctl --system
+
   # AWS CLI v2 — Ubuntu 24.04 dropped the `awscli` apt package, so we
   # install the official zip distribution from awscli.amazonaws.com.
   # This MUST land before omni-restore.service starts (its script calls
