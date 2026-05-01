@@ -17,3 +17,19 @@ contabo_accounts = {}
 # request hash flows into per-node trigger keys via reconstruction.tf.
 
 age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt"
+
+
+# Bump to force a fleet-wide Contabo VPS reinstall on next apply,
+# regardless of image_id stability. Pairs with the same knob in
+# 02-oracle-infra/terraform.tfvars; bump both together when rolling
+# every cluster node (e.g. after the omni-host's /var/lib/omni was
+# wiped, leaving the existing nodes' kernel-cmdline jointokens
+# stale).
+#
+# Bump history:
+#   2 — 2026-05-01: post-omni-host-state-wipe recovery. Existing
+#                   nodes had stale jointokens; Omni rejected joins
+#                   with `has_valid_join_token: false`. Forced
+#                   reinstall onto fresh images carrying the current
+#                   Omni's token.
+force_reinstall_generation = 2
