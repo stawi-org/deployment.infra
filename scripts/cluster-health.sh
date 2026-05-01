@@ -1,37 +1,46 @@
 #!/usr/bin/env bash
-# Post-apply cluster health check. Pulls kubeconfig + talosconfig from
-# the layer-03 tfstate in R2, runs a short battery of checks, and
+# Post-apply cluster health check. Pulls kubeconfig + talosconfig live
+# from Omni via omnictl, runs a short battery of checks, and
 # summarises pass/fail. Every check writes a block so a failed one
 # shows which output triggered it.
 #
 # Exit codes: 0 = all checks passed, 1 = at least one check failed.
 #
-# Requires: aws CLI, jq, kubectl, talosctl, flux. R2 creds in env.
+# Requires: omnictl, kubectl, talosctl, flux, jq.
+# Env: OMNI_ENDPOINT, OMNI_SERVICE_ACCOUNT_KEY, OMNI_CLUSTER.
 set -uo pipefail
 
-: "${AWS_ACCESS_KEY_ID:?set}"
-: "${AWS_SECRET_ACCESS_KEY:?set}"
-: "${R2_ENDPOINT:?set}"
-
-TFSTATE_KEY="production/03-talos.tfstate"
-BUCKET="cluster-tofu-state"
+: "${OMNI_ENDPOINT:?set}"
+: "${OMNI_SERVICE_ACCOUNT_KEY:?set}"
+: "${OMNI_CLUSTER:?set}"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-echo "::group::Fetch tfstate + extract credentials"
-aws s3 cp "s3://${BUCKET}/${TFSTATE_KEY}" "$tmp/03-talos.tfstate" \
-  --endpoint-url "$R2_ENDPOINT" --region us-east-1
-
-jq -r '.outputs.kubeconfig_raw.value' "$tmp/03-talos.tfstate" > "$tmp/kubeconfig"
-jq -r '.outputs.talosconfig.value' "$tmp/03-talos.tfstate" > "$tmp/talosconfig"
-if [[ ! -s "$tmp/kubeconfig" || "$(head -c 10 "$tmp/kubeconfig")" == "null" ]]; then
-  echo "::error::kubeconfig_raw output missing from layer-03 tfstate"
+echo "::group::Fetch credentials from Omni (omnictl)"
+# `omnictl kubeconfig` writes kubeconfig YAML to a path argument. The
+# default cluster is the one in the cluster template; pass --cluster
+# explicitly so the script is portable across Omni instances managing
+# multiple clusters. The output uses Omni's workload-proxy
+# (k8s-proxy) — kubectl traffic flows via Omni's HTTPS endpoint, so
+# direct CP IP access isn't required.
+if ! omnictl kubeconfig --cluster "$OMNI_CLUSTER" --force "$tmp/kubeconfig" 2>&1; then
+  echo "::error::omnictl kubeconfig failed — cluster $OMNI_CLUSTER may not exist or SA auth is broken"
+  exit 1
+fi
+if ! omnictl talosconfig --cluster "$OMNI_CLUSTER" --force "$tmp/talosconfig" 2>&1; then
+  echo "::error::omnictl talosconfig failed"
   exit 1
 fi
 chmod 0600 "$tmp/kubeconfig" "$tmp/talosconfig"
 export KUBECONFIG="$tmp/kubeconfig"
 export TALOSCONFIG="$tmp/talosconfig"
+echo "::endgroup::"
+
+echo "::group::Cluster summary (omnictl)"
+omnictl get cluster "$OMNI_CLUSTER" 2>&1 || true
+echo
+omnictl get clustermachinestatus 2>&1 | head -20 || true
 echo "::endgroup::"
 
 FAIL=0
@@ -110,27 +119,17 @@ fi
 echo "::endgroup::"
 
 # ----- 4. etcd quorum via talosctl -----------------------------------
+# The omnictl-issued talosconfig already populates contexts +
+# endpoints + nodes for every CP — talosctl picks the first
+# reachable endpoint and queries via the Omni siderolink mesh
+# (no direct CP IP access required).
 echo "::group::etcd member health (talosctl)"
-CP_IPS=$(jq -r '
-  .outputs.endpoints.value // [] | .[]
-' "$tmp/03-talos.tfstate" 2>/dev/null)
-if [[ -z "$CP_IPS" ]]; then
-  # Fallback: pull from the output used by apply (first direct CP)
-  CP_IPS=$(jq -r '.outputs.kubernetes_endpoint.value' "$tmp/03-talos.tfstate" \
-    | sed -E 's|^https?://([^:]+).*|\1|')
-fi
-FIRST_CP=$(echo "$CP_IPS" | head -1)
-if [[ -z "$FIRST_CP" ]]; then
-  fail "could not resolve any CP IP from tfstate"
+# Hard 30s cap — if the CPs are unreachable, talosctl otherwise
+# stalls for ~10 min on its own connection retries.
+if timeout 30 talosctl etcd members 2>&1; then
+  pass "etcd members query succeeded"
 else
-  echo "  probing etcd on $FIRST_CP"
-  # Hard 30s cap — if the CP is unreachable on :50000, talosctl
-  # otherwise stalls for ~10 min on its own connection retries.
-  if timeout 30 talosctl -n "$FIRST_CP" -e "$FIRST_CP" etcd members 2>&1; then
-    pass "etcd members query succeeded"
-  else
-    fail "etcd members query failed or timed out on $FIRST_CP"
-  fi
+  fail "etcd members query failed or timed out"
 fi
 echo "::endgroup::"
 
