@@ -92,6 +92,22 @@ patches:
           serviceSubnets:
             - 10.96.0.0/12
             - fd00:10:96::/108
+      # Kubelet needs `--node-ip` to include both v4 and v6 so each
+      # node reports both InternalIPs and gets a v6 podCIDR. Without
+      # this, kubelet auto-detects only the primary v4 address and
+      # the cluster effectively stays single-stack for node IPs.
+      #
+      # validSubnets accepts the global routable space for each
+      # family, then explicitly EXCLUDES the SideroLink ULA so
+      # kubelet doesn't accidentally pick that as a node IP (it's a
+      # WG management ULA, not a routable cluster-internal address).
+      machine:
+        kubelet:
+          nodeIP:
+            validSubnets:
+              - 0.0.0.0/0
+              - ::/0
+              - "!fdae:41e4:649b:9303::/64"
 # NOTE: KubeSpan + Flux extraManifests patches were removed
 # 2026-05-01 after a 1+ hour cluster bootstrap stall — Talos apid
 # wasn't responding on any of the 5 nodes. Both will be re-introduced
