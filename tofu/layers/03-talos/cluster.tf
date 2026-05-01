@@ -60,6 +60,33 @@ resource "null_resource" "omnictl_machine_classes" {
   }
 }
 
+# Probe Omni for the current cluster state at plan time. Feeds the
+# null_resource trigger below so a cluster that's been deleted out
+# of band (e.g. via the omni-cluster-delete workflow, or because
+# the omni-host was reinstalled with no R2 backup) is re-created on
+# the next apply — without a trigger that watches for this, tofu
+# would see file SHA + endpoint unchanged and skip the sync, leaving
+# Omni without the cluster definition while node modules expect it.
+data "external" "omni_cluster_state" {
+  program = ["bash", "-c", <<-EOT
+    set -euo pipefail
+    if ! command -v omnictl >/dev/null; then
+      printf '%s' '{"state":"omnictl-missing"}'
+      exit 0
+    fi
+    if [[ -z "$${OMNI_SERVICE_ACCOUNT_KEY:-}" ]]; then
+      printf '%s' '{"state":"sa-missing"}'
+      exit 0
+    fi
+    state=$(omnictl get cluster "${var.cluster_name}" -o json 2>/dev/null \
+      | jq -r 'select(.spec) | "\(.metadata.version)|\(.spec.kubernetesversion)|\(.spec.talosversion)"' \
+      | head -1)
+    if [[ -z "$state" ]]; then state="absent"; fi
+    printf '%s' "{\"state\":\"$state\"}"
+  EOT
+  ]
+}
+
 # Validate + sync the cluster template. `cluster template sync` is
 # idempotent — running on every change to the file produces zero-noop
 # applies when the template is already in sync.
@@ -67,8 +94,9 @@ resource "null_resource" "omnictl_cluster_template" {
   depends_on = [null_resource.omnictl_machine_classes]
 
   triggers = {
-    sha      = local.cluster_template_sha
-    endpoint = var.omni_endpoint
+    sha           = local.cluster_template_sha
+    endpoint      = var.omni_endpoint
+    cluster_state = data.external.omni_cluster_state.result.state
   }
 
   provisioner "local-exec" {
