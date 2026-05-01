@@ -21,4 +21,4 @@ force_image_generation = 11
 # See 01-contabo-infra/terraform.tfvars for the full bump-history
 # story. Mirror in lock-step so a single fleet-wide reinstall rolls
 # every node together.
-force_reinstall_generation = 2
+force_reinstall_generation = 3
