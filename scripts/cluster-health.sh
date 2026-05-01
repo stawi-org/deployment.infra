@@ -34,15 +34,14 @@ if ! omnictl kubeconfig --cluster "$OMNI_CLUSTER" --service-account \
   echo "::error::omnictl kubeconfig failed — cluster $OMNI_CLUSTER may not exist or SA auth is broken"
   exit 1
 fi
-# `--break-glass` issues a raw Talos talosconfig with direct PKI to
-# the cluster's apid/trustd, bypassing Omni's siderolink proxy. With
-# the default (proxied) form, talosctl can reach apid only when each
-# CP's siderolink wireguard tunnel is healthy — which is exactly the
-# failure mode we want to diagnose. Break-glass also pre-populates
-# `nodes` and `endpoints` so `talosctl etcd members` works without
-# extra flags.
-if ! omnictl talosconfig --cluster "$OMNI_CLUSTER" --break-glass --force "$tmp/talosconfig" 2>&1; then
-  echo "::error::omnictl talosconfig --break-glass failed"
+# talosconfig issued via Omni's siderolink proxy. Break-glass form
+# would bypass the proxy and pre-populate nodes/endpoints, but
+# requires elevated SA permissions we don't grant by default
+# (`PermissionDenied: not allowed`). The proxied form is fine for
+# diagnostics: when apid is unreachable through the WG mesh that's
+# itself a finding worth surfacing in the etcd-members probe below.
+if ! omnictl talosconfig --cluster "$OMNI_CLUSTER" --force "$tmp/talosconfig" 2>&1; then
+  echo "::error::omnictl talosconfig failed"
   exit 1
 fi
 chmod 0600 "$tmp/kubeconfig" "$tmp/talosconfig"
@@ -134,17 +133,41 @@ fi
 echo "::endgroup::"
 
 # ----- 4. etcd quorum via talosctl -----------------------------------
-# The omnictl-issued talosconfig already populates contexts +
-# endpoints + nodes for every CP — talosctl picks the first
-# reachable endpoint and queries via the Omni siderolink mesh
-# (no direct CP IP access required).
-echo "::group::etcd member health (talosctl)"
-# Hard 30s cap — if the CPs are unreachable, talosctl otherwise
+# Discover CP machine IDs by intersecting `omnictl get
+# clustermachinestatus` (rows for the cluster's machines) with
+# `omnictl get machinelabels` (filtered by the
+# node.antinvestor.io/role=controlplane label tofu applies). talosctl
+# under the proxied talosconfig reaches each CP's apid via Omni's
+# siderolink mesh, addressed by Omni Machine ID rather than a public
+# IP. Hard 30s cap — if every CP is unreachable, talosctl otherwise
 # stalls for ~10 min on its own connection retries.
-if timeout 30 talosctl etcd members 2>&1; then
-  pass "etcd members query succeeded"
+echo "::group::etcd member health (talosctl)"
+CP_IDS=$(omnictl get machinelabels -o json 2>/dev/null \
+  | jq -rs '
+      flatten
+      | map(select(
+          .metadata.labels["node.antinvestor.io/role"] == "controlplane"
+        ) | .metadata.id)
+      | .[]' \
+  | head -3)
+if [[ -z "$CP_IDS" ]]; then
+  fail "no CP machines found via labels — cluster.tf labelling may not have run"
 else
-  fail "etcd members query failed or timed out"
+  echo "  CP machine IDs:"; echo "$CP_IDS" | sed 's/^/    /'
+  # First reachable CP wins; iterate to avoid one bad CP failing
+  # the whole probe.
+  ETCD_OK=0
+  while read -r CP_ID; do
+    [[ -z "$CP_ID" ]] && continue
+    echo "  probing etcd via $CP_ID"
+    if timeout 30 talosctl -n "$CP_ID" etcd members 2>&1; then
+      pass "etcd members query succeeded via $CP_ID"
+      ETCD_OK=1
+      break
+    fi
+    echo "  -> failed via $CP_ID, trying next"
+  done <<< "$CP_IDS"
+  [[ "$ETCD_OK" -eq 0 ]] && fail "etcd members query failed against every CP"
 fi
 echo "::endgroup::"
 
