@@ -61,6 +61,20 @@ locals {
       r2_secret_access_key                 = var.r2_secret_access_key
       r2_bucket_name                       = var.r2_bucket_name
       r2_backup_prefix                     = var.r2_backup_prefix
+      # Auto-assign VPN IPs starting at 10.100.0.2 (.1 is the server)
+      # in the order tofu walks the map. Stable per name across plans
+      # — adding a new user only assigns them an unused IP, never
+      # rotates an existing user's. Empty map disables the user-VPN
+      # feature: the systemd service still starts, but the rendered
+      # wg-users.conf has no peers, so the interface is up with zero
+      # accept-listed traffic.
+      vpn_users = {
+        for idx, name in sort(keys(var.vpn_users)) :
+        name => {
+          public_key  = var.vpn_users[name].public_key
+          assigned_ip = "10.100.0.${idx + 2}"
+        }
+      }
     }
   )
 }

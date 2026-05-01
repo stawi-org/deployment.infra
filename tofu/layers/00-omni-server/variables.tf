@@ -113,3 +113,11 @@ variable "force_reinstall_generation" {
     error_message = "force_reinstall_generation must be >= 1."
   }
 }
+
+variable "vpn_users" {
+  type = map(object({
+    public_key = string
+  }))
+  default     = {}
+  description = "Map of WireGuard user-VPN peers (name -> {public_key}). See modules/omni-host/variables.tf for the add-user workflow. Adding/removing entries needs a force_reinstall_generation bump to land on the running host."
+}

@@ -172,3 +172,38 @@ variable "force_reinstall_generation" {
     error_message = "force_reinstall_generation must be >= 1."
   }
 }
+
+# ---- WireGuard user-VPN ------------------------------------------------------
+# Adds users to the wg-users interface on the omni-host. The user-VPN is
+# distinct from SideroLink (Omni's own management mesh): different port,
+# different keys, different /etc/wireguard config name. Full-tunnel egress
+# (clients set AllowedIPs = 0.0.0.0/0,::/0) is supported via nftables NAT.
+#
+# Each user generates their own keypair locally and shares ONLY the
+# public key — the server never has access to the user's private key.
+# Auto-assigned VPN IP comes from sorted-by-name iteration order in
+# main.tf, so it's stable across plans for any given user.
+variable "vpn_users" {
+  type = map(object({
+    public_key = string
+  }))
+  default     = {}
+  description = <<-EOT
+    Map of user-name -> {public_key} for the wg-users user-VPN.
+
+    Workflow to add a user:
+      1. User runs locally:
+           wg genkey | tee priv | wg pubkey > pub
+         (private key stays on user device)
+      2. User shares only `pub` with operator (secure channel).
+      3. Operator adds an entry here, bumps force_reinstall_generation,
+         apply.
+      4. Operator runs `cat /etc/wireguard/wg-users.pubkey` on the
+         omni-host once (or fetches from a tofu output) and gives
+         the user the SERVER's public key plus the assigned VPN IP.
+      5. User assembles their .conf from the wg_user_client_config
+         output (placeholder for their own private key).
+
+    Removing a user: drop their entry, bump force_reinstall_generation.
+  EOT
+}

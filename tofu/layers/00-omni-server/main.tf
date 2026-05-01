@@ -99,6 +99,12 @@ module "omni_host" {
   contabo_api_password  = module.contabo_account_state.auth.auth.oauth2_pass
 
   force_reinstall_generation = var.force_reinstall_generation
+
+  # WireGuard user-VPN — see variables.tf for the workflow on adding
+  # users. Server keypair is generated on first boot and persisted via
+  # the omni-backup tarball, so adding/removing users via this map
+  # doesn't rotate the server pubkey.
+  vpn_users = var.vpn_users
 }
 
 # DNS records pull the IPs straight from the imported contabo_instance —

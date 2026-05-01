@@ -54,6 +54,8 @@ packages:
   - nftables
   - certbot
   - python3-certbot-dns-cloudflare
+  - wireguard
+  - wireguard-tools
 
 write_files:
   # IPv6 forwarding on the omni-host. SideroLink is hub-and-spoke:
@@ -487,7 +489,16 @@ write_files:
       tmp=$(mktemp -d); trap 'rm -rf "$tmp"; systemctl is-active --quiet omni-stack.service || systemctl start omni-stack.service' EXIT
       echo "[omni-backup] stopping omni-stack for consistent snapshot"
       systemctl stop omni-stack.service
-      tar -czf "$tmp/omni-$ts.tar.gz" -C /var/lib omni
+      # Stage a snapshot rooted at /, capturing /var/lib/omni AND the
+      # WireGuard server keys + config. Untar restores both in their
+      # canonical locations so the user-VPN server pubkey survives a
+      # Contabo reinstall. /etc/wireguard is optional — only present
+      # if the wg-users feature has booted at least once.
+      stage="$tmp/snapshot"
+      mkdir -p "$stage/var/lib" "$stage/etc"
+      cp -a /var/lib/omni "$stage/var/lib/"
+      [[ -d /etc/wireguard ]] && cp -a /etc/wireguard "$stage/etc/" || true
+      tar -czf "$tmp/omni-$ts.tar.gz" -C "$stage" .
       echo "[omni-backup] restarting omni-stack"
       systemctl start omni-stack.service
       echo "[omni-backup] uploading omni-$ts.tar.gz to s3://$R2_BUCKET/$R2_PREFIX/"
@@ -569,8 +580,18 @@ write_files:
       tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
       aws s3 cp "s3://$R2_BUCKET/$R2_PREFIX/$latest" "$tmp/$latest" \
         --endpoint-url "$R2_ENDPOINT"
-      tar -xzf "$tmp/$latest" -C /var/lib
-      echo "[omni-restore] restored $latest into /var/lib/omni"
+      # Backups since 2026-05-01 stage a snapshot rooted at / (so the
+      # tarball contains var/lib/omni AND etc/wireguard); unpacking at
+      # / restores both. Older backups only contain `omni/` at the
+      # root — for those, fall back to the legacy /var/lib extraction
+      # so the upgrade is non-disruptive.
+      if tar -tzf "$tmp/$latest" | head -n1 | grep -qE '^(\./|var/|etc/)'; then
+        tar -xzf "$tmp/$latest" -C /
+        echo "[omni-restore] restored $latest into / (multi-rooted snapshot)"
+      else
+        tar -xzf "$tmp/$latest" -C /var/lib
+        echo "[omni-restore] restored $latest into /var/lib (legacy snapshot)"
+      fi
 
   - path: /etc/systemd/system/omni-restore.service
     permissions: "0644"
@@ -641,11 +662,123 @@ write_files:
           tcp dport 443 accept comment "${siderolink_api_advertised_host} (CF) + ${siderolink_wireguard_advertised_host} (omnictl gray-cloud)"
           tcp dport { 8090, 8100 } accept comment "Omni machine-api + k8s-proxy (Talos clients)"
           udp dport 50180 accept comment "SideroLink WireGuard"
+          udp dport 51820 accept comment "wg-users user-VPN (admin + full-tunnel)"
           counter drop
         }
         chain forward { type filter hook forward priority 0; policy accept; }
         chain output  { type filter hook output  priority 0; policy accept; }
       }
+      # NAT for the user-VPN — SideroLink (managed by Omni) doesn't
+      # need this because peers are addressed only on the ULA mesh.
+      # User-VPN clients get full internet egress via masquerade out
+      # the host's default-route iface; the IPv6 path covers the
+      # eventual IPv6-on-VPN extension and is harmless when no v6
+      # subnet is in use.
+      table inet nat {
+        chain postrouting {
+          type nat hook postrouting priority srcnat; policy accept;
+          ip  saddr 10.100.0.0/24 oifname != "wg-users" masquerade
+        }
+      }
+
+  # ---- WireGuard user-VPN -------------------------------------------
+  # A second WireGuard interface (`wg-users`, port 51820/udp) lets
+  # operators tunnel admin traffic + general internet egress through
+  # the omni-host. Distinct from the SideroLink interface that Omni
+  # itself manages on UDP 50180 — different port, different keys,
+  # different /etc/wireguard config name. The host already has IPv6
+  # forwarding enabled (see /etc/sysctl.d/99-omni-siderolink-
+  # forwarding.conf) which doubles as the prerequisite for full-
+  # tunnel egress over the user VPN.
+  #
+  # Subnet: 10.100.0.0/24 (server is .1, peers are auto-assigned by
+  # tofu starting at .2). Full-tunnel: clients should set AllowedIPs
+  # = 0.0.0.0/0, ::/0 in their config; nftables NAT (added in the
+  # /etc/nftables.conf chain below) masquerades that traffic out the
+  # public iface.
+  #
+  # Add a user safely:
+  #   1. User generates a keypair LOCALLY:
+  #        wg genkey | tee user.priv | wg pubkey > user.pub
+  #      (private key never leaves the user's device)
+  #   2. User shares ONLY the public key over a secure channel.
+  #   3. Operator adds a record to var.vpn_users in
+  #      tofu/layers/00-omni-server/terraform.tfvars and bumps
+  #      force_reinstall_generation.
+  #   4. Operator gives user the server pubkey
+  #      (`cat /etc/wireguard/wg-users.pubkey` on omni-host) and the
+  #      assigned VPN IP. User assembles their .conf with their own
+  #      private key + the operator-supplied bits.
+  #
+  # Server keypair: generated on first boot if /etc/wireguard/
+  # wg-users.privkey doesn't exist; included in the omni-backup tar
+  # so a Contabo reinstall doesn't rotate the server pubkey out from
+  # under existing users.
+  - path: /etc/wireguard/wg-users.conf.template
+    permissions: "0640"
+    owner: root:root
+    content: |
+      [Interface]
+      # Server private key is substituted in by wg-users-init.service
+      # at boot, after omni-restore.service has had a chance to
+      # rehydrate /etc/wireguard from the latest R2 snapshot.
+      PrivateKey = __SERVER_PRIVATE_KEY__
+      Address = 10.100.0.1/24
+      ListenPort = 51820
+
+      # nftables in /etc/nftables.conf installs a permanent
+      # `oifname != "wg-users" masquerade` rule for the 10.100.0.0/24
+      # source — no PostUp / PostDown shenanigans needed.
+
+%{ for name, peer in vpn_users ~}
+      # ${name}
+      [Peer]
+      PublicKey = ${peer.public_key}
+      AllowedIPs = ${peer.assigned_ip}/32
+%{ endfor ~}
+
+  - path: /usr/local/bin/wg-users-init.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      # Render /etc/wireguard/wg-users.conf from the cloud-init-
+      # delivered template, generating the server keypair on first
+      # run if neither omni-restore.service nor a prior boot has
+      # populated it.
+      set -euo pipefail
+      umask 077
+      install -d -m 0700 /etc/wireguard
+      if [[ ! -s /etc/wireguard/wg-users.privkey ]]; then
+        wg genkey > /etc/wireguard/wg-users.privkey
+        chmod 0600 /etc/wireguard/wg-users.privkey
+        echo "[wg-users-init] generated new server keypair"
+      fi
+      wg pubkey < /etc/wireguard/wg-users.privkey > /etc/wireguard/wg-users.pubkey
+      chmod 0644 /etc/wireguard/wg-users.pubkey
+      privkey=$(cat /etc/wireguard/wg-users.privkey)
+      sed "s|__SERVER_PRIVATE_KEY__|$privkey|" \
+        /etc/wireguard/wg-users.conf.template \
+        > /etc/wireguard/wg-users.conf
+      chmod 0600 /etc/wireguard/wg-users.conf
+      echo "[wg-users-init] wrote /etc/wireguard/wg-users.conf"
+
+  - path: /etc/systemd/system/wg-users-init.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Render /etc/wireguard/wg-users.conf from template
+      # Order after omni-restore so a backup-restored privkey wins
+      # over a freshly-generated one. Order before wg-quick@wg-users
+      # so the rendered conf is in place when the interface comes up.
+      After=omni-restore.service network-pre.target
+      Before=wg-quick@wg-users.service
+      ConditionPathExists=/etc/wireguard/wg-users.conf.template
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/bin/wg-users-init.sh
+      [Install]
+      WantedBy=multi-user.target
 
   - path: /etc/apt/apt.conf.d/20auto-upgrades
     permissions: "0644"
@@ -720,6 +853,16 @@ runcmd:
   - systemctl enable --now omni-cert-bootstrap.service
   - systemctl enable --now omni-stack.service
   - systemctl enable --now omni-backup.timer
+  # wg-users user-VPN. wg-users-init.service renders the conf with
+  # the (generated-or-restored) server private key, then wg-quick
+  # brings up the interface. Both are oneshot enabled here so the
+  # whole feature lights up on first boot. Failure of either is
+  # non-fatal to the rest of the runcmd (cloud-init only halts on
+  # `exit 1` from a single command, and `enable --now` exits 0 when
+  # the unit is correctly defined regardless of whether the
+  # ExecStart succeeds).
+  - systemctl enable --now wg-users-init.service
+  - systemctl enable --now wg-quick@wg-users.service
   # certbot.timer (shipped with the certbot package) runs cert
   # renewals twice daily; the deploy hook in
   # /etc/letsencrypt/renewal-hooks/deploy/omni-reload.sh refreshes
