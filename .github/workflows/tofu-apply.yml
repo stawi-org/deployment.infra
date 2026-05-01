@@ -216,18 +216,3 @@ jobs:
       mode: apply
       environment: production
     secrets: inherit
-
-  # Downloadable machine-config bundle. Disabled — its publish-talos-
-  # configs.yml reads the talosconfig / generic_worker_config /
-  # cp_machine_configs / worker_machine_configs outputs from layer
-  # 03's tfstate, all of which were retired with the Omni takeover.
-  # Operators get cluster credentials via `omnictl kubeconfig` /
-  # `omnictl talosconfig` instead. The job stub stays for graph
-  # validity; the workflow file itself can be deleted in a follow-up.
-  machine-configs:
-    if: false
-    needs: talos
-    permissions:
-      contents: read
-    uses: ./.github/workflows/publish-talos-configs.yml
-    secrets: inherit

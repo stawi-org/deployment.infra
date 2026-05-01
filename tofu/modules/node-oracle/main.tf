@@ -96,35 +96,38 @@ resource "oci_core_instance" "this" {
     # it. Ignore so the chosen-at-create AD sticks for the instance
     # lifetime.
     #
-    # source_details is intentionally NOT ignored. When the inventory
-    # rolls a new OCID forward, OCI rejects in-place image swap with
-    # 400-Invalid Parameter, so tofu plan shows destroy+create — the
-    # right outcome: instance recreates on the new image, joins
-    # SideroLink, registers in Omni. This is exactly the "node lacks
-    # Omni image → install it" branch of the simplified flow.
     ignore_changes = [availability_domain]
 
-    # Force-reinstall escape hatch: bumping
-    # var.force_reinstall_generation triggers replacement of
-    # terraform_data.force_reinstall (via its triggers_replace
-    # argument), which fires this replace_triggered_by, which
-    # destroy+creates the OCI instance even if image_id is stable.
-    # Mirrors force_reinstall_generation on the Contabo side, so a
-    # single-bump in the operator-facing tfvars rolls every cluster
-    # node together.
+    # Replacement triggers — destroy+create the instance whenever any
+    # of these signals fires. Both signal classes wrap their values in
+    # a `terraform_data` sentinel (referenced as the whole resource,
+    # not `.id`, because the sentinel's id is a stable UUID that
+    # doesn't change with inputs):
     #
-    # Reference is to the whole resource (not `.id`) — terraform_data's
-    # id is a stable UUID that doesn't change when inputs do; the
-    # right signal is "the resource was replaced", which is what
-    # `[terraform_data.foo]` (resource-level) detects.
-    replace_triggered_by = [terraform_data.force_reinstall]
+    # 1. `image_change` — replaces when var.image_id changes (a new
+    #    Talos image OCID rolling through the inventory). OCI rejects
+    #    in-place re-image with 400-InvalidParameter, so tofu's only
+    #    way to land a new image on a running instance is destroy+
+    #    create. Without this, a tfstate-only update silently sticks
+    #    the old image bytes on disk while plan thinks the change
+    #    landed — exactly the bug we hit 2026-05-01 when image regen
+    #    didn't roll the OCI fleet.
+    #
+    # 2. `force_reinstall` — bumping var.force_reinstall_generation
+    #    rolls instances even when image_id is stable. Mirrors the
+    #    Contabo-side knob so a single bump in the operator-facing
+    #    tfvars rolls every cluster node together.
+    replace_triggered_by = [
+      terraform_data.image_change,
+      terraform_data.force_reinstall,
+    ]
   }
 }
 
-# Sentinel resource keyed on var.force_reinstall_generation. The
-# `triggers_replace` argument forces replacement of THIS resource
-# whenever the listed values change. The instance's
-# `replace_triggered_by` then watches for that replacement.
+resource "terraform_data" "image_change" {
+  triggers_replace = [var.image_id]
+}
+
 resource "terraform_data" "force_reinstall" {
   triggers_replace = [var.force_reinstall_generation]
 }
