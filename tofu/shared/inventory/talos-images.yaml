@@ -3,19 +3,19 @@
 # or bump tofu/shared/schematics/cluster.yaml and merge.
 schematic_id: "c790d75bb530f4233b98db6a337ff60a23c7642f1af2dc89079182437e028013-v1.13.0"
 talos_version: "v1.13.0"
-generated_at: "2026-05-01T09:18:18Z"
+generated_at: "2026-05-01T19:34:15Z"
 formats:
   contabo:
-    url: "https://pkgs.stawi.org/c790d75bb530f4233b98db6a337ff60a23c7642f1af2dc89079182437e028013-v1.13.0/metal-amd64-omni-stawi-v1.13.0-1bcb49.iso"
-    sha256: "cc8ef7685f761ecc7ee72ed14f8d02eb25ac9668a0c0a23d361e1e7478ad4dec"
+    url: "https://pkgs.stawi.org/c790d75bb530f4233b98db6a337ff60a23c7642f1af2dc89079182437e028013-v1.13.0/metal-amd64-omni-stawi-v1.13.0-d79740.iso"
+    sha256: "f1d88c49e2307429626a31bc82b152e58ccd7d4132e9314c3c4f14c47aa6faa1"
   onprem:
-    url: "https://pkgs.stawi.org/c790d75bb530f4233b98db6a337ff60a23c7642f1af2dc89079182437e028013-v1.13.0/metal-amd64-omni-stawi-v1.13.0-1bcb49.iso"
-    sha256: "cc8ef7685f761ecc7ee72ed14f8d02eb25ac9668a0c0a23d361e1e7478ad4dec"
+    url: "https://pkgs.stawi.org/c790d75bb530f4233b98db6a337ff60a23c7642f1af2dc89079182437e028013-v1.13.0/metal-amd64-omni-stawi-v1.13.0-d79740.iso"
+    sha256: "f1d88c49e2307429626a31bc82b152e58ccd7d4132e9314c3c4f14c47aa6faa1"
   oracle:
-    qcow2_url: "https://pkgs.stawi.org/c790d75bb530f4233b98db6a337ff60a23c7642f1af2dc89079182437e028013-v1.13.0/oracle-arm64-omni-stawi-v1.13.0-1bcb49.qcow2"
-    qcow2_sha256: "7b904d1f20143497740718336ec91a05c201835867ac1b88ef190ca89079c9ec"
+    qcow2_url: "https://pkgs.stawi.org/c790d75bb530f4233b98db6a337ff60a23c7642f1af2dc89079182437e028013-v1.13.0/oracle-arm64-omni-stawi-v1.13.0-d79740.qcow2"
+    qcow2_sha256: "0b6f95719b452e629f6d71799440973bb1ea1e58867f9771a7cd6ba31e0d98dd"
     archive_url: "https://pkgs.stawi.org/c790d75bb530f4233b98db6a337ff60a23c7642f1af2dc89079182437e028013-v1.13.0/talos-v1.13.0-c790d75bb530f4233b98db6a337ff60a23c7642f1af2dc89079182437e028013-v1.13.0-oracle-arm64.oci"
-    archive_sha256: "b492508ee186151bf41c509b085822c8cd97ca4643be73051230f4b626e4ead8"
+    archive_sha256: "f6a5939ddfca1203505a3e8d25d0e995e1627dbb71ddd338be7c71ba1037854f"
     accounts:
       alimbacho67:
         ocid: "ocid1.image.oc1.eu-frankfurt-1.aaaaaaaaf7xcpvcu2a27gz6mvlo4forq7iqtp3iz4twwwbnxql5s3vnugfgq"
