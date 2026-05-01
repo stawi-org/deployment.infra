@@ -32,4 +32,10 @@ age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
 #                   with `has_valid_join_token: false`. Forced
 #                   reinstall onto fresh images carrying the current
 #                   Omni's token.
-force_reinstall_generation = 4
+#   5 — 2026-05-01: clean-slate reinstall after `omni-cluster-delete`
+#                   + bulk `omni-machine-delete` cleared the stawi
+#                   cluster and all zombie Machine UUIDs. Pairs with
+#                   the wait-for-registration fix in layer 03's
+#                   sync-machine-labels.sh so post-reinstall labelling
+#                   doesn't race the SideroLink phone-home.
+force_reinstall_generation = 5
