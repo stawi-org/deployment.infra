@@ -105,22 +105,28 @@ resource "oci_core_instance" "this" {
     ignore_changes = [availability_domain]
 
     # Force-reinstall escape hatch: bumping
-    # var.force_reinstall_generation invalidates the
-    # terraform_data.force_reinstall hash → replace_triggered_by
-    # destroys + creates the OCI instance even if image_id and other
-    # inputs are stable. Mirrors what
-    # force_reinstall_generation does on the Contabo side, so a
-    # single-bump in the operator-facing tfvars across both layers
-    # rolls every cluster node.
-    replace_triggered_by = [terraform_data.force_reinstall.id]
+    # var.force_reinstall_generation triggers replacement of
+    # terraform_data.force_reinstall (via its triggers_replace
+    # argument), which fires this replace_triggered_by, which
+    # destroy+creates the OCI instance even if image_id is stable.
+    # Mirrors force_reinstall_generation on the Contabo side, so a
+    # single-bump in the operator-facing tfvars rolls every cluster
+    # node together.
+    #
+    # Reference is to the whole resource (not `.id`) — terraform_data's
+    # id is a stable UUID that doesn't change when inputs do; the
+    # right signal is "the resource was replaced", which is what
+    # `[terraform_data.foo]` (resource-level) detects.
+    replace_triggered_by = [terraform_data.force_reinstall]
   }
 }
 
-# Hash resource keyed on var.force_reinstall_generation. Bumping the
-# variable changes the hash, which fires the replace_triggered_by
-# above. terraform_data has no real backend — pure state-only.
+# Sentinel resource keyed on var.force_reinstall_generation. The
+# `triggers_replace` argument forces replacement of THIS resource
+# whenever the listed values change. The instance's
+# `replace_triggered_by` then watches for that replacement.
 resource "terraform_data" "force_reinstall" {
-  input = var.force_reinstall_generation
+  triggers_replace = [var.force_reinstall_generation]
 }
 
 data "oci_core_vnic_attachments" "this" {
