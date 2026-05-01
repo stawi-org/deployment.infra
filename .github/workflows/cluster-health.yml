@@ -1,7 +1,9 @@
 # Post-apply verification: is the cluster actually healthy?
 #
-# Fetches the layer-03 tfstate to get kubeconfig + talosconfig, then
-# runs a short battery of checks: apiserver answers, nodes are Ready,
+# Pulls kubeconfig + talosconfig live from Omni (service-account auth)
+# rather than from a layer-03 tfstate output — under the Omni-driven
+# flow tofu no longer materialises those credentials at apply time.
+# Runs a short battery of checks: apiserver answers, nodes are Ready,
 # no pods stuck, etcd quorum, flux reconciled. Reports PASS / FAIL
 # per check with enough output to root-cause failures.
 #
@@ -20,26 +22,28 @@ jobs:
   health:
     runs-on: ubuntu-latest
     env:
-      AWS_ACCESS_KEY_ID:        ${{ secrets.R2_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY:    ${{ secrets.R2_SECRET_ACCESS_KEY }}
-      AWS_EC2_METADATA_DISABLED: "true"
-      R2_ACCOUNT_ID:            ${{ secrets.R2_ACCOUNT_ID }}
-      R2_ENDPOINT:              https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      OMNI_ENDPOINT:            https://cpd.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+      OMNI_CLUSTER:             stawi
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install talosctl + kubectl + flux
+      - name: Install omnictl + talosctl + kubectl + flux
         # Read versions from the central source of truth so a single
         # tofu/shared/versions.auto.tfvars.json bump aligns this
         # runner's CLI versions with what's deployed.
+        env:
+          OMNI_VERSION: v1.7.1
         run: |
           set -euo pipefail
           TALOS_VERSION=$(jq -r '.talos_version' tofu/shared/versions.auto.tfvars.json)
           FLUX_VERSION=$(jq -r '.flux_version' tofu/shared/versions.auto.tfvars.json)
           FLUX_VERSION_NO_V="${FLUX_VERSION#v}"
 
-          curl -fsSL "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64" -o /usr/local/bin/talosctl
-          chmod +x /usr/local/bin/talosctl
+          curl -fsSL "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64" -o /tmp/omnictl
+          sudo install -m 0755 /tmp/omnictl /usr/local/bin/omnictl
+          curl -fsSL "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64" -o /tmp/talosctl
+          sudo install -m 0755 /tmp/talosctl /usr/local/bin/talosctl
           curl -fsSLO https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl
           sudo install -m 0755 kubectl /usr/local/bin/kubectl
           curl -fsSL "https://github.com/fluxcd/flux2/releases/download/${FLUX_VERSION}/flux_${FLUX_VERSION_NO_V}_linux_amd64.tar.gz" | tar xz
