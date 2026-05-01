@@ -161,7 +161,16 @@ jobs:
     secrets: inherit
 
   talos:
-    needs: [contabo-infra, oracle-infra, onprem-infra]
+    # omni-server gate is critical: layer 03 shells out to omnictl
+    # against the omni-host's HTTPS endpoint to sync the cluster
+    # template + apply MachineLabels. If 00-omni-server is mid-
+    # reinstall (force_reinstall_generation bumped), those omnictl
+    # calls fail and machines never get labelled. The omni-host
+    # module's null_resource.wait_for_omni_ready blocks 00 until
+    # Omni's /healthz returns 200, so this dependency turns the
+    # workflow-level ordering into "talos runs after Omni has fully
+    # restored".
+    needs: [omni-server, contabo-infra, oracle-infra, onprem-infra]
     # Per-account isolation across all three providers: each infra layer
     # is now a fail-fast=false matrix, so `needs.X.result == 'success'`
     # would block talos unless EVERY cell succeeded. That's the wrong

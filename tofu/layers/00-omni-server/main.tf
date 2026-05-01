@@ -87,6 +87,18 @@ module "omni_host" {
   r2_account_id        = var.r2_account_id
   r2_access_key_id     = var.r2_access_key_id
   r2_secret_access_key = var.r2_secret_access_key
+
+  # Contabo PUT-driven reinstall — the contabo provider's image_id /
+  # user_data update is silently a metadata-only update (~40s, disk
+  # untouched). Reuse the same auth + ensure-image.sh path the cluster
+  # nodes use so cloud-init template changes can be pushed to the
+  # running host non-destructively (omni-restore restores state).
+  contabo_client_id     = module.contabo_account_state.auth.auth.oauth2_client_id
+  contabo_client_secret = module.contabo_account_state.auth.auth.oauth2_client_secret
+  contabo_api_user      = module.contabo_account_state.auth.auth.oauth2_user
+  contabo_api_password  = module.contabo_account_state.auth.auth.oauth2_pass
+
+  force_reinstall_generation = var.force_reinstall_generation
 }
 
 # DNS records pull the IPs straight from the imported contabo_instance —

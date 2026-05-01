@@ -129,3 +129,46 @@ variable "r2_backup_prefix" {
   default     = "production/omni-backups"
   description = "Object key prefix under r2_bucket_name where omni-*.tar.gz snapshots are written."
 }
+
+# ---- Contabo PUT-driven reinstall path ---------------------------------------
+# Contabo's image_id-only PUT is silently a metadata update, so the contabo
+# provider's own update path doesn't actually re-image a running disk. We use
+# the same ensure-image.sh script the cluster nodes use (in node-contabo), and
+# need the OAuth2 creds to call the Contabo API directly. Pulled from
+# module.contabo_account_state in layer 00-omni-server (same source the
+# contabo provider already reads from).
+variable "contabo_client_id" {
+  type      = string
+  sensitive = true
+}
+variable "contabo_client_secret" {
+  type      = string
+  sensitive = true
+}
+variable "contabo_api_user" {
+  type      = string
+  sensitive = true
+}
+variable "contabo_api_password" {
+  type      = string
+  sensitive = true
+}
+
+variable "force_reinstall_generation" {
+  type        = number
+  default     = 1
+  description = <<-EOT
+    Bump to force a Contabo reinstall of the omni-host VPS via
+    null_resource.ensure_image. The canonical path for any cloud-init
+    template change that needs to land on the running host (new
+    sysctl, systemd unit, certbot config). omni-restore.service pulls
+    the most recent /var/lib/omni snapshot from R2 on first boot, so
+    as long as omni-backup.timer has fired recently the reinstall is
+    non-destructive — every cluster, every Link, every machine UUID
+    survives.
+  EOT
+  validation {
+    condition     = var.force_reinstall_generation >= 1
+    error_message = "force_reinstall_generation must be >= 1."
+  }
+}
