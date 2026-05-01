@@ -32,4 +32,4 @@ age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
 #                   with `has_valid_join_token: false`. Forced
 #                   reinstall onto fresh images carrying the current
 #                   Omni's token.
-force_reinstall_generation = 2
+force_reinstall_generation = 3
