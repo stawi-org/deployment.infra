@@ -49,10 +49,73 @@ command -v omnictl >/dev/null || { echo "[sync-machine-labels] omnictl not in PA
 command -v jq >/dev/null      || { echo "[sync-machine-labels] jq not in PATH"      >&2; exit 1; }
 [[ -n "${OMNI_SERVICE_ACCOUNT_KEY:-}" ]] || { echo "[sync-machine-labels] OMNI_SERVICE_ACCOUNT_KEY unset" >&2; exit 1; }
 
-# Fetch ALL registered MachineStatuses, regardless of cluster binding.
-# Newly-registered (still-unbound) machines are exactly the ones we
-# need to label so MachineClass selectors can match and bind them.
-machines_arr=$(omnictl get machinestatus --output json 2>/dev/null | jq -cs 'flatten' || echo '[]')
+# Wait window for newly-reinstalled nodes to phone home and register
+# their MachineStatus before we attempt to label them. Set high enough
+# to cover the worst case (Contabo VPS reinstall: ~5–15 min disk wipe +
+# boot, then SideroLink registration). Override via env if needed.
+readonly REGISTRATION_TIMEOUT_SECS="${REGISTRATION_TIMEOUT_SECS:-900}"
+readonly REGISTRATION_POLL_SECS="${REGISTRATION_POLL_SECS:-15}"
+
+# Build the list of expected nodes from the input JSON. Each node is
+# expected to register a MachineStatus matchable by hostname or any of
+# its known IPv4s (CIDR-stripped). Until every expected node matches —
+# or REGISTRATION_TIMEOUT_SECS elapses — we keep polling. Without this
+# wait, a freshly-reinstalled OCI instance (destroy+create takes a
+# few minutes) typically isn't registered by the time tofu reaches
+# layer 03, gets silently skipped, never gets labelled, and never
+# binds into the cp / workers MachineSet.
+expected_count=$(jq -r 'length' "$LABELS_JSON")
+echo "[sync-machine-labels] expecting $expected_count node(s) to be registered in Omni"
+
+# `omnictl get machinestatus --output json` emits one JSON object per
+# line (NDJSON). `jq -cs 'flatten'` collapses to a single array.
+fetch_machines() {
+  omnictl get machinestatus --output json 2>/dev/null | jq -cs 'flatten' || echo '[]'
+}
+
+# Count how many expected nodes are currently matchable. Same matching
+# rules used by the apply loop below: hostname == node_name OR any
+# CIDR-stripped address == ipv4. Keeps the wait gate consistent with
+# the actual labelling logic — a node "matches" iff we'd be able to
+# label it.
+count_matches() {
+  local machines_json="$1"
+  jq -n \
+    --argjson machines "$machines_json" \
+    --slurpfile labels "$LABELS_JSON" '
+    [
+      $labels[0] | to_entries[] |
+      .key as $n | (.value.ipv4 // "") as $ip |
+      select(
+        any($machines[]?;
+          (.spec.network.hostname // "") == $n
+          or (
+            $ip != "" and
+            any(.spec.network.addresses // [] | .[]; (split("/")[0]) == $ip)
+          )
+        )
+      )
+    ] | length'
+}
+
+deadline=$(( $(date +%s) + REGISTRATION_TIMEOUT_SECS ))
+machines_arr='[]'
+matched=0
+while :; do
+  machines_arr=$(fetch_machines)
+  matched=$(count_matches "$machines_arr")
+  registered=$(jq -r 'length' <<< "$machines_arr")
+  echo "[sync-machine-labels] registered=$registered matched=$matched/$expected_count"
+  if (( matched >= expected_count )); then
+    break
+  fi
+  if (( $(date +%s) >= deadline )); then
+    echo "[sync-machine-labels] WARN: registration wait timed out after ${REGISTRATION_TIMEOUT_SECS}s — proceeding with $matched/$expected_count matched"
+    break
+  fi
+  sleep "$REGISTRATION_POLL_SECS"
+done
+
 machine_count=$(jq -r 'length' <<< "$machines_arr")
 echo "[sync-machine-labels] cluster=${OMNI_CLUSTER:-stawi}, registered machines: $machine_count"
 
