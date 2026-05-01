@@ -223,7 +223,7 @@ Each layer is run via `workflow_dispatch` of the per-mode workflow, which dispat
 2. **Layer 01 — Contabo infra.** Same pattern. Provisions VPSes.
 3. **Layer 02 — Oracle infra.** Same pattern. Provisions IPv4/IPv6 OCI nodes from the inventory file.
 4. **Layer 02-onprem — On-prem inventory.** Same pattern. Produces node contracts and Talos node configs for declared physical sites. On-prem inventory uses `nodes` under `accounts`.
-5. **Layer 03 — Talos apply + bootstrap.** Same pattern. Applies machine configs to CI-reachable nodes, bootstraps etcd, and renders manual on-prem node configs. Kubeconfig becomes available via `dispatch-kubeconfig` workflow.
+5. **Layer 03 — Talos apply + bootstrap.** Same pattern. Reconciles MachineLabels onto Omni-registered machines and runs `omnictl cluster template sync` against the cluster definition in `tofu/shared/clusters/main.yaml`. Cluster credentials are issued on demand via `omnictl kubeconfig --cluster stawi --service-account` and `omnictl talosconfig --cluster stawi`.
 6. **Layer 04 — Flux.** Same pattern. Installs Flux Operator, applies `FluxInstance` pointing at `stawi-org/deployment.manifest`. Verify FluxInstance reaches Ready with `kubectl get fluxinstance -A`.
 
 ### Topology boundary
