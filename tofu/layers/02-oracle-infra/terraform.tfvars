@@ -21,4 +21,13 @@ force_image_generation = 11
 # See 01-contabo-infra/terraform.tfvars for the full bump-history
 # story. Mirror in lock-step so a single fleet-wide reinstall rolls
 # every node together.
-force_reinstall_generation = 7
+#   8 — 2026-05-01: post-image_change-sentinel introduction. The
+#                   sentinel was freshly created in the previous
+#                   apply (PR #120), so its first appearance was
+#                   creation-not-replacement and replace_triggered_by
+#                   didn't fire. This bump rolls every OCI instance
+#                   once via the existing force_reinstall path so all
+#                   nodes land on the new-token Talos image; from now
+#                   on any var.image_id change naturally REPLACES
+#                   image_change and propagates to instance replace.
+force_reinstall_generation = 8
