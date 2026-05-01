@@ -1,10 +1,37 @@
 ---
-# Per-Contabo-CP patch — mirrors the Ansible-generated config in
-# talos_config/v1.12.6/patch/*.yaml which was validated to work.
-# Key detail: the Contabo VPS primary NIC is `ens18` (verified from
-# the Ansible-era working cluster), NOT `eth0`. Earlier iterations
-# targeting eth0 configured nothing and left the node unreachable on
-# port 50000 post-reboot.
+# Per-Contabo-node patch — selects the primary uplink by hardware
+# property rather than by kernel-assigned interface name.
+#
+# Why not hard-code `ens18`: the kernel-assigned name comes from
+# systemd's predictable-naming scheme (CONFIG_NET_NAMING in the
+# kernel + 80-net-setup-link.rules in udev) and depends on PCI
+# topology, kernel version, and any predictable-name overrides. The
+# old Ansible config got away with `ens18` because every working
+# Contabo product at the time happened to expose a single virtio
+# NIC at the same PCI slot. Any product/kernel change that shifts
+# the NIC to a different slot — or adds a second NIC for the
+# Private Networking add-on — would silently configure the wrong
+# (or nothing) interface and brick the node post-reboot.
+#
+# Talos v1.13 fixes this with `LinkAliasConfig`. Talos resolves the
+# selector against the node's actual `LinkStatus` resources at
+# config-apply time, so the alias maps to whichever interface the
+# node really has. We then write the `LinkConfig` against the alias.
+# This is the canonical Talos way to express "configure the
+# primary uplink" without coupling to a kernel name.
+#
+# Selector: `link.driver == "virtio_net"`.
+#   - Every Contabo VPS shape we run is KVM-backed and exposes its
+#     uplink via virtio_net. Stable across kernel versions and
+#     Contabo product changes (verified via `talosctl get links
+#     -o yaml`: `spec.driver: virtio_net`).
+#   - With a fixed alias name (`wan`) the selector MUST match
+#     exactly one link. If we add the Contabo Private Networking
+#     add-on later (a second virtio_net NIC), the apply will fail
+#     loudly rather than silently mis-targeting — at which point
+#     refine the selector to `link.driver == "virtio_net" &&
+#     mac(link.permanent_addr) == "<wan-mac>"` (or switch to a
+#     sequential `wan%d` form and pin LinkConfig to `wan0`).
 
 machine:
   kubelet:
@@ -14,15 +41,20 @@ machine:
         - ${ipv4}/32
 
 ---
-# Physical link configuration with static IPv4 + static IPv6 — Talos v1.12
-# multi-doc form. Mirrors the validated Ansible config in
-# /home/j/code/antinvestor/deployments/talos_config/v1.12.6/patch/*.yaml,
-# specifically using gateway-only route entries (no destination/network
-# field — Talos v1.12 LinkConfig RouteConfig auto-derives a default route
-# from the gateway when no destination is set).
+apiVersion: v1alpha1
+kind: LinkAliasConfig
+name: wan
+selector:
+  match: link.driver == "virtio_net"
+
+---
+# Static IPv4 + IPv6 + default routes on the aliased uplink. Talos
+# v1.13 multi-doc form. Gateway-only route entries (no destination/
+# network field) — Talos's LinkConfig RouteConfig auto-derives a
+# default route from the gateway when no destination is set.
 apiVersion: v1alpha1
 kind: LinkConfig
-name: ens18
+name: wan
 addresses:
   - address: ${ipv4}/24
   - address: ${ipv6}/64
