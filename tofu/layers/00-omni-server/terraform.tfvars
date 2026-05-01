@@ -14,4 +14,17 @@
 #                   bootstrap loops on `etcd members: deadline
 #                   exceeded`. Cloud-init template change rides along
 #                   in the same generation bump.
-force_reinstall_generation = 2
+#   3 — 2026-05-01: clean-slate Omni reset. Backup-restore was
+#                   reintroducing stale Machine state every cycle
+#                   (configured-status mismatched the freshly-
+#                   reinstalled Talos nodes' maintenance-mode certs,
+#                   so Omni's MaintenanceController never re-handshook;
+#                   x509 unknown-authority errors looped indefinitely).
+#                   R2 backups deleted manually before this bump so
+#                   omni-restore.service finds nothing → fresh Omni,
+#                   new CA, new SideroLink join token. Pairs with a
+#                   regenerate-talos-images workflow run + cluster
+#                   force_reinstall_generation bumps so the fleet
+#                   reinstalls onto new-token images and registers
+#                   from scratch.
+force_reinstall_generation = 3
