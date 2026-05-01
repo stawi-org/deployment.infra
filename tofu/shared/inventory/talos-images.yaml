@@ -1,43 +1,43 @@
 # Talos image inventory — managed by .github/workflows/regenerate-talos-images.yml.
 # DO NOT edit by hand. To regenerate: run that workflow with force=true,
 # or bump tofu/shared/schematics/cluster.yaml and merge.
-schematic_id: "2a65fec7ec2010476b70e562581782714e846deacebed924a13ffb89856a33f3-v1.13.0"
+schematic_id: "c790d75bb530f4233b98db6a337ff60a23c7642f1af2dc89079182437e028013-v1.13.0"
 talos_version: "v1.13.0"
-generated_at: "2026-05-01T08:36:30Z"
+generated_at: "2026-05-01T09:18:18Z"
 formats:
   contabo:
-    url: "https://pkgs.stawi.org/2a65fec7ec2010476b70e562581782714e846deacebed924a13ffb89856a33f3-v1.13.0/metal-amd64-omni-stawi-v1.13.0-5e27f5.iso"
-    sha256: "a7ae19de064923318536331a007480fc0fb254c989ffbdb509ea93b520fe0d8e"
+    url: "https://pkgs.stawi.org/c790d75bb530f4233b98db6a337ff60a23c7642f1af2dc89079182437e028013-v1.13.0/metal-amd64-omni-stawi-v1.13.0-1bcb49.iso"
+    sha256: "cc8ef7685f761ecc7ee72ed14f8d02eb25ac9668a0c0a23d361e1e7478ad4dec"
   onprem:
-    url: "https://pkgs.stawi.org/2a65fec7ec2010476b70e562581782714e846deacebed924a13ffb89856a33f3-v1.13.0/metal-amd64-omni-stawi-v1.13.0-5e27f5.iso"
-    sha256: "a7ae19de064923318536331a007480fc0fb254c989ffbdb509ea93b520fe0d8e"
+    url: "https://pkgs.stawi.org/c790d75bb530f4233b98db6a337ff60a23c7642f1af2dc89079182437e028013-v1.13.0/metal-amd64-omni-stawi-v1.13.0-1bcb49.iso"
+    sha256: "cc8ef7685f761ecc7ee72ed14f8d02eb25ac9668a0c0a23d361e1e7478ad4dec"
   oracle:
-    qcow2_url: "https://pkgs.stawi.org/2a65fec7ec2010476b70e562581782714e846deacebed924a13ffb89856a33f3-v1.13.0/oracle-arm64-omni-stawi-v1.13.0-5e27f5.qcow2"
-    qcow2_sha256: "c7f9305263c56af668f03d1aa9a6a929d44f5113cb5d4dcc80ab701d5d2f6bdf"
-    archive_url: "https://pkgs.stawi.org/2a65fec7ec2010476b70e562581782714e846deacebed924a13ffb89856a33f3-v1.13.0/talos-v1.13.0-2a65fec7ec2010476b70e562581782714e846deacebed924a13ffb89856a33f3-v1.13.0-oracle-arm64.oci"
-    archive_sha256: "58c74cdbae5d7bfe1ad287d3d97e14799412f5cebb3c442936dba2aeb9528bf8"
+    qcow2_url: "https://pkgs.stawi.org/c790d75bb530f4233b98db6a337ff60a23c7642f1af2dc89079182437e028013-v1.13.0/oracle-arm64-omni-stawi-v1.13.0-1bcb49.qcow2"
+    qcow2_sha256: "7b904d1f20143497740718336ec91a05c201835867ac1b88ef190ca89079c9ec"
+    archive_url: "https://pkgs.stawi.org/c790d75bb530f4233b98db6a337ff60a23c7642f1af2dc89079182437e028013-v1.13.0/talos-v1.13.0-c790d75bb530f4233b98db6a337ff60a23c7642f1af2dc89079182437e028013-v1.13.0-oracle-arm64.oci"
+    archive_sha256: "b492508ee186151bf41c509b085822c8cd97ca4643be73051230f4b626e4ead8"
     accounts:
       alimbacho67:
-        ocid: "ocid1.image.oc1.eu-frankfurt-1.aaaaaaaabwf2ptf5jknz2gmz4epfzba46xxb2nk2fniswdwth277phlmj57a"
+        ocid: "ocid1.image.oc1.eu-frankfurt-1.aaaaaaaaf7xcpvcu2a27gz6mvlo4forq7iqtp3iz4twwwbnxql5s3vnugfgq"
         region: "eu-frankfurt-1"
         namespace: "frkcct5ousx4"
         bucket: "talos-images-alimbacho67"
-        object: "talos-v1.13.0-2a65fec7ec2010476b70e562581782714e846deacebed924a13ffb89856a33f3-v1.13.0-oracle-arm64.oci"
+        object: "talos-v1.13.0-c790d75bb530f4233b98db6a337ff60a23c7642f1af2dc89079182437e028013-v1.13.0-oracle-arm64.oci"
       ambetera:
-        ocid: "ocid1.image.oc1.uk-london-1.aaaaaaaaaybzpsddgqbuwsdaop5356f5frl6qzjeasf2wdrzzhqbnm5nnyiq"
+        ocid: "ocid1.image.oc1.uk-london-1.aaaaaaaa7kau66ru7233n5yvnpxkpabmu3paxtjebxdygkkt3j75hsioglva"
         region: "uk-london-1"
         namespace: "lrxjfm8ftnia"
         bucket: "talos-images-ambetera"
-        object: "talos-v1.13.0-2a65fec7ec2010476b70e562581782714e846deacebed924a13ffb89856a33f3-v1.13.0-oracle-arm64.oci"
+        object: "talos-v1.13.0-c790d75bb530f4233b98db6a337ff60a23c7642f1af2dc89079182437e028013-v1.13.0-oracle-arm64.oci"
       brianelvis33:
-        ocid: "ocid1.image.oc1.eu-frankfurt-1.aaaaaaaav5rymidqlzufqvp7ccqjgeq5forppwdhdk5iezmsa6zg6umn6d3a"
+        ocid: "ocid1.image.oc1.eu-frankfurt-1.aaaaaaaaqrg2d4wjse7ifzgeaillqpaos2ydxrqzcjx45aogfockj2gxokoq"
         region: "eu-frankfurt-1"
         namespace: "frbrxjzxjaq1"
         bucket: "talos-images-brianelvis33"
-        object: "talos-v1.13.0-2a65fec7ec2010476b70e562581782714e846deacebed924a13ffb89856a33f3-v1.13.0-oracle-arm64.oci"
+        object: "talos-v1.13.0-c790d75bb530f4233b98db6a337ff60a23c7642f1af2dc89079182437e028013-v1.13.0-oracle-arm64.oci"
       bwire:
-        ocid: "ocid1.image.oc1.eu-frankfurt-1.aaaaaaaapzhyfdpfpj55dqmceq3twunrlvckiu2axeflsqfrvas6e6i4ytlq"
+        ocid: "ocid1.image.oc1.eu-frankfurt-1.aaaaaaaawlcqktcxq3c3vfr66umoo3jg47ggwkf65nvow4wg4lqsmu6zo53a"
         region: "eu-frankfurt-1"
         namespace: "frosk7nwicev"
         bucket: "talos-images-bwire"
-        object: "talos-v1.13.0-2a65fec7ec2010476b70e562581782714e846deacebed924a13ffb89856a33f3-v1.13.0-oracle-arm64.oci"
+        object: "talos-v1.13.0-c790d75bb530f4233b98db6a337ff60a23c7642f1af2dc89079182437e028013-v1.13.0-oracle-arm64.oci"
