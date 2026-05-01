@@ -48,6 +48,32 @@ features:
   # access. With the cluster behind CF-proxied DNS, this is the only
   # supported access mode.
   enableWorkloadProxy: true
+patches:
+  # Bootstrap-time manifest delivery: Talos fetches each URL once
+  # during cluster bootstrap (initial CP bring-up) and applies the
+  # YAML to the cluster before kube-controller-manager declares the
+  # cluster ready. Re-runs only on a fresh bootstrap — changing this
+  # list on a running cluster does NOT re-apply.
+  #
+  # The `flux2/install.yaml` artifact is the single-file install for
+  # Flux v2: namespace, CRDs (HelmRelease, Kustomization, Git/
+  # OCIRepository, Bucket, Receiver, Alert, Provider), the four
+  # controllers (source / kustomize / helm / notification), and
+  # their RBAC. After bootstrap, Flux is up but idle — operator
+  # bootstraps the GitRepository + Kustomization pointing at the
+  # config repo (separate manifests, applied via flux CLI or as a
+  # second extraManifest once the GitHub App credentials are
+  # threaded through as a Secret in cluster).
+  #
+  # Version pinned to var.flux_version in
+  # tofu/shared/versions.auto.tfvars.json — bump in both places when
+  # rolling Flux. Talos validates the manifest at apply time so a
+  # broken release is caught before the cluster comes up.
+  - name: flux-base-install
+    inline:
+      cluster:
+        extraManifests:
+          - https://github.com/fluxcd/flux2/releases/download/v2.4.0/install.yaml
 
 ---
 # Control-plane machine set. `size` MUST be explicit — leaving it
