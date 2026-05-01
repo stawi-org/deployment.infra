@@ -69,20 +69,30 @@ resource "null_resource" "omnictl_machine_classes" {
 # Omni without the cluster definition while node modules expect it.
 data "external" "omni_cluster_state" {
   program = ["bash", "-c", <<-EOT
-    set -euo pipefail
-    if ! command -v omnictl >/dev/null; then
-      printf '%s' '{"state":"omnictl-missing"}'
+    # Deliberately NO `set -e` — the data source contract is "always
+    # exit 0 with valid JSON". Any failure (omnictl missing, SA key
+    # unset, omnictl call failing, jq parse error) maps to the same
+    # "unknown" state, which means triggers see no change and the
+    # downstream null_resource doesn't re-run unnecessarily. The
+    # null_resource itself will re-validate via its own omnictl
+    # calls when it runs.
+    if ! command -v omnictl >/dev/null 2>&1; then
+      printf '%s' '{"state":"unknown"}'
       exit 0
     fi
     if [[ -z "$${OMNI_SERVICE_ACCOUNT_KEY:-}" ]]; then
-      printf '%s' '{"state":"sa-missing"}'
+      printf '%s' '{"state":"unknown"}'
       exit 0
     fi
-    state=$(omnictl get cluster "${var.cluster_name}" -o json 2>/dev/null \
-      | jq -r 'select(.spec) | "\(.metadata.version)|\(.spec.kubernetesversion)|\(.spec.talosversion)"' \
-      | head -1)
+    raw=$(omnictl get cluster "${var.cluster_name}" -o json 2>/dev/null || echo '')
+    if [[ -z "$raw" ]]; then
+      printf '%s' '{"state":"absent"}'
+      exit 0
+    fi
+    state=$(jq -r 'select(.spec) | "\(.metadata.version)|\(.spec.kubernetesversion)|\(.spec.talosversion)"' <<<"$raw" 2>/dev/null | head -1)
     if [[ -z "$state" ]]; then state="absent"; fi
     printf '%s' "{\"state\":\"$state\"}"
+    exit 0
   EOT
   ]
 }
