@@ -59,6 +59,30 @@ kind: ControlPlane
 machineClass:
   name: cp
   size: 3
+patches:
+  # Cross-provider etcd. Contabo CPs have routable public IPv4
+  # (164.68.x.x); OCI CPs sit behind NAT with primary interface on a
+  # private subnet (10.0.2.0/24) — Contabo can't dial OCI's primary
+  # IP. Without this patch Talos picks the primary-interface address
+  # for `--initial-advertise-peer-urls`, etcd quorum can't form
+  # across providers, and any non-Contabo CP gets stuck with
+  # `cannot fetch cluster info from peer urls` on bootstrap.
+  #
+  # Pinning advertisedSubnets to the SideroLink WireGuard ULA
+  # (fdae:41e4:649b:9303::/64) makes every CP advertise its WG IPv6
+  # for etcd peer-url. Omni maintains the WG mesh between every
+  # SideroLink-connected machine, so all CPs are bidirectionally
+  # routable on this subnet regardless of provider / NAT topology.
+  #
+  # listenSubnets is left at the default (0.0.0.0 / ::) — listening
+  # is provider-agnostic; only the *advertised* URL matters for
+  # cluster membership.
+  - name: etcd-via-siderolink
+    inline:
+      cluster:
+        etcd:
+          advertisedSubnets:
+            - fdae:41e4:649b:9303::/64
 
 ---
 # Worker machine set. Same shape; size matches the number of
