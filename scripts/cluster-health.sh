@@ -18,18 +18,31 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 echo "::group::Fetch credentials from Omni (omnictl)"
-# `omnictl kubeconfig` writes kubeconfig YAML to a path argument. The
-# default cluster is the one in the cluster template; pass --cluster
-# explicitly so the script is portable across Omni instances managing
-# multiple clusters. The output uses Omni's workload-proxy
-# (k8s-proxy) — kubectl traffic flows via Omni's HTTPS endpoint, so
-# direct CP IP access isn't required.
-if ! omnictl kubeconfig --cluster "$OMNI_CLUSTER" --force "$tmp/kubeconfig" 2>&1; then
+# `omnictl kubeconfig --service-account` issues a kubeconfig backed by
+# a Kubernetes ServiceAccount token rather than the default Omni-OIDC
+# exec plugin. The OIDC form needs the `kubectl-oidc-login` plugin in
+# PATH AND a user-level browser flow on first use — both of which fail
+# in CI ("error: unknown command \"oidc-login\" for \"kubectl\"").
+# The SA form is token-based, headless, and runs through Omni's
+# workload-proxy (no direct CP IP access required).
+#
+# `--user` sets the kubeconfig context name (cosmetic). `--groups
+# system:masters` gives full cluster-admin (acceptable for a
+# read-only diagnostic; tighten if this script ever mutates state).
+if ! omnictl kubeconfig --cluster "$OMNI_CLUSTER" --service-account \
+     --user cluster-health --groups system:masters --force "$tmp/kubeconfig" 2>&1; then
   echo "::error::omnictl kubeconfig failed — cluster $OMNI_CLUSTER may not exist or SA auth is broken"
   exit 1
 fi
-if ! omnictl talosconfig --cluster "$OMNI_CLUSTER" --force "$tmp/talosconfig" 2>&1; then
-  echo "::error::omnictl talosconfig failed"
+# `--break-glass` issues a raw Talos talosconfig with direct PKI to
+# the cluster's apid/trustd, bypassing Omni's siderolink proxy. With
+# the default (proxied) form, talosctl can reach apid only when each
+# CP's siderolink wireguard tunnel is healthy — which is exactly the
+# failure mode we want to diagnose. Break-glass also pre-populates
+# `nodes` and `endpoints` so `talosctl etcd members` works without
+# extra flags.
+if ! omnictl talosconfig --cluster "$OMNI_CLUSTER" --break-glass --force "$tmp/talosconfig" 2>&1; then
+  echo "::error::omnictl talosconfig --break-glass failed"
   exit 1
 fi
 chmod 0600 "$tmp/kubeconfig" "$tmp/talosconfig"
