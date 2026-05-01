@@ -16,3 +16,9 @@ force_image_generation = 11
 # changes (regenerate-talos-images workflow rolls a new image →
 # oci_core_instance source_details drifts → tofu plans destroy+create).
 # No request-file mechanism, no manual triggers.
+
+
+# See 01-contabo-infra/terraform.tfvars for the full bump-history
+# story. Mirror in lock-step so a single fleet-wide reinstall rolls
+# every node together.
+force_reinstall_generation = 2
