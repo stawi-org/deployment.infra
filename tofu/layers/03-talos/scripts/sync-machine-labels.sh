@@ -69,8 +69,20 @@ echo "[sync-machine-labels] expecting $expected_count node(s) to be registered i
 
 # `omnictl get machinestatus --output json` emits one JSON object per
 # line (NDJSON). `jq -cs 'flatten'` collapses to a single array.
+#
+# Hardening: validate the result is real JSON before returning. Omni
+# can transiently return non-JSON to stdout (e.g. an auth error
+# message, or partial output if omni-stack is briefly down for the
+# hourly omni-backup snapshot). Without this guard, `--argjson` in
+# count_matches would crash on garbage input and `set -e` would
+# terminate the polling loop instead of riding out the transient.
 fetch_machines() {
-  omnictl get machinestatus --output json 2>/dev/null | jq -cs 'flatten' || echo '[]'
+  local result
+  result=$(omnictl get machinestatus --output json 2>/dev/null | jq -cs 'flatten' 2>/dev/null) || result=''
+  if [[ -z "$result" ]] || ! jq -e . >/dev/null 2>&1 <<<"$result"; then
+    result='[]'
+  fi
+  printf '%s' "$result"
 }
 
 # Count how many expected nodes are currently matchable. Same matching
@@ -95,7 +107,7 @@ count_matches() {
           )
         )
       )
-    ] | length'
+    ] | length' 2>/dev/null || echo 0
 }
 
 deadline=$(( $(date +%s) + REGISTRATION_TIMEOUT_SECS ))
@@ -104,7 +116,7 @@ matched=0
 while :; do
   machines_arr=$(fetch_machines)
   matched=$(count_matches "$machines_arr")
-  registered=$(jq -r 'length' <<< "$machines_arr")
+  registered=$(jq -r 'length' <<<"$machines_arr" 2>/dev/null || echo 0)
   echo "[sync-machine-labels] registered=$registered matched=$matched/$expected_count"
   if (( matched >= expected_count )); then
     break
