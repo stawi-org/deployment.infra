@@ -40,10 +40,32 @@ locals {
 # resources like MachineClass go through `omnictl apply`. Doing this
 # BEFORE the template sync guarantees the cluster's machine-set
 # references resolve.
+# Probe Omni for the machine-classes presence + content fingerprint.
+# Feeds null_resource.omnictl_machine_classes' trigger so when
+# /var/lib/omni gets wiped (and existing classes go with it), the
+# next apply re-creates them — file-SHA-only triggers can't see
+# that gap.
+data "external" "omni_machine_classes_state" {
+  program = ["bash", "-c", <<-EOT
+    if ! command -v omnictl >/dev/null 2>&1 || [[ -z "$${OMNI_SERVICE_ACCOUNT_KEY:-}" ]]; then
+      printf '%s' '{"state":"unknown"}'
+      exit 0
+    fi
+    state=$(omnictl get machineclasses -o json 2>/dev/null \
+      | jq -rs '[.[] | "\(.metadata.id)=\(.spec.matchlabels // [] | join(","))"] | sort | join(";")' 2>/dev/null \
+      || true)
+    if [[ -z "$state" ]]; then state="absent"; fi
+    printf '%s' "{\"state\":\"$state\"}"
+    exit 0
+  EOT
+  ]
+}
+
 resource "null_resource" "omnictl_machine_classes" {
   triggers = {
-    sha      = local.machine_classes_sha
-    endpoint = var.omni_endpoint
+    sha          = local.machine_classes_sha
+    endpoint     = var.omni_endpoint
+    omni_classes = data.external.omni_machine_classes_state.result.state
   }
 
   provisioner "local-exec" {
