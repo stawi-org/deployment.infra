@@ -20,7 +20,7 @@ customization:
     # args at boot but ignores them. Bump the date+seq when re-rolling
     # the cluster (e.g. to refresh SideroLink registrations after an
     # Omni-host backup-restore left the public-key store stale).
-    - cluster.regen-token=2026-05-01-1
+    - cluster.regen-token=2026-05-01-2
   systemExtensions:
     officialExtensions:
       - siderolabs/util-linux-tools
