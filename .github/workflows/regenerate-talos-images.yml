@@ -161,18 +161,31 @@ jobs:
       # won't auto-register. Wait up to 5 min for the api_endpoint to
       # match the expected cpd.stawi.org address before building.
       - name: Wait for new SideroLink token
+        # Resilient form: the inner `omnictl get connectionparams`
+        # fails on a freshly-bootstrapped Omni instance until that
+        # resource is first written, and on transient API hiccups.
+        # Under `set -euo pipefail`, an assignment from a failed
+        # pipeline kills the loop in ~20s. Wrap omnictl's exit in
+        # a `||` so the pipeline always succeeds; jq then sees
+        # empty / non-matching JSON and emits "" (empty api), which
+        # the loop naturally handles as "not yet ready" and sleeps.
+        # Diagnostic output (omnictl stderr + actual api value) is
+        # surfaced on each iteration so timeouts are debuggable.
         run: |
           set -euo pipefail
           deadline=$(( $(date +%s) + 300 ))
+          attempt=0
           while :; do
-            api=$(omnictl get connectionparams -o json 2>/dev/null \
-              | jq -r '.spec.api_endpoint // empty')
+            attempt=$((attempt + 1))
+            raw=$( { omnictl get connectionparams -o json 2>&1 || true; } )
+            api=$(printf '%s' "$raw" | jq -r '.spec.api_endpoint // empty' 2>/dev/null || true)
+            echo "::notice::attempt=$attempt api='$api' raw_head='$(printf '%s' "$raw" | head -c 200 | tr '\n' ' ')'"
             if [[ "$api" == "https://cpd.stawi.org" ]]; then
-              echo "::notice::SideroLink token ready, api_endpoint=$api"
+              echo "::notice::SideroLink token ready, api_endpoint=$api (attempt=$attempt)"
               break
             fi
             if [[ $(date +%s) -ge $deadline ]]; then
-              echo "::error::Timed out waiting for SideroLink api_endpoint to settle on cpd.stawi.org (last value: '$api')"
+              echo "::error::Timed out after $attempt attempts. Last api='$api'. Last omnictl output: $raw"
               exit 1
             fi
             sleep 10
