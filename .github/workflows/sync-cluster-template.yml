@@ -21,6 +21,9 @@ on:
     paths:
       - tofu/shared/clusters/**
       - .github/workflows/sync-cluster-template.yml
+      # cover .yaml.tmpl too — already matched by the ** glob, listed
+      # explicitly here as a reader signal that templates flow
+      # through the same sync.
   workflow_dispatch:
     inputs:
       dry_run:
@@ -90,6 +93,32 @@ jobs:
         run: |
           set -euo pipefail
           omnictl apply -f tofu/shared/clusters/machine-classes.yaml
+
+      # Render + apply the EtcdBackupS3Configs resource. Same global-
+      # resource pattern as MachineClass: it's not a Cluster template
+      # field, so it's applied separately via `omnictl apply`. Skipped
+      # silently when OMNI_ETCD_BACKUP_S3_ACCESS_KEY_ID isn't set (e.g.
+      # on a fork without the secret) so dry-runs and forks don't try
+      # to authenticate against a real OCI bucket.
+      #
+      # The access-key-id + secret reach this step via env (no
+      # untrusted GitHub event payload involved). envsubst inlines
+      # them into the rendered YAML, which is piped straight into
+      # `omnictl apply -f -` — the rendered file never lands on the
+      # runner's filesystem, so the secret doesn't appear in any
+      # post-step artefact.
+      - name: Apply EtcdBackupS3Configs
+        if: env.DRY_RUN != 'true' && env.OMNI_ETCD_BACKUP_S3_ACCESS_KEY_ID != ''
+        env:
+          OMNI_ETCD_BACKUP_S3_BUCKET: ${{ vars.OMNI_ETCD_BACKUP_S3_BUCKET }}
+          OMNI_ETCD_BACKUP_S3_REGION: ${{ vars.OMNI_ETCD_BACKUP_S3_REGION }}
+          OMNI_ETCD_BACKUP_S3_ENDPOINT: ${{ vars.OMNI_ETCD_BACKUP_S3_ENDPOINT }}
+          OMNI_ETCD_BACKUP_S3_ACCESS_KEY_ID: ${{ secrets.OMNI_ETCD_BACKUP_S3_ACCESS_KEY_ID }}
+          OMNI_ETCD_BACKUP_S3_SECRET_ACCESS_KEY: ${{ secrets.OMNI_ETCD_BACKUP_S3_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          envsubst < tofu/shared/clusters/etcd-backup-s3-configs.yaml.tmpl \
+            | omnictl apply -f -
 
       # Validate before sync — catches schema typos that would
       # otherwise fail mid-apply with partial state changes.

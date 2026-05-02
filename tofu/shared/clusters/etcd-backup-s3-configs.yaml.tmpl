@@ -1,0 +1,43 @@
+# EtcdBackupS3Configs.omni.sidero.dev — global Omni resource describing
+# the S3 destination for the builtin etcd-backup feature. Rendered by
+# sync-cluster-template.yml with environment-substituted credentials,
+# then applied via `omnictl apply`.
+#
+# This is a CLUSTER-SCOPED Omni resource (similar to MachineClass, not
+# per-cluster). All clusters managed by this Omni instance share the
+# destination; per-cluster cadence comes from the Cluster template's
+# backupConfiguration.interval (see main.yaml).
+#
+# Schema notes (Omni v1.7+):
+#   - metadata.type / metadata.id, NOT kind / name (Omni's COSI-style
+#     resource format, not standard k8s).
+#   - spec field names are lowercased / no camelCase: `accesskeyid`,
+#     `secretaccesskey`, `sessiontoken`.
+#
+# Bucket lives in OCI bwire (`omni-backup-storage`, created in
+# tofu/layers/02-oracle-infra/image-registry.tf). Endpoint is OCI's
+# S3-compat URL: https://<namespace>.compat.objectstorage.<region>.
+# oraclecloud.com. Region is the OCI region tag (treated as opaque
+# AWS region label).
+#
+# Credentials: OCI Customer Secret Key minted on a dedicated IAM user
+# with bucket-write on omni-backup-storage. Currently operator-
+# provisioned via the OCI bwire console (User > Customer Secret
+# Keys); a follow-up PR will tofu-manage the user via
+# 02-oracle-infra. Values reach this file via env-var substitution
+# in sync-cluster-template.yml.
+#
+# Validation: Omni does a list-objects probe at apply time — an
+# `omnictl apply` failure here means the access key is wrong/expired
+# or the bucket policy doesn't allow the IAM user.
+metadata:
+  namespace: default
+  type: EtcdBackupS3Configs.omni.sidero.dev
+  id: default
+spec:
+  bucket: ${OMNI_ETCD_BACKUP_S3_BUCKET}
+  region: ${OMNI_ETCD_BACKUP_S3_REGION}
+  endpoint: ${OMNI_ETCD_BACKUP_S3_ENDPOINT}
+  accesskeyid: ${OMNI_ETCD_BACKUP_S3_ACCESS_KEY_ID}
+  secretaccesskey: ${OMNI_ETCD_BACKUP_S3_SECRET_ACCESS_KEY}
+  sessiontoken: ""

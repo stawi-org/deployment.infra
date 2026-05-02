@@ -101,6 +101,12 @@ module "omni_host" {
 
   force_reinstall_generation = var.force_reinstall_generation
 
+  # Native etcd backup (Omni's builtin --etcd-backup-s3 → OCI omni-
+  # backup-storage). Just toggles the server flag here; bucket /
+  # endpoint / credentials live in the EtcdBackupS3Configs resource
+  # applied via sync-cluster-template.yml.
+  etcd_backup_enabled = var.etcd_backup_enabled
+
   # WireGuard user-VPN — see variables.tf for the workflow on adding
   # users. Server keypair is generated on first boot and persisted via
   # the omni-backup tarball, so adding/removing users via this map

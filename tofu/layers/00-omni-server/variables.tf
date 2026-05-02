@@ -120,6 +120,12 @@ variable "omni_host_ssh_enabled" {
   description = "Toggle SSH access on the omni-host. Default true (operator key honoured). Flip to false in a follow-up apply (with force_reinstall_generation bumped) once the host is verified up — see modules/omni-host/variables.tf for the workflow."
 }
 
+variable "etcd_backup_enabled" {
+  type        = bool
+  default     = false
+  description = "Render --etcd-backup-s3 on the omni-server command line. Activate together with the EtcdBackupS3Configs resource (tofu/shared/clusters/etcd-backup-s3-configs.yaml.tmpl) and the cluster-template backupConfiguration block. See modules/omni-host/variables.tf for the architecture note."
+}
+
 variable "vpn_users" {
   type = map(object({
     public_key = string
