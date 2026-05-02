@@ -98,23 +98,23 @@ jobs:
       # resource (same kind as MachineClass) — not a Cluster template
       # field, so it goes through `omnictl apply` separately.
       #
-      # Credentials come from the bwire 02-oracle-infra tfstate's
+      # Credentials come from the 02-oci-storage tfstate's
       # `omni_backup_writer_credentials` output (single Customer
       # Secret Key on the existing operator user, tofu-managed in
-      # tofu/layers/02-oracle-infra/oci-operator-csk.tf). Reading the
+      # tofu/layers/02-oci-storage/oci-operator-csk.tf). Reading the
       # tfstate JSON directly (rather than `tofu output -json`)
       # avoids needing a tofu init in this workflow — we only need
       # five string fields and the state file is plain JSON.
       #
       # Skip conditions:
       #   - DRY_RUN=true: validate-only run.
-      #   - tfstate missing: 02-oracle-infra-bwire hasn't applied
+      #   - tfstate missing: 02-oci-storage hasn't applied
       #     yet (fresh repo / forks / pre-bootstrap). Apply that
       #     layer first, then re-trigger this workflow.
       #   - omni_backup_writer_credentials output missing: the
       #     IAM resources aren't in tfstate yet (older state from
-      #     before this PR landed). Same fix — apply 02-oracle-
-      #     infra-bwire to populate.
+      #     before this PR landed). Same fix — apply 02-oci-
+      #     storage to populate.
       #
       # Rendered YAML never touches disk: envsubst pipes straight
       # into `omnictl apply -f -`, so the access-key-id / secret
@@ -129,13 +129,13 @@ jobs:
         run: |
           set -euo pipefail
           ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          STATE_KEY="production/02-oracle-infra-bwire.tfstate"
+          STATE_KEY="production/02-oci-storage.tfstate"
           if ! aws s3api head-object \
               --bucket cluster-tofu-state \
               --key "$STATE_KEY" \
               --endpoint-url "$ENDPOINT" \
               --region us-east-1 >/dev/null 2>&1; then
-            echo "::notice::02-oracle-infra-bwire tfstate not found at s3://cluster-tofu-state/$STATE_KEY — skipping EtcdBackupS3Configs apply (apply 02-oracle-infra-bwire first)."
+            echo "::notice::02-oci-storage tfstate not found at s3://cluster-tofu-state/$STATE_KEY — skipping EtcdBackupS3Configs apply (apply 02-oci-storage first)."
             exit 0
           fi
           state=$(mktemp)
@@ -147,7 +147,7 @@ jobs:
           # Output absent / null (e.g. var.account_key was a non-bwire
           # cell when this state was last applied) → skip.
           if [[ "$(jq -r '.outputs.omni_backup_writer_credentials.value // "null"' "$state")" == "null" ]]; then
-            echo "::notice::omni_backup_writer_credentials output missing from bwire tfstate — re-run 02-oracle-infra (bwire) apply to populate, then re-trigger this workflow."
+            echo "::notice::omni_backup_writer_credentials output missing from oci-storage tfstate — re-run 02-oci-storage apply to populate, then re-trigger this workflow."
             exit 0
           fi
           export OMNI_ETCD_BACKUP_S3_BUCKET=$(jq -r '.outputs.omni_backup_writer_credentials.value.bucket' "$state")
