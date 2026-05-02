@@ -35,37 +35,32 @@ locals {
   sync_machine_labels_path = "${path.module}/scripts/sync-machine-labels.sh"
 }
 
-# Apply MachineClass resources first. Cluster templates can only carry
-# Cluster / ControlPlane / Workers / ConfigPatch kinds — top-level
-# resources like MachineClass go through `omnictl apply`. Doing this
-# BEFORE the template sync guarantees the cluster's machine-set
-# references resolve.
-# Probe Omni for the machine-classes presence + content fingerprint.
-# Feeds null_resource.omnictl_machine_classes' trigger so when
-# /var/lib/omni gets wiped (and existing classes go with it), the
-# next apply re-creates them — file-SHA-only triggers can't see
-# that gap.
-data "external" "omni_machine_classes_state" {
-  program = ["bash", "-c", <<-EOT
-    if ! command -v omnictl >/dev/null 2>&1 || [[ -z "$${OMNI_SERVICE_ACCOUNT_KEY:-}" ]]; then
-      printf '%s' '{"state":"unknown"}'
-      exit 0
-    fi
-    state=$(omnictl get machineclasses -o json 2>/dev/null \
-      | jq -rs '[.[] | "\(.metadata.id)=\(.spec.matchlabels // [] | join(","))"] | sort | join(";")' 2>/dev/null \
-      || true)
-    if [[ -z "$state" ]]; then state="absent"; fi
-    printf '%s' "{\"state\":\"$state\"}"
-    exit 0
-  EOT
-  ]
+# MachineClass + cluster-template sync: always run on every apply.
+#
+# Earlier iterations gated these via file-SHA triggers + a probe
+# data source that read Omni's actual state. Both approaches were
+# subtly broken — file-SHA missed out-of-band wipes (omni-cluster-
+# delete, /var/lib/omni reinstalls), and the probe captured pre-
+# apply state at plan time, so tfstate's stored trigger value
+# matched the next apply's pre-apply probe and the resource was
+# silently skipped even when the actual state was missing.
+#
+# Switched to `triggers_replace = [timestamp()]` via a
+# terraform_data sentinel: each plan generates a fresh timestamp,
+# the sentinel is replaced, the omnictl_* resource is replaced via
+# replace_triggered_by, and the local-exec runs. The omnictl
+# operations themselves are idempotent — `apply -f` is a no-op when
+# the resource matches, `cluster template sync` walks the diff and
+# updates only what changed. So "always run" costs ~5s extra apply
+# time and zero correctness risk.
+
+resource "terraform_data" "omnictl_apply_token" {
+  input = timestamp()
 }
 
 resource "null_resource" "omnictl_machine_classes" {
-  triggers = {
-    sha          = local.machine_classes_sha
-    endpoint     = var.omni_endpoint
-    omni_classes = data.external.omni_machine_classes_state.result.state
+  lifecycle {
+    replace_triggered_by = [terraform_data.omnictl_apply_token]
   }
 
   provisioner "local-exec" {
@@ -82,53 +77,19 @@ resource "null_resource" "omnictl_machine_classes" {
   }
 }
 
-# Probe Omni for the current cluster state at plan time. Feeds the
-# null_resource trigger below so a cluster that's been deleted out
-# of band (e.g. via the omni-cluster-delete workflow, or because
-# the omni-host was reinstalled with no R2 backup) is re-created on
-# the next apply — without a trigger that watches for this, tofu
-# would see file SHA + endpoint unchanged and skip the sync, leaving
-# Omni without the cluster definition while node modules expect it.
-data "external" "omni_cluster_state" {
-  program = ["bash", "-c", <<-EOT
-    # Deliberately NO `set -e` — the data source contract is "always
-    # exit 0 with valid JSON". Any failure (omnictl missing, SA key
-    # unset, omnictl call failing, jq parse error) maps to the same
-    # "unknown" state, which means triggers see no change and the
-    # downstream null_resource doesn't re-run unnecessarily. The
-    # null_resource itself will re-validate via its own omnictl
-    # calls when it runs.
-    if ! command -v omnictl >/dev/null 2>&1; then
-      printf '%s' '{"state":"unknown"}'
-      exit 0
-    fi
-    if [[ -z "$${OMNI_SERVICE_ACCOUNT_KEY:-}" ]]; then
-      printf '%s' '{"state":"unknown"}'
-      exit 0
-    fi
-    raw=$(omnictl get cluster "${var.cluster_name}" -o json 2>/dev/null || echo '')
-    if [[ -z "$raw" ]]; then
-      printf '%s' '{"state":"absent"}'
-      exit 0
-    fi
-    state=$(jq -r 'select(.spec) | "\(.metadata.version)|\(.spec.kubernetesversion)|\(.spec.talosversion)"' <<<"$raw" 2>/dev/null | head -1)
-    if [[ -z "$state" ]]; then state="absent"; fi
-    printf '%s' "{\"state\":\"$state\"}"
-    exit 0
-  EOT
-  ]
-}
-
 # Validate + sync the cluster template. `cluster template sync` is
 # idempotent — running on every change to the file produces zero-noop
 # applies when the template is already in sync.
 resource "null_resource" "omnictl_cluster_template" {
   depends_on = [null_resource.omnictl_machine_classes]
 
+  lifecycle {
+    replace_triggered_by = [terraform_data.omnictl_apply_token]
+  }
+
   triggers = {
-    sha           = local.cluster_template_sha
-    endpoint      = var.omni_endpoint
-    cluster_state = data.external.omni_cluster_state.result.state
+    sha      = local.cluster_template_sha
+    endpoint = var.omni_endpoint
   }
 
   provisioner "local-exec" {
