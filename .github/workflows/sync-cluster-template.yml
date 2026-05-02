@@ -94,29 +94,66 @@ jobs:
           set -euo pipefail
           omnictl apply -f tofu/shared/clusters/machine-classes.yaml
 
-      # Render + apply the EtcdBackupS3Configs resource. Same global-
-      # resource pattern as MachineClass: it's not a Cluster template
-      # field, so it's applied separately via `omnictl apply`. Skipped
-      # silently when OMNI_ETCD_BACKUP_S3_ACCESS_KEY_ID isn't set (e.g.
-      # on a fork without the secret) so dry-runs and forks don't try
-      # to authenticate against a real OCI bucket.
+      # Render + apply the EtcdBackupS3Configs resource. Global Omni
+      # resource (same kind as MachineClass) — not a Cluster template
+      # field, so it goes through `omnictl apply` separately.
       #
-      # The access-key-id + secret reach this step via env (no
-      # untrusted GitHub event payload involved). envsubst inlines
-      # them into the rendered YAML, which is piped straight into
-      # `omnictl apply -f -` — the rendered file never lands on the
-      # runner's filesystem, so the secret doesn't appear in any
-      # post-step artefact.
+      # Credentials come from the bwire 02-oracle-infra tfstate's
+      # `omni_backup_writer_credentials` output (tofu-managed IAM
+      # user + Customer Secret Key live in
+      # tofu/layers/02-oracle-infra/omni-backup-iam.tf). Reading the
+      # tfstate JSON directly (rather than `tofu output -json`)
+      # avoids needing a tofu init in this workflow — we only need
+      # five string fields and the state file is plain JSON.
+      #
+      # Skip conditions:
+      #   - DRY_RUN=true: validate-only run.
+      #   - tfstate missing: 02-oracle-infra-bwire hasn't applied
+      #     yet (fresh repo / forks / pre-bootstrap). Apply that
+      #     layer first, then re-trigger this workflow.
+      #   - omni_backup_writer_credentials output missing: the
+      #     IAM resources aren't in tfstate yet (older state from
+      #     before this PR landed). Same fix — apply 02-oracle-
+      #     infra-bwire to populate.
+      #
+      # Rendered YAML never touches disk: envsubst pipes straight
+      # into `omnictl apply -f -`, so the access-key-id / secret
+      # don't appear in any post-step artefact.
       - name: Apply EtcdBackupS3Configs
-        if: env.DRY_RUN != 'true' && env.OMNI_ETCD_BACKUP_S3_ACCESS_KEY_ID != ''
+        if: env.DRY_RUN != 'true'
         env:
-          OMNI_ETCD_BACKUP_S3_BUCKET: ${{ vars.OMNI_ETCD_BACKUP_S3_BUCKET }}
-          OMNI_ETCD_BACKUP_S3_REGION: ${{ vars.OMNI_ETCD_BACKUP_S3_REGION }}
-          OMNI_ETCD_BACKUP_S3_ENDPOINT: ${{ vars.OMNI_ETCD_BACKUP_S3_ENDPOINT }}
-          OMNI_ETCD_BACKUP_S3_ACCESS_KEY_ID: ${{ secrets.OMNI_ETCD_BACKUP_S3_ACCESS_KEY_ID }}
-          OMNI_ETCD_BACKUP_S3_SECRET_ACCESS_KEY: ${{ secrets.OMNI_ETCD_BACKUP_S3_SECRET_ACCESS_KEY }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
         run: |
           set -euo pipefail
+          ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          STATE_KEY="production/02-oracle-infra-bwire.tfstate"
+          if ! aws s3api head-object \
+              --bucket cluster-tofu-state \
+              --key "$STATE_KEY" \
+              --endpoint-url "$ENDPOINT" \
+              --region us-east-1 >/dev/null 2>&1; then
+            echo "::notice::02-oracle-infra-bwire tfstate not found at s3://cluster-tofu-state/$STATE_KEY — skipping EtcdBackupS3Configs apply (apply 02-oracle-infra-bwire first)."
+            exit 0
+          fi
+          state=$(mktemp)
+          trap 'rm -f "$state"' EXIT
+          aws s3 cp "s3://cluster-tofu-state/$STATE_KEY" "$state" \
+            --endpoint-url "$ENDPOINT" \
+            --region us-east-1 >/dev/null
+          # Output absent / null (e.g. var.account_key was a non-bwire
+          # cell when this state was last applied) → skip.
+          if [[ "$(jq -r '.outputs.omni_backup_writer_credentials.value // "null"' "$state")" == "null" ]]; then
+            echo "::notice::omni_backup_writer_credentials output missing from bwire tfstate — re-run 02-oracle-infra (bwire) apply to populate, then re-trigger this workflow."
+            exit 0
+          fi
+          export OMNI_ETCD_BACKUP_S3_BUCKET=$(jq -r '.outputs.omni_backup_writer_credentials.value.bucket' "$state")
+          export OMNI_ETCD_BACKUP_S3_REGION=$(jq -r '.outputs.omni_backup_writer_credentials.value.region' "$state")
+          export OMNI_ETCD_BACKUP_S3_ENDPOINT=$(jq -r '.outputs.omni_backup_writer_credentials.value.endpoint' "$state")
+          export OMNI_ETCD_BACKUP_S3_ACCESS_KEY_ID=$(jq -r '.outputs.omni_backup_writer_credentials.value.access_key_id' "$state")
+          export OMNI_ETCD_BACKUP_S3_SECRET_ACCESS_KEY=$(jq -r '.outputs.omni_backup_writer_credentials.value.secret_access_key' "$state")
           envsubst < tofu/shared/clusters/etcd-backup-s3-configs.yaml.tmpl \
             | omnictl apply -f -
 
