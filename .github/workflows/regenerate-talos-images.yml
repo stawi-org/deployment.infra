@@ -377,10 +377,10 @@ jobs:
           # ----- Mirror to OCI cluster-image-registry (dual-write to bwire) -----
           # Source of truth for cross-tenancy image consumers (the
           # CF Worker for pkgs.stawi.org, future cross-account image-
-          # import paths). Reads CSK from bwire's 02-oracle-infra
+          # import paths). Reads CSK from 02-oci-storage
           # tfstate output `omni_backup_writer_credentials` (a single
           # CSK on the existing bwire operator user; see
-          # tofu/layers/02-oracle-infra/oci-operator-csk.tf).
+          # tofu/layers/02-oci-storage/oci-operator-csk.tf).
           #
           # Skip conditions:
           #   - bwire tfstate missing (fresh repo / pre-bootstrap)
@@ -388,16 +388,16 @@ jobs:
           #     state from before the IAM collapse landed)
           state=$(mktemp)
           trap 'rm -f "$state"' EXIT
-          state_key="production/02-oracle-infra-bwire.tfstate"
+          state_key="production/02-oci-storage.tfstate"
           if ! aws s3api head-object --bucket "${R2_BUCKET}" \
               --key "$state_key" \
               --endpoint-url "${R2_ENDPOINT}" --region us-east-1 >/dev/null 2>&1; then
-            echo "::notice::02-oracle-infra-bwire tfstate not found — skipping OCI mirror (apply that layer first)."
+            echo "::notice::02-oci-storage tfstate not found — skipping OCI mirror (apply that layer first)."
           else
             aws s3 cp "s3://${R2_BUCKET}/${state_key}" "$state" \
               --endpoint-url "${R2_ENDPOINT}" --region us-east-1 >/dev/null
             if [[ "$(jq -r '.outputs.omni_backup_writer_credentials.value // "null"' "$state")" == "null" ]]; then
-              echo "::notice::omni_backup_writer_credentials output missing — re-run 02-oracle-infra (bwire) apply to populate."
+              echo "::notice::omni_backup_writer_credentials output missing — re-run 02-oci-storage apply to populate."
             else
               # NOTE: omni_backup_writer_credentials.bucket points at
               # omni-backup-storage. We override it here with the

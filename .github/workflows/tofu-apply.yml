@@ -153,13 +153,33 @@ jobs:
       environment: production
     secrets: inherit
 
+  # bwire-only OCI storage layer (buckets + operator CSK).
+  # Runs AFTER oracle-infra so the destroy phase of the
+  # buckets/CSK from 02-oracle-infra-bwire.tfstate completes
+  # first; this job's plan then CREATEs them in the new
+  # 02-oci-storage.tfstate. talos depends on this job so
+  # cluster-template ops don't fire during the destroy/create
+  # gap.
+  oci-storage:
+    needs: oracle-infra
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    uses: ./.github/workflows/tofu-layer.yml
+    with:
+      layer: 02-oci-storage
+      mode: apply
+      environment: production
+    secrets: inherit
+
   talos:
     # talos layer runs omnictl against cpd.stawi.org for cluster-
     # template sync + machine-labels. omni-host lifecycle is owned
     # by tofu-omni-host.yml — this workflow assumes the host is
     # already up. If it isn't, the omnictl calls fail loudly here,
     # which is preferable to silently kicking off a reinstall.
-    needs: [contabo-infra, oracle-infra, onprem-infra]
+    needs: [contabo-infra, oracle-infra, onprem-infra, oci-storage]
     # Per-account isolation across all three providers: each infra layer
     # is now a fail-fast=false matrix, so `needs.X.result == 'success'`
     # would block talos unless EVERY cell succeeded. That's the wrong
