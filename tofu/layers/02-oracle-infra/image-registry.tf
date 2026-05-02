@@ -1,144 +1,110 @@
 # tofu/layers/02-oracle-infra/image-registry.tf
 #
-# Single OCI Object Storage bucket in the alimbacho67 tenancy that
-# holds the schematic-keyed Talos image staging area. Replaces the
-# previous setup where:
+# OCI Object Storage buckets that replace several of the cluster's
+# Cloudflare-R2 buckets. Three buckets across two tenancies:
 #
-#   - the central staging lived in Cloudflare R2 (bucket
-#     `cluster-image-registry`) and `pkgs.stawi.org` was a CF custom-
-#     domain wrapper around R2;
-#   - the regenerate-talos-images workflow then re-uploaded the .oci
-#     archive into a per-account `talos-images-<account>` bucket on
-#     each OCI tenancy before calling `oci compute image import
-#     from-object`.
+#   alimbacho67   cluster-image-registry   public  Talos images
+#   bwire         cluster-state-storage    private tofu state files
+#   bwire         cluster-vault-storage    private SOPS-encrypted secrets
 #
-# Why move:
-#   - Cross-tenancy reuse: a public-read OCI bucket lets every other
-#     account's `image import from-object` (or `image import from-uri`)
-#     pull from one canonical place instead of a per-account replica.
-#   - One copy → one schematic_id+sha256 fingerprint, no drift between
-#     "the bytes the workflow staged in R2" and "the bytes that
-#     actually got imported into account X's bucket".
-#   - Egress cost: OCI internal transfer is free; OCI-to-OCI fetches
-#     don't traverse R2 at all.
-#   - `pkgs.stawi.org` (operator-facing CF custom domain) flips from
-#     R2 to a CF worker that proxies to the OCI bucket — same URL
-#     shape, same cache behavior, different origin.
+# Layer 02-oracle-infra runs as a per-account MATRIX (each account
+# has its own tfstate, its own oci provider alias). Resources here
+# need to gate on `var.account_key` so each account's apply only
+# creates its own buckets — referencing oci.account["other"] from
+# inside account X's run fails with "Provider instance not present".
 #
-# Why alimbacho67 specifically: it already hosts the cluster control-
-# plane post-phase-1 reshape, so it's the "hub" account in our mental
-# model. Always-Free compartment quota (200 GB Object Storage) covers
-# the ~4 GB image inventory comfortably.
+# `oci.account[var.account_key]` is the only provider available in
+# any given run, so use it (not a hard-coded alias) and rely on the
+# `count = var.account_key == "..." ? 1 : 0` gate to keep
+# resources scoped to the right tenancy's apply.
 #
-# Public access: ObjectRead = anonymous GETs work, anonymous LISTs do
-# NOT (operators can still LIST via authenticated OCI CLI). The only
-# 'secret' inside a Talos image is the SideroLink shared join token
-# embedded in the kernel cmdline; that token is intentionally
-# rotatable from the Omni side and isn't a long-term secret. If you
-# want a defense-in-depth layer, swap to NoPublicAccess + per-import
-# Pre-Authenticated-Request URLs in a follow-up.
+# Why move off R2:
+#   - Cross-tenancy reuse + colocation: OCI image-import / OCI-resident
+#     omni-host pulls from local Object Storage instead of crossing
+#     cloud boundaries.
+#   - Single source of truth: no drift between "the bytes R2 has" and
+#     "the bytes account X imported / restored".
+#   - Free-tier headroom: Object Storage has a 200 GB Always-Free
+#     quota per tenancy. Image inventory is ~4 GB; tofu state +
+#     vault are sub-MB.
+#
+# `pkgs.stawi.org` (operator-facing CF custom domain that today wraps
+# R2) flips to a CF Worker that proxies to alimbacho67's
+# cluster-image-registry public URL — same URL shape, different
+# origin. Migration of existing R2 contents and the worker live in
+# follow-up PRs.
+
+locals {
+  # Per-account gates — exactly one of these is true in any given
+  # matrix-run. Lets the resources below stay tenancy-scoped without
+  # duplicating per-tenancy module wrappers.
+  is_alimbacho67 = var.account_key == "alimbacho67"
+  is_bwire       = var.account_key == "bwire"
+}
+
+# ---- alimbacho67: cluster-image-registry (public) ---------------
 
 data "oci_objectstorage_namespace" "alimbacho67" {
-  provider       = oci.account["alimbacho67"]
-  compartment_id = local.oci_accounts_effective["alimbacho67"].compartment_ocid
+  count    = local.is_alimbacho67 ? 1 : 0
+  provider = oci.account[var.account_key]
 }
 
 resource "oci_objectstorage_bucket" "cluster_image_registry" {
-  provider       = oci.account["alimbacho67"]
-  compartment_id = local.oci_accounts_effective["alimbacho67"].compartment_ocid
-  namespace      = data.oci_objectstorage_namespace.alimbacho67.namespace
+  count          = local.is_alimbacho67 ? 1 : 0
+  provider       = oci.account[var.account_key]
+  compartment_id = local.oci_accounts_effective[var.account_key].compartment_ocid
+  namespace      = data.oci_objectstorage_namespace.alimbacho67[0].namespace
   name           = "cluster-image-registry"
 
-  # Anonymous GETs allowed (LE/cross-account image-import doesn't need
-  # OCI credentials), anonymous LISTs denied (still need creds to
-  # enumerate). Authenticated callers retain full access.
-  access_type = "ObjectRead"
-
-  # Standard tier is enough — these are write-once-read-many image
-  # blobs, no need for the Archive tier's restore-latency tradeoff.
+  # Anonymous GETs allowed (cross-account image-import + the
+  # pkgs.stawi.org CF custom domain don't need OCI credentials),
+  # anonymous LISTs denied (still requires authenticated CLI).
+  access_type  = "ObjectRead"
   storage_tier = "Standard"
-
-  # Object-level versioning off: regen output objects already carry
-  # a sha-suffixed name (e.g. metal-amd64-omni-stawi-v1.13.0-d79740.iso),
-  # so identical bytes always overwrite their own object idempotently
-  # and content changes show up as new object names. Versioning would
-  # bloat storage with no operational gain.
-  versioning = "Disabled"
+  versioning   = "Disabled"
 }
 
 output "cluster_image_registry" {
-  description = "Public OCI Object Storage bucket holding the schematic-keyed Talos image staging area. URL form: https://objectstorage.<region>.oraclecloud.com/n/<namespace>/b/<bucket>/o/<object>."
-  value = {
-    namespace = data.oci_objectstorage_namespace.alimbacho67.namespace
-    bucket    = oci_objectstorage_bucket.cluster_image_registry.name
-    region    = local.oci_accounts_effective["alimbacho67"].region
+  description = "Public OCI Object Storage bucket holding the schematic-keyed Talos image staging area (alimbacho67 only)."
+  value = local.is_alimbacho67 ? {
+    namespace = data.oci_objectstorage_namespace.alimbacho67[0].namespace
+    bucket    = oci_objectstorage_bucket.cluster_image_registry[0].name
+    region    = local.oci_accounts_effective[var.account_key].region
     public_url_prefix = format(
       "https://objectstorage.%s.oraclecloud.com/n/%s/b/%s/o",
-      local.oci_accounts_effective["alimbacho67"].region,
-      data.oci_objectstorage_namespace.alimbacho67.namespace,
-      oci_objectstorage_bucket.cluster_image_registry.name,
+      local.oci_accounts_effective[var.account_key].region,
+      data.oci_objectstorage_namespace.alimbacho67[0].namespace,
+      oci_objectstorage_bucket.cluster_image_registry[0].name,
     )
-  }
+  } : null
 }
 
-# ---- bwire: cluster-state-storage (private) ----------------------
-#
-# OCI Object Storage bucket in the bwire tenancy holding the cluster's
-# tofu state files. Replaces the Cloudflare-R2 `cluster-tofu-state`
-# bucket. After this lands, layer backend.tf files migrate from
-#
-#   bucket    = "cluster-tofu-state"
-#   endpoints = { s3 = "https://<acc>.r2.cloudflarestorage.com" }
-#
-# to OCI's S3-compatible endpoint:
-#
-#   bucket    = "cluster-state-storage"
-#   endpoints = { s3 = "https://<namespace>.compat.objectstorage.<region>.oraclecloud.com" }
-#
-# bwire was chosen because it's the Phase-2 omni-host tenancy — state
-# storage lives next to its primary consumer (the omni-host's
-# tofu-apply pipeline + the omni-restore service that reads state
-# during reinstall). NoPublicAccess: tofu state contains sensitive
-# values (secrets in attribute outputs, etc.); access only via
-# OCI-authenticated S3-compat clients with a Customer Secret Key
-# minted per CI principal.
+# ---- bwire: cluster-state-storage + cluster-vault-storage --------
 
 data "oci_objectstorage_namespace" "bwire" {
-  provider       = oci.account["bwire"]
-  compartment_id = local.oci_accounts_effective["bwire"].compartment_ocid
+  count    = local.is_bwire ? 1 : 0
+  provider = oci.account[var.account_key]
 }
 
 resource "oci_objectstorage_bucket" "cluster_state_storage" {
-  provider       = oci.account["bwire"]
-  compartment_id = local.oci_accounts_effective["bwire"].compartment_ocid
-  namespace      = data.oci_objectstorage_namespace.bwire.namespace
+  count          = local.is_bwire ? 1 : 0
+  provider       = oci.account[var.account_key]
+  compartment_id = local.oci_accounts_effective[var.account_key].compartment_ocid
+  namespace      = data.oci_objectstorage_namespace.bwire[0].namespace
   name           = "cluster-state-storage"
 
   access_type  = "NoPublicAccess"
   storage_tier = "Standard"
-
-  # State versioning is essential — tofu's S3 backend leans on it for
-  # rollback after a botched apply, and OCI's S3-compat exposes the
-  # same object-version semantics. R2 had this enabled; preserve.
+  # Tofu's S3 backend leans on object versioning for rollback after
+  # a botched apply, and OCI's S3-compat exposes the same semantics.
   versioning = "Enabled"
 }
 
-# ---- bwire: cluster-vault-storage (private) ----------------------
-#
-# OCI Object Storage bucket in the bwire tenancy for SOPS-encrypted
-# secrets. Replaces the Cloudflare-R2 `vault-storage` bucket — note
-# the rename (vault-storage → cluster-vault-storage) for consistency
-# with the cluster-* prefix used by the other migrated buckets.
-#
-# NoPublicAccess: contents are encrypted with the operator's age key,
-# but the bucket is also private at the storage layer — defense in
-# depth. SOPS clients hit the OCI S3-compat endpoint authenticated
-# with the same Customer Secret Key used for state.
-
 resource "oci_objectstorage_bucket" "cluster_vault_storage" {
-  provider       = oci.account["bwire"]
-  compartment_id = local.oci_accounts_effective["bwire"].compartment_ocid
-  namespace      = data.oci_objectstorage_namespace.bwire.namespace
+  count          = local.is_bwire ? 1 : 0
+  provider       = oci.account[var.account_key]
+  compartment_id = local.oci_accounts_effective[var.account_key].compartment_ocid
+  namespace      = data.oci_objectstorage_namespace.bwire[0].namespace
   name           = "cluster-vault-storage"
 
   access_type  = "NoPublicAccess"
@@ -147,29 +113,29 @@ resource "oci_objectstorage_bucket" "cluster_vault_storage" {
 }
 
 output "cluster_state_storage" {
-  description = "Private OCI Object Storage bucket holding tofu state files. Use the S3-compat endpoint with a Customer Secret Key for read/write."
-  value = {
-    namespace = data.oci_objectstorage_namespace.bwire.namespace
-    bucket    = oci_objectstorage_bucket.cluster_state_storage.name
-    region    = local.oci_accounts_effective["bwire"].region
+  description = "Private OCI Object Storage bucket holding tofu state files (bwire only). Use the S3-compat endpoint with a Customer Secret Key."
+  value = local.is_bwire ? {
+    namespace = data.oci_objectstorage_namespace.bwire[0].namespace
+    bucket    = oci_objectstorage_bucket.cluster_state_storage[0].name
+    region    = local.oci_accounts_effective[var.account_key].region
     s3_endpoint = format(
       "https://%s.compat.objectstorage.%s.oraclecloud.com",
-      data.oci_objectstorage_namespace.bwire.namespace,
-      local.oci_accounts_effective["bwire"].region,
+      data.oci_objectstorage_namespace.bwire[0].namespace,
+      local.oci_accounts_effective[var.account_key].region,
     )
-  }
+  } : null
 }
 
 output "cluster_vault_storage" {
-  description = "Private OCI Object Storage bucket holding SOPS-encrypted secrets. Use the S3-compat endpoint."
-  value = {
-    namespace = data.oci_objectstorage_namespace.bwire.namespace
-    bucket    = oci_objectstorage_bucket.cluster_vault_storage.name
-    region    = local.oci_accounts_effective["bwire"].region
+  description = "Private OCI Object Storage bucket holding SOPS-encrypted secrets (bwire only). Use the S3-compat endpoint."
+  value = local.is_bwire ? {
+    namespace = data.oci_objectstorage_namespace.bwire[0].namespace
+    bucket    = oci_objectstorage_bucket.cluster_vault_storage[0].name
+    region    = local.oci_accounts_effective[var.account_key].region
     s3_endpoint = format(
       "https://%s.compat.objectstorage.%s.oraclecloud.com",
-      data.oci_objectstorage_namespace.bwire.namespace,
-      local.oci_accounts_effective["bwire"].region,
+      data.oci_objectstorage_namespace.bwire[0].namespace,
+      local.oci_accounts_effective[var.account_key].region,
     )
-  }
+  } : null
 }
