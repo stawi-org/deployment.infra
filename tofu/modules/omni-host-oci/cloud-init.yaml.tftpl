@@ -1,0 +1,801 @@
+#cloud-config
+hostname: ${name}
+fqdn: ${name}
+
+users:
+  - name: root
+    lock_passwd: true
+
+ssh_pwauth: false
+disable_root: true
+
+apt:
+  sources:
+    docker:
+      source: "deb [arch=arm64 signed-by=$KEY_FILE] https://download.docker.com/linux/ubuntu noble stable"
+      keyid: 9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+
+package_update: true
+package_upgrade: true
+packages:
+  - curl
+  - jq
+  - fail2ban
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-compose-plugin
+  - gnupg
+  - unattended-upgrades
+  - unzip
+  - nftables
+  - certbot
+  - python3-certbot-dns-cloudflare
+  - wireguard
+  - wireguard-tools
+
+write_files:
+  # IPv6 forwarding on the omni-host. SideroLink is hub-and-spoke:
+  # every cluster node connects via WireGuard to this host, no
+  # direct node-to-node tunnel. The cluster's etcd-via-siderolink
+  # ConfigPatch (in tofu/shared/clusters/main.yaml) advertises
+  # etcd peer URLs on the SideroLink ULA `fdae:41e4:649b:9303::/64`,
+  # so cross-provider CPs (Contabo/OCI) reach each other via:
+  #   CP-A → omni-host → CP-B
+  # That hop only forwards if `net.ipv6.conf.all.forwarding=1`.
+  # Linux defaults it to 0; without this file the kernel silently
+  # drops every cross-CP etcd peer packet and the cluster gets
+  # stuck in `bootstrapping` indefinitely with `etcd members:
+  # context deadline exceeded` in Omni's logs. Lesson learnt the
+  # hard way 2026-05-01 — verified by sysctl-checking the host
+  # while the cluster wouldn't bootstrap; flipping the bit unblocks
+  # quorum within seconds.
+  #
+  # systemd-sysctl.service applies /etc/sysctl.d/*.conf on every
+  # boot, so this file is sufficient for fresh installs. For
+  # already-running hosts the file alone won't take effect — the
+  # tofu null_resource further down (`null_resource.host_sysctl`)
+  # SSHes in to apply on every content change.
+  - path: /etc/sysctl.d/99-omni-siderolink-forwarding.conf
+    permissions: "0644"
+    owner: root:root
+    content: |
+      # Required for SideroLink hub-and-spoke etcd peering.
+      # See cloud-init.yaml.tftpl for the rationale.
+      net.ipv6.conf.all.forwarding = 1
+
+  - path: /etc/omni/docker-compose.yaml
+    permissions: "0640"
+    owner: root:root
+    content: |
+      ${indent(6, docker_compose_yaml)}
+
+  # Cloudflare API token for certbot's DNS-01 challenge. Reuses the
+  # existing CLOUDFLARE_API_TOKEN GitHub secret (already feeds DNS
+  # record management); needs Zone:DNS:Edit on the stawi.org zone.
+  # omni-cert-bootstrap.service consumes this on first boot to issue
+  # a real Let's Encrypt cert for cp.<zone> + cpd.<zone>. Talos
+  # clients validate the LE chain against their default trust store;
+  # the CF Origin Cert path (privately signed, untrusted by Talos) is
+  # gone.
+  - path: /etc/letsencrypt/cloudflare.ini
+    permissions: "0600"
+    owner: root:root
+    content: |
+      dns_cloudflare_api_token = ${cf_dns_api_token}
+
+  - path: /etc/dex/config.yaml
+    permissions: "0644"
+    owner: root:root
+    content: |
+      issuer: https://${siderolink_api_advertised_host}/dex
+      storage: { type: sqlite3, config: { file: /var/lib/dex/dex.db } }
+      web: { http: 0.0.0.0:5556 }
+      connectors:
+        - type: github
+          id: github
+          name: GitHub
+          config:
+            clientID: ${github_oidc_client_id}
+            clientSecret: ${github_oidc_client_secret}
+            redirectURI: https://${siderolink_api_advertised_host}/dex/callback
+            orgs:
+%{ for org in github_oidc_allowed_orgs ~}
+              - name: ${org}
+%{ endfor ~}
+      oauth2: { skipApprovalScreen: true }
+      staticClients:
+        - id: omni
+          secret: ${dex_omni_client_secret}
+          # Omni's UI sends the OIDC code-exchange redirect to
+          # /oidc/consume (Omni v1.7+). Earlier docs and the original
+          # cloud-init had /oauth/callback, which Dex rejected with
+          # "Unregistered redirect_uri" once the user actually got far
+          # enough to attempt sign-in.
+          redirectURIs: [https://${siderolink_api_advertised_host}/oidc/consume]
+          name: Omni
+
+  # nginx terminates TLS only for cp.<zone> (browser dashboard via
+  # Cloudflare orange cloud). For cpd.<zone>:8090 (Talos machine-api)
+  # and cpd.<zone>:8100 (k8s-proxy) nginx is a pure TCP passthrough
+  # via the stream module — Omni serves its TLS directly to Talos
+  # clients on those paths, using the same multi-SAN CF Origin Cert.
+  # All Omni listeners bind 127.0.0.1; nginx is the only public-facing
+  # listener on every port.
+  #
+  # NOTE on the cp upstream protocol: Omni's UI listener at
+  # 127.0.0.1:18080 is HTTPS because --cert/--key TLS-enables it (those
+  # flags are also the ones that enable k8s-proxy TLS, which we need
+  # for the passthrough below — we cannot drop them just for the UI).
+  # nginx therefore reverse-proxies the UI with proxy_pass https:// +
+  # proxy_ssl_verify off. Loopback isn't an attack surface, and there
+  # is exactly one PUBLIC TLS endpoint per port (which is what the
+  # "no double termination" rule was actually about).
+  - path: /etc/omni/nginx.conf
+    permissions: "0644"
+    content: |
+      worker_processes auto;
+      pid /run/nginx.pid;
+      events { worker_connections 4096; }
+
+      # ---- TCP passthrough for Talos-facing endpoints --------------
+      # Forward the TCP stream byte-for-byte to Omni's loopback
+      # listeners. Omni serves the CF Origin Cert directly to Talos
+      # clients; nginx never decrypts. ssl_preread is OFF because we
+      # don't need SNI-based routing (one upstream per port).
+      stream {
+        # Omni binds 127.0.0.1:18090 / 127.0.0.1:18100 — see the
+        # docker-compose template for the +10000 port-offset rationale.
+        server {
+          listen 0.0.0.0:8090;
+          listen [::]:8090;
+          proxy_pass 127.0.0.1:18090;
+          proxy_timeout 1h;
+          proxy_connect_timeout 60s;
+        }
+
+        server {
+          listen 0.0.0.0:8100;
+          listen [::]:8100;
+          proxy_pass 127.0.0.1:18100;
+          proxy_timeout 1h;
+          proxy_connect_timeout 60s;
+        }
+      }
+
+      # ---- HTTP termination for cp.<zone> dashboard ----------------
+      http {
+        proxy_redirect off;
+        proxy_http_version 1.1;
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 1h;
+        proxy_read_timeout 1h;
+
+        map $http_upgrade $connection_upgrade {
+          default upgrade;
+          ''      close;
+        }
+
+        # Omni's gRPC-Web from the browser arrives on :443 + same path
+        # as plain HTTP — only Content-Type distinguishes them.
+        # Native gRPC clients (omnictl, anything using grpc-go) send
+        # `application/grpc+proto` (sometimes `application/grpc;
+        # charset=utf-8`); the browser's gRPC-Web sends
+        # `application/grpc-web+proto`. Match all three native-gRPC
+        # forms (`application/grpc`, `…+proto`, `…;…`) but NOT
+        # `application/grpc-web…` — the latter must keep going through
+        # @http (proxy_pass) so nginx unwraps the gRPC-Web framing
+        # properly.
+        map $http_content_type $is_grpc {
+          default                                  0;
+          "~^application/grpc(\+|;|$)"             1;
+        }
+
+        server {
+          listen 0.0.0.0:443 ssl;
+          listen [::]:443 ssl;
+          http2 on;
+          # Both names share the same routing. ${siderolink_api_advertised_host}
+          # (cp.<zone>) is orange-cloud — browser dashboard via CF.
+          # ${siderolink_wireguard_advertised_host} (cpd.<zone>) is gray-cloud
+          # direct — used by omnictl (whose native gRPC clients break under
+          # CF's free-plan HTTP/2-to-HTTP/1.1 origin downgrade) and by Talos
+          # machine-api on :8090. The CF Origin cert's SAN already covers
+          # both names, so a single ssl_certificate works for both.
+          server_name ${siderolink_api_advertised_host} ${siderolink_wireguard_advertised_host};
+          ssl_certificate     /etc/omni/certs/server.crt;
+          ssl_certificate_key /etc/omni/certs/server.key;
+          ssl_protocols       TLSv1.2 TLSv1.3;
+
+          # Dex (OIDC bridge to GitHub). Omni's auth flow redirects
+          # browsers here for sign-in; Dex returns to Omni at
+          # /oauth/callback (handled by the main location below).
+          location /dex/ {
+            proxy_pass http://127.0.0.1:5556;
+            proxy_set_header Host              $host;
+            proxy_set_header X-Real-IP         $remote_addr;
+            proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+          }
+
+          location / {
+            error_page 418 = @grpc;
+            error_page 419 = @http;
+            if ($is_grpc) { return 418; }
+            return 419;
+          }
+
+          location @grpc {
+            grpc_read_timeout 1h;
+            grpc_send_timeout 1h;
+            grpc_pass grpcs://127.0.0.1:18080;
+            grpc_ssl_verify off;
+          }
+
+          location @http {
+            proxy_pass https://127.0.0.1:18080;
+            proxy_ssl_verify off;
+            proxy_set_header Upgrade           $http_upgrade;
+            proxy_set_header Connection        $connection_upgrade;
+            proxy_set_header Host              $host;
+            proxy_set_header X-Real-IP         $remote_addr;
+            proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+          }
+        }
+      }
+
+  # Issue / renew Let's Encrypt cert via Cloudflare DNS-01 challenge
+  # before the stack starts. Talos clients dialing cpd.<zone>:8090 for
+  # SideroLink registration validate the chain against the public
+  # Mozilla CA bundle, so a CF Origin Cert won't work — only a public
+  # CA cert (LE) is trusted. DNS-01 keeps port 80 closed.
+  #
+  # Idempotent: if /etc/letsencrypt/live/cpd.<zone>/fullchain.pem
+  # already exists, certbot's --keep-until-expiring flag plus the
+  # systemd If= guard keeps the unit a no-op until ~30 days before
+  # expiry. Renewals: certbot.timer (shipped with the package) runs
+  # twice daily and reloads nginx on success.
+  - path: /usr/local/bin/omni-cert-bootstrap.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      install -d -m 0755 /etc/omni/certs
+      domains=(${siderolink_api_advertised_host} ${siderolink_wireguard_advertised_host})
+      primary=$${domains[0]}
+      live="/etc/letsencrypt/live/$${primary}/fullchain.pem"
+      if [ ! -f "$${live}" ]; then
+        certbot_args=()
+        for d in "$${domains[@]}"; do certbot_args+=(-d "$d"); done
+        certbot certonly \
+          --non-interactive --agree-tos \
+          --email ${eula_email} \
+          --dns-cloudflare \
+          --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
+          --dns-cloudflare-propagation-seconds 30 \
+          "$${certbot_args[@]}"
+      fi
+      install -m 0644 -o root -g root \
+        "/etc/letsencrypt/live/$${primary}/fullchain.pem" \
+        /etc/omni/certs/server.crt
+      install -m 0600 -o root -g root \
+        "/etc/letsencrypt/live/$${primary}/privkey.pem" \
+        /etc/omni/certs/server.key
+
+  - path: /etc/systemd/system/omni-cert-bootstrap.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Issue/renew LE cert for cp + cpd, copy into /etc/omni/certs
+      After=network-online.target
+      Wants=network-online.target
+      Before=omni-stack.service
+      [Service]
+      Type=oneshot
+      RemainAfterExit=true
+      ExecStart=/usr/local/bin/omni-cert-bootstrap.sh
+      [Install]
+      WantedBy=multi-user.target
+
+  # Renewal hook — certbot.timer triggers cert renewal twice daily;
+  # this deploy hook copies fresh cert into /etc/omni/certs and
+  # reloads nginx so it picks up the new cert without a full restart.
+  - path: /etc/letsencrypt/renewal-hooks/deploy/omni-reload.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      install -m 0644 -o root -g root \
+        "$RENEWED_LINEAGE/fullchain.pem" /etc/omni/certs/server.crt
+      install -m 0600 -o root -g root \
+        "$RENEWED_LINEAGE/privkey.pem"   /etc/omni/certs/server.key
+      docker compose -f /etc/omni/docker-compose.yaml exec -T nginx \
+        nginx -s reload || true
+
+  - path: /etc/systemd/system/omni-stack.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Omni stack (omni + dex + nginx)
+      Requires=docker.service omni-keys.service omni-cert-bootstrap.service
+      After=docker.service network-online.target omni-keys.service omni-restore.service omni-cert-bootstrap.service
+      [Service]
+      Type=oneshot
+      RemainAfterExit=true
+      ExecStart=/usr/bin/docker compose -f /etc/omni/docker-compose.yaml up -d --remove-orphans
+      ExecStop=/usr/bin/docker compose -f /etc/omni/docker-compose.yaml down
+      [Install]
+      WantedBy=multi-user.target
+
+  # End-to-end smoke: probe nginx on :443 (which reverse-proxies to
+  # Omni's UI) and Omni's machine-api on :8090 to confirm the stack
+  # is actually serving. Without this, a future reinstall could leave
+  # the disk with all containers Up-but-flapping while cloud-init
+  # reports success. This unit fails LOUDLY if either listener is
+  # unreachable after ~10 minutes — the operator sees it via
+  # `systemctl status omni-stack-ready.service`.
+  - path: /etc/systemd/system/omni-stack-ready.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Verify Omni + nginx + Dex stack is serving
+      Requires=omni-stack.service
+      After=omni-stack.service
+      [Service]
+      Type=oneshot
+      RemainAfterExit=true
+      ExecStart=/usr/local/bin/omni-stack-ready.sh
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /usr/local/bin/omni-stack-ready.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      # Polls nginx (browser path) + Omni machine-api until both
+      # respond with a non-error status, or fails after ~10 minutes.
+      # %%{...} is the templatefile() escape — emits literal %%{...}
+      # for curl -w. Without escaping, tofu parses %%{http_code} as a
+      # template control directive and rendering fails at plan time.
+      set -euo pipefail
+
+      probe_browser() {
+        local code
+        code=$(curl -sS -k -o /dev/null -w '%%{http_code}' --max-time 5 \
+          --resolve ${siderolink_api_advertised_host}:443:127.0.0.1 \
+          https://${siderolink_api_advertised_host}/ 2>/dev/null || true)
+        [[ "$code" =~ ^[234][0-9][0-9]$ ]]
+      }
+
+      probe_machine_api() {
+        # Hit nginx's stream listener (public face) which forwards to
+        # Omni's loopback bind on 127.0.0.1:18090. We probe the public
+        # listener so a nginx misconfig fails the smoke check too.
+        local code
+        code=$(curl -sS -k -o /dev/null -w '%%{http_code}' --max-time 5 \
+          https://127.0.0.1:8090/ 2>/dev/null || true)
+        [[ "$code" =~ ^[234][0-9][0-9]$ ]]
+      }
+
+      for i in $(seq 1 60); do
+        if probe_browser && probe_machine_api; then
+          echo "[omni-stack-ready] stack serving on :443 + :8090"
+          exit 0
+        fi
+        sleep 10
+      done
+      echo "[omni-stack-ready] ERROR: stack not serving after 10 minutes" >&2
+      exit 1
+
+  # One-shot key generation. Omni uses asymmetric encryption for the
+  # master-key slot (--public-key-files for encryption, --private-key-source
+  # for decryption). Generate once and persist under /var/lib/omni so
+  # state survives container restarts. Never re-generated — losing this
+  # key = losing access to every cluster Omni has ever provisioned.
+  # Runs AFTER omni-restore.service, so a restored backup's keys take
+  # precedence and we never overwrite real state.
+  - path: /etc/systemd/system/omni-keys.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Generate Omni master keypair on first boot
+      ConditionPathExists=!/var/lib/omni/keys/omni.asc
+      After=omni-restore.service
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/omni-keygen.sh
+      RemainAfterExit=true
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /usr/local/bin/omni-keygen.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      install -d -m 0700 /var/lib/omni/keys
+      tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+      cat > "$tmp/batch" <<'EOF'
+      %no-protection
+      Key-Type: RSA
+      Key-Length: 4096
+      Name-Real: Omni Master
+      Name-Email: omni@${siderolink_api_advertised_host}
+      Expire-Date: 0
+      EOF
+      GNUPGHOME="$tmp" gpg --batch --gen-key "$tmp/batch"
+      GNUPGHOME="$tmp" gpg --armor --export-secret-keys > /var/lib/omni/keys/omni.asc
+      GNUPGHOME="$tmp" gpg --armor --export             > /var/lib/omni/keys/omni.pub.asc
+      chmod 0600 /var/lib/omni/keys/omni.asc /var/lib/omni/keys/omni.pub.asc
+
+  # R2 credentials for the omni-backup / omni-restore pair. Reuses the
+  # existing tofu-state R2 bucket; a separate key would be tidier but
+  # this matches how the cluster's etcd-backup CronJob authenticates.
+  - path: /etc/omni/r2.env
+    permissions: "0600"
+    owner: root:root
+    content: |
+      AWS_ACCESS_KEY_ID=${r2_access_key_id}
+      AWS_SECRET_ACCESS_KEY=${r2_secret_access_key}
+      AWS_DEFAULT_REGION=auto
+      R2_ENDPOINT=https://${r2_account_id}.r2.cloudflarestorage.com
+      R2_BUCKET=${r2_bucket_name}
+      R2_PREFIX=${r2_backup_prefix}
+
+  # Backup script — taken hourly by omni-backup.timer. Stops Omni
+  # first so embedded etcd + sqlite snapshots are consistent (a ~30s
+  # outage per hour is the cost of a small RPO). Uploads tar.gz to
+  # R2, then prunes all but the most recent 48 snapshots — that's
+  # ~48 hours of rolling history, covering "registered an SA key,
+  # then VPS reinstalled before the next snapshot" which is the
+  # exact gap that bit us on 2026-04-30.
+  - path: /usr/local/bin/omni-backup.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      # Trap is the load-bearing line: if anything between `systemctl stop`
+      # and the explicit start fails (disk full during tar, R2 transient
+      # error during ls, etc.), the EXIT trap still brings omni-stack
+      # back up. Without it, a one-off backup glitch would silently leave
+      # Omni offline until the operator notices.
+      set -euo pipefail
+      trap 'systemctl is-active --quiet omni-stack.service || systemctl start omni-stack.service' EXIT
+      set -a; source /etc/omni/r2.env; set +a
+      ts=$(date -u +%Y%m%dT%H%M%SZ)
+      tmp=$(mktemp -d); trap 'rm -rf "$tmp"; systemctl is-active --quiet omni-stack.service || systemctl start omni-stack.service' EXIT
+      echo "[omni-backup] stopping omni-stack for consistent snapshot"
+      systemctl stop omni-stack.service
+      # Stage a snapshot rooted at /, capturing /var/lib/omni AND the
+      # WireGuard server keys/config AND the Let's Encrypt cert state.
+      # Untar restores all three in their canonical locations so:
+      #   - the user-VPN server pubkey survives reinstalls (clients
+      #     don't need to re-key);
+      #   - the LE cert survives reinstalls — omni-cert-bootstrap.sh's
+      #     `if [ ! -f "$live" ]` guard skips certbot when the cert
+      #     directory exists, sidestepping LE's per-identifier-set
+      #     5-certs-per-168h rate limit that we otherwise hit any
+      #     time multiple reinstalls happen in a week (lesson learnt
+      #     2026-05-02 the hard way).
+      # /etc/wireguard + /etc/letsencrypt are both optional — only
+      # present after first cloud-init has run. omni-restore handles
+      # missing dirs gracefully.
+      stage="$tmp/snapshot"
+      mkdir -p "$stage/var/lib" "$stage/etc"
+      cp -a /var/lib/omni "$stage/var/lib/"
+      [[ -d /etc/wireguard ]] && cp -a /etc/wireguard "$stage/etc/" || true
+      [[ -d /etc/letsencrypt ]] && cp -a /etc/letsencrypt "$stage/etc/" || true
+      tar -czf "$tmp/omni-$ts.tar.gz" -C "$stage" .
+      echo "[omni-backup] restarting omni-stack"
+      systemctl start omni-stack.service
+      echo "[omni-backup] uploading omni-$ts.tar.gz to s3://$R2_BUCKET/$R2_PREFIX/"
+      aws s3 cp "$tmp/omni-$ts.tar.gz" \
+        "s3://$R2_BUCKET/$R2_PREFIX/omni-$ts.tar.gz" \
+        --endpoint-url "$R2_ENDPOINT"
+      echo "[omni-backup] pruning all but the latest 48"
+      aws s3 ls "s3://$R2_BUCKET/$R2_PREFIX/" --endpoint-url "$R2_ENDPOINT" \
+        | awk '{print $4}' | grep -E '^omni-.*\.tar\.gz$' | sort \
+        | head -n -48 \
+        | while read -r old; do
+            [ -n "$old" ] && aws s3 rm "s3://$R2_BUCKET/$R2_PREFIX/$old" \
+              --endpoint-url "$R2_ENDPOINT"
+          done
+      echo "[omni-backup] done"
+
+  - path: /etc/systemd/system/omni-backup.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Snapshot /var/lib/omni and upload to R2
+      Requires=docker.service
+      After=omni-stack.service
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/omni-backup.sh
+
+  - path: /etc/systemd/system/omni-backup.timer
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Hourly Omni backup to R2
+      [Timer]
+      # Top of every hour. RandomizedDelaySec staggers the snapshot
+      # within a 5-minute window so back-to-back hourly pings don't
+      # all start exactly on :00 (smooths R2 PUT bursts and avoids a
+      # cluster-wide reconcile coinciding with the omni-stack outage).
+      OnCalendar=hourly
+      RandomizedDelaySec=5m
+      Persistent=true
+      [Install]
+      WantedBy=timers.target
+
+  # Restore-on-empty: runs once before omni-keys + omni-stack on every
+  # boot. If /var/lib/omni already has a valid master key we skip;
+  # otherwise we look for the most recent backup in R2 and inflate it
+  # in place. This is what makes a Contabo reinstall (or a fresh VPS)
+  # come back with the same Omni state — losing /var/lib/omni would
+  # otherwise mean losing every cluster ever provisioned.
+  - path: /usr/local/bin/omni-restore.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      if [ -f /var/lib/omni/keys/omni.asc ]; then
+        echo "[omni-restore] /var/lib/omni already populated — skipping"
+        exit 0
+      fi
+      if ! command -v aws >/dev/null; then
+        echo "[omni-restore] ERROR: aws CLI not in PATH (install runcmd should have placed it)" >&2
+        exit 1
+      fi
+      set -a; source /etc/omni/r2.env; set +a
+      # Separate the ls call so we can distinguish "no backup yet"
+      # (legitimate first-boot) from a real failure (auth, network, missing
+      # bucket). A silent failure here would skip restore and let omni-keys
+      # generate a brand-new master key, which the operator wouldn't notice
+      # until they hit a state-mismatch error days later.
+      list=$(aws s3 ls "s3://$R2_BUCKET/$R2_PREFIX/" --endpoint-url "$R2_ENDPOINT") || {
+        echo "[omni-restore] ERROR: aws s3 ls failed — cannot tell if a backup exists, refusing to proceed" >&2
+        exit 1
+      }
+      latest=$(echo "$list" | awk '{print $4}' | grep -E '^omni-.*\.tar\.gz$' | sort | tail -1)
+      if [ -z "$latest" ]; then
+        echo "[omni-restore] no backup in s3://$R2_BUCKET/$R2_PREFIX/ — first-boot path, omni-keys will generate fresh keys"
+        exit 0
+      fi
+      echo "[omni-restore] restoring $latest"
+      tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+      aws s3 cp "s3://$R2_BUCKET/$R2_PREFIX/$latest" "$tmp/$latest" \
+        --endpoint-url "$R2_ENDPOINT"
+      # Backups since 2026-05-01 stage a snapshot rooted at / (so the
+      # tarball contains var/lib/omni AND etc/wireguard AND
+      # etc/letsencrypt); unpacking at / restores all three. Older
+      # backups only contain `omni/` at the root — for those, fall
+      # back to the legacy /var/lib extraction.
+      #
+      # Reading the full listing into a variable (no pipe) is the
+      # load-bearing detail. The previous form `tar -tzf ... | head
+      # -n1` causes tar to SIGPIPE when head closes the pipe after
+      # one line; under `set -o pipefail` the pipeline exits 141 and
+      # `set -e` aborts the script before the detection-if even runs.
+      # Capturing into a variable doesn't help — the assignment's
+      # exit code IS the pipeline's, so the same trap fires.
+      # Verified 2026-05-02: omni-restore.service exited 141 here on
+      # every reinstall, leaving /var/lib/omni empty and forcing
+      # omni-keys to regenerate a fresh master key on every boot.
+      listing=$(tar -tzf "$tmp/$latest" 2>/dev/null)
+      first="$${listing%%$'\n'*}"
+      if [[ "$first" =~ ^(\./|var/|etc/) ]]; then
+        tar -xzf "$tmp/$latest" -C /
+        echo "[omni-restore] restored $latest into / (multi-rooted snapshot, first=$first)"
+      else
+        tar -xzf "$tmp/$latest" -C /var/lib
+        echo "[omni-restore] restored $latest into /var/lib (legacy snapshot, first=$first)"
+      fi
+
+  - path: /etc/systemd/system/omni-restore.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Restore /var/lib/omni from latest R2 backup if empty
+      Before=omni-keys.service omni-stack.service
+      After=network-online.target
+      Wants=network-online.target
+      [Service]
+      Type=oneshot
+      RemainAfterExit=true
+      ExecStart=/usr/local/bin/omni-restore.sh
+      [Install]
+      WantedBy=multi-user.target
+
+  # ---- WireGuard user-VPN -------------------------------------------
+  # A second WireGuard interface (`wg-users`, port 51820/udp) lets
+  # operators tunnel admin traffic + general internet egress through
+  # the omni-host. Distinct from the SideroLink interface that Omni
+  # itself manages on UDP 50180 — different port, different keys,
+  # different /etc/wireguard config name. The host already has IPv6
+  # forwarding enabled (see /etc/sysctl.d/99-omni-siderolink-
+  # forwarding.conf) which doubles as the prerequisite for full-
+  # tunnel egress over the user VPN.
+  #
+  # Subnet: 10.100.0.0/24 (server is .1, peers are auto-assigned by
+  # tofu starting at .2). Full-tunnel: clients should set AllowedIPs
+  # = 0.0.0.0/0, ::/0 in their config; NAT masquerade for internet
+  # egress is handled via PostUp/PostDown in wg-users.conf.template.
+  #
+  # Add a user safely:
+  #   1. User generates a keypair LOCALLY:
+  #        wg genkey | tee user.priv | wg pubkey > user.pub
+  #      (private key never leaves the user's device)
+  #   2. User shares ONLY the public key over a secure channel.
+  #   3. Operator adds a record to var.vpn_users in
+  #      tofu/layers/00-omni-server/terraform.tfvars and applies
+  #      (OCI provider recreates the VM on user_data change).
+  #   4. Operator gives user the server pubkey
+  #      (`cat /etc/wireguard/wg-users.pubkey` on omni-host) and the
+  #      assigned VPN IP. User assembles their .conf with their own
+  #      private key + the operator-supplied bits.
+  #
+  # Server keypair: generated on first boot if /etc/wireguard/
+  # wg-users.privkey doesn't exist; included in the omni-backup tar
+  # so an OCI VM recreation doesn't rotate the server pubkey out from
+  # under existing users.
+  - path: /etc/wireguard/wg-users.conf.template
+    permissions: "0640"
+    owner: root:root
+    content: |
+      [Interface]
+      # Server private key is substituted in by wg-users-init.service
+      # at boot, after omni-restore.service has had a chance to
+      # rehydrate /etc/wireguard from the latest R2 snapshot.
+      PrivateKey = __SERVER_PRIVATE_KEY__
+      Address = 10.100.0.1/24
+      ListenPort = 51820
+      # NAT masquerade for full-tunnel VPN clients. OCI security list
+      # is the firewall; no static nftables ruleset is installed, so
+      # PostUp/PostDown handle the masquerade rule inline.
+      PostUp   = nft add table inet nat; nft add chain inet nat postrouting { type nat hook postrouting priority srcnat; }; nft add rule inet nat postrouting ip saddr 10.100.0.0/24 oifname != "wg-users" masquerade
+      PostDown = nft delete table inet nat
+
+%{ for name, peer in vpn_users ~}
+      # ${name}
+      [Peer]
+      PublicKey = ${peer.public_key}
+      AllowedIPs = ${peer.assigned_ip}/32
+%{ endfor ~}
+
+  - path: /usr/local/bin/wg-users-init.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      # Render /etc/wireguard/wg-users.conf from the cloud-init-
+      # delivered template, generating the server keypair on first
+      # run if neither omni-restore.service nor a prior boot has
+      # populated it.
+      set -euo pipefail
+      umask 077
+      install -d -m 0700 /etc/wireguard
+      if [[ ! -s /etc/wireguard/wg-users.privkey ]]; then
+        wg genkey > /etc/wireguard/wg-users.privkey
+        chmod 0600 /etc/wireguard/wg-users.privkey
+        echo "[wg-users-init] generated new server keypair"
+      fi
+      wg pubkey < /etc/wireguard/wg-users.privkey > /etc/wireguard/wg-users.pubkey
+      chmod 0644 /etc/wireguard/wg-users.pubkey
+      privkey=$(cat /etc/wireguard/wg-users.privkey)
+      sed "s|__SERVER_PRIVATE_KEY__|$privkey|" \
+        /etc/wireguard/wg-users.conf.template \
+        > /etc/wireguard/wg-users.conf
+      chmod 0600 /etc/wireguard/wg-users.conf
+      echo "[wg-users-init] wrote /etc/wireguard/wg-users.conf"
+
+  - path: /etc/systemd/system/wg-users-init.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Render /etc/wireguard/wg-users.conf from template
+      # Order after omni-restore so a backup-restored privkey wins
+      # over a freshly-generated one. Order before wg-quick@wg-users
+      # so the rendered conf is in place when the interface comes up.
+      After=omni-restore.service network-pre.target
+      Before=wg-quick@wg-users.service
+      ConditionPathExists=/etc/wireguard/wg-users.conf.template
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/bin/wg-users-init.sh
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/apt/apt.conf.d/20auto-upgrades
+    permissions: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+
+  # sshd policy. Public SSH is hard-disabled on OCI — admin path is
+  # the 51820 WG VPN. PermitRootLogin no + ListenAddress bound to the
+  # WG admin interface so even if sshd is running it is unreachable
+  # from the public internet. Loaded last (alphabetically high prefix)
+  # so any earlier drop-in is overridden.
+  - path: /etc/ssh/sshd_config.d/99-stawi.conf
+    permissions: '0644'
+    content: |
+      PermitRootLogin no
+      PasswordAuthentication no
+      # Bind only on the WG admin interface (10.100.0.1) — public
+      # SSH is closed both at the OCI security list and at sshd.
+      ListenAddress 10.100.0.1
+
+  # fail2ban jail for sshd. Bans an IP for 1h after 5 failed auth
+  # attempts within 10 min. Persistent across restarts via
+  # /var/lib/fail2ban/.
+  - path: /etc/fail2ban/jail.d/sshd.local
+    permissions: "0644"
+    content: |
+      [sshd]
+      enabled  = true
+      port     = ssh
+      backend  = systemd
+      maxretry = 5
+      findtime = 10m
+      bantime  = 1h
+      banaction = iptables-multiport
+
+runcmd:
+  # Apply SideroLink IPv6-forwarding sysctl before anything else —
+  # the omni stack relies on cross-CP etcd peer traffic transiting
+  # this host (see /etc/sysctl.d/99-omni-siderolink-forwarding.conf
+  # rationale above). systemd-sysctl.service runs at boot and would
+  # apply it on next reboot anyway, but `sysctl --system` here makes
+  # the very first boot of a freshly-provisioned host correct
+  # without a reboot.
+  - sysctl --system
+
+  # AWS CLI v2 — Ubuntu 24.04 dropped the `awscli` apt package, so we
+  # install the official zip distribution from awscli.amazonaws.com.
+  # This MUST land before omni-restore.service starts (its script calls
+  # `aws s3 ls` to look for the latest backup), so we install it first
+  # and the runcmd ordering guarantees `aws` is in PATH by the time
+  # systemctl enables omni-restore further down.
+  - curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o /tmp/awscliv2.zip
+  - unzip -q /tmp/awscliv2.zip -d /tmp
+  - /tmp/aws/install
+  - rm -rf /tmp/awscliv2.zip /tmp/aws
+
+  - install -d -o root -g root -m 0700 /var/lib/omni
+  # dexidp/dex container runs as uid 1001; the dex.db sqlite file
+  # lives under /var/lib/dex and the container needs to write to
+  # it. Owning the host dir as 1001:1001 lets the container write
+  # without --user=root or chmod 0777.
+  - install -d -o 1001 -g 1001 -m 0700 /var/lib/dex
+  - systemctl daemon-reload
+  - systemctl enable --now fail2ban.service
+  # Ubuntu's sshd unit is named ssh.service (not sshd.service). Reload
+  # so the sshd_config.d/99-stawi.conf drop-in takes effect.
+  - systemctl reload ssh.service
+  - systemctl enable --now omni-restore.service
+  - systemctl enable --now omni-keys.service
+  - systemctl enable --now omni-cert-bootstrap.service
+  - systemctl enable --now omni-stack.service
+  - systemctl enable --now omni-backup.timer
+  # wg-users user-VPN. wg-users-init.service renders the conf with
+  # the (generated-or-restored) server private key, then wg-quick
+  # brings up the interface. Both are oneshot enabled here so the
+  # whole feature lights up on first boot. Failure of either is
+  # non-fatal to the rest of the runcmd (cloud-init only halts on
+  # `exit 1` from a single command, and `enable --now` exits 0 when
+  # the unit is correctly defined regardless of whether the
+  # ExecStart succeeds).
+  - systemctl enable --now wg-users-init.service
+  - systemctl enable --now wg-quick@wg-users.service
+  # certbot.timer (shipped with the certbot package) runs cert
+  # renewals twice daily; the deploy hook in
+  # /etc/letsencrypt/renewal-hooks/deploy/omni-reload.sh refreshes
+  # /etc/omni/certs and reloads nginx on each successful renewal.
+  - systemctl enable --now certbot.timer
+  # Ready-check is started here too so its exit code surfaces in the
+  # final cloud-init log — runcmd entries with non-zero exit codes
+  # are visible in cloud-init.service's status.
+  - systemctl start omni-stack-ready.service
+  - systemctl enable omni-stack-ready.service

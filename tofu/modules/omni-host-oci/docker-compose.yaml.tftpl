@@ -1,0 +1,126 @@
+# Rendered by tofu and dropped at /etc/omni/docker-compose.yaml.
+# Pinned tags only — bumping the version is a deliberate tofu var change.
+version: "3.9"
+services:
+  # nginx terminates TLS only for the cp.<zone> dashboard (browser
+  # path via Cloudflare orange-cloud). Talos-facing endpoints
+  # (cpd.<zone>:8090 machine-api and cpd.<zone>:8100 k8s-proxy) ride
+  # nginx's stream module as TCP passthrough — Omni serves the CF
+  # Origin Cert directly to Talos clients in those paths. This means
+  # the cert lives in nginx (for cp) AND in Omni (for cpd), but each
+  # public listener has exactly one TLS endpoint.
+  #
+  # All Omni binds are loopback — nginx (stream) is the public-facing
+  # listener for every port. Event-sink and SideroLink WireGuard bind
+  # to the WireGuard interface independently — unaffected.
+  omni:
+    image: ghcr.io/siderolabs/omni:${omni_version}
+    container_name: omni
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - /var/lib/omni:/var/lib/omni
+      - /etc/omni/certs:/etc/omni/certs:ro
+    command:
+      # account-id is rendered as a literal at tofu time (the value is
+      # known — random_uuid.omni_account_id). docker-compose's command:
+      # array does NOT expand env_file vars, so $${OMNI_ACCOUNT_ID}
+      # would reach Omni unexpanded and fail schema validation.
+      - --account-id=${omni_account_id}
+      - --name=${omni_account_name}
+      # Storage — paths are inside the container; /var/lib/omni is a
+      # bind mount so state persists across container restarts. Losing
+      # this directory = losing every cluster Omni ever provisioned.
+      - --etcd-embedded-db-path=/var/lib/omni/etcd
+      - --sqlite-storage-path=/var/lib/omni/omni.db
+      # Master-key encryption — generated once on first boot by
+      # omni-keys.service in cloud-init.
+      - --private-key-source=file:///var/lib/omni/keys/omni.asc
+      - --public-key-files=/var/lib/omni/keys/omni.pub.asc
+      # All three Omni TCP services bind loopback only — nginx is the
+      # public listener on every port. For cp.<zone> nginx terminates
+      # TLS (browser path); for cpd.<zone>:8090/:8100 nginx is a TCP
+      # passthrough so Omni serves its TLS directly to Talos clients.
+      # That means --cert/--key (UI + k8s-proxy) and --machine-api-*-*
+      # MUST stay set so Omni keeps serving TLS on the loopback
+      # endpoints that nginx-stream forwards to.
+      # Omni's loopback ports are intentionally OFFSET from the public
+      # nginx-facing ports so the two listeners can coexist. nginx
+      # listens on 0.0.0.0:8090/0.0.0.0:8100, which on Linux covers
+      # 127.0.0.1:8090/127.0.0.1:8100 — Omni binding the same loopback
+      # port would collide ("address already in use"). Convention here:
+      # add 10000 to the public port for the loopback bind. Advertised
+      # URLs still use the public ports (8080→443, 8090, 8100) since
+      # those are what Talos clients dial.
+      - --bind-addr=127.0.0.1:18080
+      - --cert=/etc/omni/certs/server.crt
+      - --key=/etc/omni/certs/server.key
+      - --advertised-api-url=https://${siderolink_api_advertised_host}
+      - --machine-api-bind-addr=127.0.0.1:18090
+      - --machine-api-cert=/etc/omni/certs/server.crt
+      - --machine-api-key=/etc/omni/certs/server.key
+      # Renamed in v1.7+ from --siderolink-api-advertised-url; deprecation
+      # warning was non-fatal but sticking to the new flag.
+      - --machine-api-advertised-url=https://${siderolink_wireguard_advertised_host}:8090
+      - --k8s-proxy-bind-addr=127.0.0.1:18100
+      - --advertised-kubernetes-proxy-url=https://${siderolink_wireguard_advertised_host}:8100
+      # Event sink — Talos machines POST status events here. Default
+      # 8090 collides with machine-api; 8091 keeps them separate.
+      - --event-sink-port=8091
+      # SideroLink WireGuard. Advertised as a hostname (gray-cloud A
+      # record straight to the VPS public IP); WireGuard resolves the
+      # endpoint at connect time and Talos has DHCP-DNS by then.
+      - --siderolink-wireguard-advertised-addr=${siderolink_wireguard_advertised_host}:50180
+      # Auth — disable upstream defaults, route everything through Dex.
+      - --auth-auth0-enabled=false
+      - --auth-saml-enabled=false
+      - --auth-oidc-enabled=true
+      - --auth-oidc-provider-url=https://${siderolink_api_advertised_host}/dex
+      - --auth-oidc-client-id=omni
+      - --auth-oidc-client-secret=${dex_omni_client_secret}
+      - --auth-oidc-scopes=openid
+      - --auth-oidc-scopes=profile
+      - --auth-oidc-scopes=email
+%{ for email in initial_users ~}
+      - --initial-users=${email}
+%{ endfor ~}
+      # Sidero EULA acceptance (required Omni v1.7+).
+      - --eula-accept-name=${eula_name}
+      - --eula-accept-email=${eula_email}
+      - --siderolink-disable-last-endpoint=false
+%{ if etcd_backup_enabled ~}
+      # Enables the S3-backed etcd-backup destination. Boolean toggle
+      # only — the actual bucket/endpoint/region/credentials live in
+      # an EtcdBackupS3Configs.omni.sidero.dev resource (cluster-
+      # scoped Omni resource), applied via `omnictl apply` from
+      # tofu/shared/clusters/etcd-backup-s3-configs.yaml.tmpl in the
+      # sync-cluster-template workflow. Per-cluster cadence comes
+      # from the Cluster template's backupConfiguration.interval.
+      - --etcd-backup-s3
+%{ endif ~}
+
+  dex:
+    image: ghcr.io/dexidp/dex:${dex_version}
+    container_name: dex
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - /etc/dex/config.yaml:/etc/dex/config.yaml:ro
+      - /var/lib/dex:/var/lib/dex
+    command:
+      - dex
+      - serve
+      - /etc/dex/config.yaml
+
+  nginx:
+    image: nginx:${nginx_version}
+    container_name: nginx
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - /etc/omni/nginx.conf:/etc/nginx/nginx.conf:ro
+      - /etc/omni/certs:/etc/omni/certs:ro
