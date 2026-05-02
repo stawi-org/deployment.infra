@@ -80,3 +80,96 @@ output "cluster_image_registry" {
     )
   }
 }
+
+# ---- bwire: cluster-state-storage (private) ----------------------
+#
+# OCI Object Storage bucket in the bwire tenancy holding the cluster's
+# tofu state files. Replaces the Cloudflare-R2 `cluster-tofu-state`
+# bucket. After this lands, layer backend.tf files migrate from
+#
+#   bucket    = "cluster-tofu-state"
+#   endpoints = { s3 = "https://<acc>.r2.cloudflarestorage.com" }
+#
+# to OCI's S3-compatible endpoint:
+#
+#   bucket    = "cluster-state-storage"
+#   endpoints = { s3 = "https://<namespace>.compat.objectstorage.<region>.oraclecloud.com" }
+#
+# bwire was chosen because it's the Phase-2 omni-host tenancy — state
+# storage lives next to its primary consumer (the omni-host's
+# tofu-apply pipeline + the omni-restore service that reads state
+# during reinstall). NoPublicAccess: tofu state contains sensitive
+# values (secrets in attribute outputs, etc.); access only via
+# OCI-authenticated S3-compat clients with a Customer Secret Key
+# minted per CI principal.
+
+data "oci_objectstorage_namespace" "bwire" {
+  provider       = oci.account["bwire"]
+  compartment_id = local.oci_accounts_effective["bwire"].compartment_ocid
+}
+
+resource "oci_objectstorage_bucket" "cluster_state_storage" {
+  provider       = oci.account["bwire"]
+  compartment_id = local.oci_accounts_effective["bwire"].compartment_ocid
+  namespace      = data.oci_objectstorage_namespace.bwire.namespace
+  name           = "cluster-state-storage"
+
+  access_type  = "NoPublicAccess"
+  storage_tier = "Standard"
+
+  # State versioning is essential — tofu's S3 backend leans on it for
+  # rollback after a botched apply, and OCI's S3-compat exposes the
+  # same object-version semantics. R2 had this enabled; preserve.
+  versioning = "Enabled"
+}
+
+# ---- bwire: cluster-vault-storage (private) ----------------------
+#
+# OCI Object Storage bucket in the bwire tenancy for SOPS-encrypted
+# secrets. Replaces the Cloudflare-R2 `vault-storage` bucket — note
+# the rename (vault-storage → cluster-vault-storage) for consistency
+# with the cluster-* prefix used by the other migrated buckets.
+#
+# NoPublicAccess: contents are encrypted with the operator's age key,
+# but the bucket is also private at the storage layer — defense in
+# depth. SOPS clients hit the OCI S3-compat endpoint authenticated
+# with the same Customer Secret Key used for state.
+
+resource "oci_objectstorage_bucket" "cluster_vault_storage" {
+  provider       = oci.account["bwire"]
+  compartment_id = local.oci_accounts_effective["bwire"].compartment_ocid
+  namespace      = data.oci_objectstorage_namespace.bwire.namespace
+  name           = "cluster-vault-storage"
+
+  access_type  = "NoPublicAccess"
+  storage_tier = "Standard"
+  versioning   = "Enabled"
+}
+
+output "cluster_state_storage" {
+  description = "Private OCI Object Storage bucket holding tofu state files. Use the S3-compat endpoint with a Customer Secret Key for read/write."
+  value = {
+    namespace = data.oci_objectstorage_namespace.bwire.namespace
+    bucket    = oci_objectstorage_bucket.cluster_state_storage.name
+    region    = local.oci_accounts_effective["bwire"].region
+    s3_endpoint = format(
+      "https://%s.compat.objectstorage.%s.oraclecloud.com",
+      data.oci_objectstorage_namespace.bwire.namespace,
+      local.oci_accounts_effective["bwire"].region,
+    )
+  }
+}
+
+output "cluster_vault_storage" {
+  description = "Private OCI Object Storage bucket holding SOPS-encrypted secrets. Use the S3-compat endpoint."
+  value = {
+    namespace = data.oci_objectstorage_namespace.bwire.namespace
+    bucket    = oci_objectstorage_bucket.cluster_vault_storage.name
+    region    = local.oci_accounts_effective["bwire"].region
+    s3_endpoint = format(
+      "https://%s.compat.objectstorage.%s.oraclecloud.com",
+      data.oci_objectstorage_namespace.bwire.namespace,
+      local.oci_accounts_effective["bwire"].region,
+    )
+  }
+}
