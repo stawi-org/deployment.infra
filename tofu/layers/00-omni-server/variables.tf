@@ -51,12 +51,6 @@ variable "dex_version" {
 }
 
 
-variable "contabo_public_ssh_key" {
-  type        = string
-  default     = ""
-  description = "Operator public SSH key (sourced from the CONTABO_PUBLIC_SSH_KEY GitHub secret). Authorised for root SSH on the omni-host VPS for diagnostics. Empty disables SSH login."
-}
-
 variable "omni_initial_users" {
   type        = string
   description = "Comma-separated list of email addresses promoted to Admin on first login. Each email must match the primary verified email GitHub returns to Dex. Sourced from the OMNI_INITIAL_USERS GitHub variable."
@@ -92,32 +86,9 @@ variable "r2_secret_access_key" {
   sensitive = true
 }
 
-variable "force_reinstall_generation" {
-  type        = number
-  default     = 1
-  description = <<-EOT
-    Bump to force a Contabo reinstall of the omni-host VPS via the
-    same ensure-image.sh path the cluster nodes use. The canonical
-    way to push live cloud-init template drift (sysctl rules,
-    systemd units, certbot config) to the running host —
-    omni-restore.service rehydrates /var/lib/omni from the most
-    recent R2 snapshot on first boot, so the reinstall is
-    non-destructive (every Cluster, Link, MachineLabel survives).
-
-    Pre-flight: confirm a fresh omni-backup.timer fire by checking
-    `s3://cluster-tofu-state/production/omni-backups/` for an entry
-    newer than ~1h.
-  EOT
-  validation {
-    condition     = var.force_reinstall_generation >= 1
-    error_message = "force_reinstall_generation must be >= 1."
-  }
-}
-
-variable "omni_host_ssh_enabled" {
-  type        = bool
-  default     = true
-  description = "Toggle SSH access on the omni-host. Default true (operator key honoured). Flip to false in a follow-up apply (with force_reinstall_generation bumped) once the host is verified up — see modules/omni-host/variables.tf for the workflow."
+variable "bwire_availability_domain" {
+  type        = string
+  description = "OCI availability-domain name (e.g. 'foo:US-ASHBURN-AD-1' or short form) for bwire's omni-host VM. Pick an AD with A1.Flex capacity in your region. Operator sets this in terraform.tfvars before merge."
 }
 
 variable "etcd_backup_enabled" {

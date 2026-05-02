@@ -4,12 +4,7 @@ output "omni_url" {
 }
 
 output "omni_host_instance_id" {
-  value = module.omni_host.instance_id
-}
-
-output "dex_omni_client_secret" {
-  value     = module.omni_host.dex_omni_client_secret
-  sensitive = true
+  value = module.omni_host_oci.instance_id
 }
 
 output "siderolink_advertised_host" {
