@@ -147,8 +147,10 @@ All other workers and the CP carry `false`.
 ### Pre-merge (operator, ~5 min)
 
 - Verify OCI bwire tenancy active, Always-Free ARM quota unused, 2 reserved IPv4 budget free.
-- Pre-stage `s3://cluster-tofu-state/production/inventory/oracle/bwire/auth.yaml` (sopsed; chicken-and-egg on `node-state` plan-time read).
-- One-time mint of bwire operator CSK via `oci iam customer-secret-key create` against the existing operator user → store as `OCI_BWIRE_S3_ACCESS_KEY_ID` / `OCI_BWIRE_S3_SECRET_ACCESS_KEY` GH Actions secrets. Tofu adopts management of that CSK via `import` block on first apply.
+- Confirm OCI WIF federation set up for bwire (`02-oracle-infra` matrix already iterates `bwire` per `accounts.yaml`).
+- Pre-stage `s3://cluster-tofu-state/production/inventory/oracle/bwire/auth.yaml` and `nodes.yaml` (chicken-and-egg on `node-state` plan-time read).
+- Mutate existing-account R2 inventories (Contabo bwire roles, LB labels on Contabo bwire-1 and the OCI workers).
+- Bump `force_reinstall_generation` in `01-contabo-infra/terraform.tfvars` and `02-oracle-infra/terraform.tfvars` so post-apply rolls every node onto a freshly-built image carrying the new SideroLink token.
 
 ### Apply phase 1 — `02-oracle-infra` matrix run (parallel cells)
 
@@ -199,7 +201,7 @@ End state: 1 CP + 5 workers Ready, `prod.stawi.org` round-robins across the 3 LB
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
 | OCI Always-Free quota silently capped (ARM pool, reserved IPv4 budget) | medium | apply fails partway | Pre-merge verification (Gate G1). |
-| Bootstrap CSK auth chicken-and-egg | medium | first apply hangs on plan | Operator-minted CSK pre-merge; tofu `import` block adopts it. |
+| ~~Bootstrap CSK auth chicken-and-egg~~ | n/a | n/a | Removed: tofu state backend uses R2 (static keys), not OCI S3-compat. OCI provider auths via SecurityToken/WIF (no CSK needed). The CSK is created fresh by the first apply and consumed only by downstream workflows that read it from tfstate. |
 | CI orchestration race (regen-images runs before omni-host has token) | medium | new images carry stale/empty token | regen-images workflow precondition: `omnictl get connectionparams` returns non-empty `siderolink.api`; wait up to 5 min, fail fast otherwise. |
 | Cross-layer state read (00-omni-server → 02-oracle-infra/bwire) fails | low | 00-omni-server apply fails | Verify tofu-apply orchestrator's layer-order respects new dep; relabel layer if needed. |
 | OCI security list misconfigured (WG/SideroLink ports) | medium | nodes can't dial in; admin can't WG | Module's security list defines all ingress rules from day one. Smoke-tested per Gate G14. |
