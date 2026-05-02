@@ -502,14 +502,24 @@ write_files:
       echo "[omni-backup] stopping omni-stack for consistent snapshot"
       systemctl stop omni-stack.service
       # Stage a snapshot rooted at /, capturing /var/lib/omni AND the
-      # WireGuard server keys + config. Untar restores both in their
-      # canonical locations so the user-VPN server pubkey survives a
-      # Contabo reinstall. /etc/wireguard is optional — only present
-      # if the wg-users feature has booted at least once.
+      # WireGuard server keys/config AND the Let's Encrypt cert state.
+      # Untar restores all three in their canonical locations so:
+      #   - the user-VPN server pubkey survives reinstalls (clients
+      #     don't need to re-key);
+      #   - the LE cert survives reinstalls — omni-cert-bootstrap.sh's
+      #     `if [ ! -f "$live" ]` guard skips certbot when the cert
+      #     directory exists, sidestepping LE's per-identifier-set
+      #     5-certs-per-168h rate limit that we otherwise hit any
+      #     time multiple reinstalls happen in a week (lesson learnt
+      #     2026-05-02 the hard way).
+      # /etc/wireguard + /etc/letsencrypt are both optional — only
+      # present after first cloud-init has run. omni-restore handles
+      # missing dirs gracefully.
       stage="$tmp/snapshot"
       mkdir -p "$stage/var/lib" "$stage/etc"
       cp -a /var/lib/omni "$stage/var/lib/"
       [[ -d /etc/wireguard ]] && cp -a /etc/wireguard "$stage/etc/" || true
+      [[ -d /etc/letsencrypt ]] && cp -a /etc/letsencrypt "$stage/etc/" || true
       tar -czf "$tmp/omni-$ts.tar.gz" -C "$stage" .
       echo "[omni-backup] restarting omni-stack"
       systemctl start omni-stack.service
