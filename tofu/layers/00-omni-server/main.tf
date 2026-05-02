@@ -153,7 +153,12 @@ resource "cloudflare_dns_record" "cp_stawi" {
 }
 
 resource "cloudflare_dns_record" "cp_stawi_v6" {
-  count   = module.omni_host_oci.ipv6 == null ? 0 : 1
+  # Predicate must be plan-time-known so the import-block targets
+  # cp_stawi_v6[0] / cpd_stawi_v6[0] validate even on a fresh tfstate
+  # (where module.omni_host_oci.ipv6 is "known after apply"). The
+  # bwire auth.yaml's enable_ipv6 flag is read at plan time via the
+  # node-state module, so use that directly.
+  count   = try(module.bwire_account_state.auth.auth.enable_ipv6, true) ? 1 : 0
   zone_id = var.cloudflare_zone_id_stawi
   name    = "cp"
   type    = "AAAA"
@@ -178,7 +183,12 @@ resource "cloudflare_dns_record" "cpd_stawi" {
 }
 
 resource "cloudflare_dns_record" "cpd_stawi_v6" {
-  count   = module.omni_host_oci.ipv6 == null ? 0 : 1
+  # Predicate must be plan-time-known so the import-block targets
+  # cp_stawi_v6[0] / cpd_stawi_v6[0] validate even on a fresh tfstate
+  # (where module.omni_host_oci.ipv6 is "known after apply"). The
+  # bwire auth.yaml's enable_ipv6 flag is read at plan time via the
+  # node-state module, so use that directly.
+  count   = try(module.bwire_account_state.auth.auth.enable_ipv6, true) ? 1 : 0
   zone_id = var.cloudflare_zone_id_stawi
   name    = "cpd"
   type    = "AAAA"
