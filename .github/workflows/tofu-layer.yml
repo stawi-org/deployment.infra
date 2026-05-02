@@ -107,6 +107,23 @@ jobs:
           rm /tmp/omnictl
           omnictl --version
 
+          # Pin cp/cpd.stawi.org to their A records in /etc/hosts.
+          # GitHub-hosted runners are IPv4-only by default; cpd has
+          # both A (CF-routable IPv4) and AAAA (omni-host's Contabo
+          # static IPv6, used by IPv6-capable Talos clients). Without
+          # a hint, glibc's getaddrinfo can return AAAA first and
+          # omnictl dials [v6]:443 → "network is unreachable" because
+          # the runner has no IPv6 egress route. Pin v4 explicitly so
+          # every omnictl invocation in the talos layer's local-exec
+          # provisioners (cluster template validate/diff/sync,
+          # machine-labels apply) hits the v4 path deterministically.
+          for h in cp.stawi.org cpd.stawi.org; do
+            ipv4=$(getent ahostsv4 "$h" | awk '/STREAM/{print $1; exit}' || true)
+            if [[ -n "$ipv4" ]]; then
+              echo "$ipv4 $h" | sudo tee -a /etc/hosts
+            fi
+          done
+
       - name: OCI workload-identity federation
         if: inputs.layer == '02-oracle-infra'
         env:
