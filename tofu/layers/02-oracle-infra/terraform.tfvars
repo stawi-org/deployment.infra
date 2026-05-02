@@ -1,5 +1,11 @@
 age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt"
 
+# bwire operator user name — used by oci-operator-csk.tf to look up
+# the existing admin user and mint a CSK against it.
+# operator: set to the actual OCI IAM username in the bwire tenancy
+# before merge (e.g. "peter.bwire@example.com" or the short login name).
+# oci_operator_user_name = ""
+
 # Bump to force a fresh OCI custom image. Gen<N> is the image
 # display_name suffix; bumping triggers replace_triggered_by on
 # oci_core_image.talos and forces a new CreateImage on the next
