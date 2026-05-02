@@ -53,4 +53,4 @@ force_reinstall_generation = 5
 #      backupConfiguration.interval.
 #   4. Flip this to true here, optionally bump
 #      force_reinstall_generation, apply via tofu-omni-host.yml.
-# etcd_backup_enabled = true
+etcd_backup_enabled = true
