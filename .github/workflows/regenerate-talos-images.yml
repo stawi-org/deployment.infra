@@ -119,7 +119,7 @@ jobs:
       # omnictl wrapper installed below always passes
       # `--insecure-skip-tls-verify`. Auth still comes from
       # OMNI_SERVICE_ACCOUNT_KEY.
-      OMNI_ENDPOINT: https://cpd.stawi.org
+      OMNI_ENDPOINT: https://cp.stawi.org
       OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
       TALOS_VERSION: ${{ inputs.talos_version || 'v1.13.0' }}
       FORCE: ${{ inputs.force }}
@@ -180,7 +180,7 @@ jobs:
             raw=$( { omnictl get connectionparams -o json 2>&1 || true; } )
             api=$(printf '%s' "$raw" | jq -r '.spec.api_endpoint // empty' 2>/dev/null || true)
             echo "::notice::attempt=$attempt api='$api' raw_head='$(printf '%s' "$raw" | head -c 200 | tr '\n' ' ')'"
-            if [[ "$api" == "https://cpd.stawi.org" ]]; then
+            if [[ "$api" == "https://cp.stawi.org" ]]; then
               echo "::notice::SideroLink token ready, api_endpoint=$api (attempt=$attempt)"
               break
             fi
@@ -191,7 +191,7 @@ jobs:
             sleep 10
           done
         env:
-          OMNI_ENDPOINT: https://cpd.stawi.org
+          OMNI_ENDPOINT: https://cp.stawi.org
           OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
 
       # Whole pipeline runs in a single bash step so we can use
