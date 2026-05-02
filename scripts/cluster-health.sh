@@ -113,6 +113,18 @@ else
     pass "all $COUNT node(s) Ready"
   fi
   kubectl get nodes -o wide
+
+  # Per-node InternalIPs (both v4 + v6) and podCIDRs — gives us the
+  # actual dual-stack picture. `kubectl get -o wide` only prints one
+  # IP per family per row, so we have to fall back to JSON to see all
+  # addresses.
+  echo
+  echo "Per-node addresses + podCIDRs (dual-stack snapshot):"
+  jq -r '
+    .items[] | "  \(.metadata.name):"
+      + " addrs=[" + ([.status.addresses[]? | "\(.type)=\(.address)"] | join(",")) + "]"
+      + " podCIDRs=" + (.spec.podCIDRs // [.spec.podCIDR // ""] | tostring)
+  ' <<<"$NODES_JSON"
 fi
 echo "::endgroup::"
 
