@@ -153,6 +153,34 @@ jobs:
       - name: Verify omnictl auth
         run: omnictl get user --output json | head -20
 
+      # Guard against the "regen-images runs before omni-host has new
+      # token" race. Omni rotates the SideroLink join token when it
+      # starts up; images carry the token baked in at download time.
+      # If this workflow fires before the new omni-host instance is
+      # fully up, `omnictl download` embeds a stale token and nodes
+      # won't auto-register. Wait up to 5 min for the api_endpoint to
+      # match the expected cpd.stawi.org address before building.
+      - name: Wait for new SideroLink token
+        run: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + 300 ))
+          while :; do
+            api=$(omnictl get connectionparams -o json 2>/dev/null \
+              | jq -r '.spec.api_endpoint // empty')
+            if [[ "$api" == "https://cpd.stawi.org" ]]; then
+              echo "::notice::SideroLink token ready, api_endpoint=$api"
+              break
+            fi
+            if [[ $(date +%s) -ge $deadline ]]; then
+              echo "::error::Timed out waiting for SideroLink api_endpoint to settle on cpd.stawi.org (last value: '$api')"
+              exit 1
+            fi
+            sleep 10
+          done
+        env:
+          OMNI_ENDPOINT: https://cpd.stawi.org
+          OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+
       # Whole pipeline runs in a single bash step so we can use
       # arrays (safe quoting of customization values) without
       # round-tripping through GITHUB_OUTPUT.
@@ -346,46 +374,52 @@ jobs:
           done
           echo "::notice::uploaded to ${dest_prefix}/"
 
-          # ----- Mirror to OCI cluster-image-registry (dual-write) -----
-          # Same bytes, second destination. Downstream consumers still
-          # read from R2 / pkgs.stawi.org; the OCI copy is the
-          # transition target so a follow-up PR can flip the public-URL
-          # CF Worker + reader paths without a "where do the bytes
-          # live" gap.
+          # ----- Mirror to OCI cluster-image-registry (dual-write to bwire) -----
+          # Source of truth for cross-tenancy image consumers (the
+          # CF Worker for pkgs.stawi.org, future cross-account image-
+          # import paths). Reads CSK from bwire's 02-oracle-infra
+          # tfstate output `omni_backup_writer_credentials` (a single
+          # CSK on the existing bwire operator user; see
+          # tofu/layers/02-oracle-infra/oci-operator-csk.tf).
           #
-          # Credentials (S3-compat access key + secret) come from the
-          # alimbacho67 02-oracle-infra tfstate's
-          # `cluster_image_uploader_credentials` output (tofu-managed
-          # in cluster-image-uploader-iam.tf). Skipped cleanly when
-          # the tfstate doesn't yet carry the IAM resources (fresh
-          # repo / pre-bootstrap / pre-PR-merge run).
+          # Skip conditions:
+          #   - bwire tfstate missing (fresh repo / pre-bootstrap)
+          #   - omni_backup_writer_credentials output missing (older
+          #     state from before the IAM collapse landed)
           state=$(mktemp)
           trap 'rm -f "$state"' EXIT
-          state_key="production/02-oracle-infra-alimbacho67.tfstate"
-          if ! aws s3 cp "s3://${R2_BUCKET}/${state_key}" "$state" \
-                 --endpoint-url "${R2_ENDPOINT}" \
-                 --region us-east-1 >/dev/null 2>&1; then
-            echo "::notice::02-oracle-infra-alimbacho67 tfstate not found — skipping OCI mirror (apply that layer first)."
-          elif [[ "$(jq -r '.outputs.cluster_image_uploader_credentials.value // "null"' "$state")" == "null" ]]; then
-            echo "::notice::cluster_image_uploader_credentials output missing — re-run 02-oracle-infra (alimbacho67) apply to populate."
+          state_key="production/02-oracle-infra-bwire.tfstate"
+          if ! aws s3api head-object --bucket "${R2_BUCKET}" \
+              --key "$state_key" \
+              --endpoint-url "${R2_ENDPOINT}" --region us-east-1 >/dev/null 2>&1; then
+            echo "::notice::02-oracle-infra-bwire tfstate not found — skipping OCI mirror (apply that layer first)."
           else
-            oci_access_key_id=$(jq -r '.outputs.cluster_image_uploader_credentials.value.access_key_id' "$state")
-            oci_secret_access_key=$(jq -r '.outputs.cluster_image_uploader_credentials.value.secret_access_key' "$state")
-            oci_bucket=$(jq -r '.outputs.cluster_image_uploader_credentials.value.bucket' "$state")
-            oci_region=$(jq -r '.outputs.cluster_image_uploader_credentials.value.region' "$state")
-            oci_endpoint=$(jq -r '.outputs.cluster_image_uploader_credentials.value.endpoint' "$state")
-            oci_dest_prefix="s3://${oci_bucket}/${schematic_id}"
-            for f in "${upload_files[@]}"; do
-              name=$(basename "$f")
-              AWS_ACCESS_KEY_ID="$oci_access_key_id" \
-              AWS_SECRET_ACCESS_KEY="$oci_secret_access_key" \
-              AWS_EC2_METADATA_DISABLED=true \
-                aws s3 cp "$f" "${oci_dest_prefix}/${name}" \
-                  --content-type "$(content_type_for "$name")" \
-                  --endpoint-url "$oci_endpoint" \
-                  --region "$oci_region"
-            done
-            echo "::notice::mirrored to oci://${oci_bucket}/${schematic_id}/"
+            aws s3 cp "s3://${R2_BUCKET}/${state_key}" "$state" \
+              --endpoint-url "${R2_ENDPOINT}" --region us-east-1 >/dev/null
+            if [[ "$(jq -r '.outputs.omni_backup_writer_credentials.value // "null"' "$state")" == "null" ]]; then
+              echo "::notice::omni_backup_writer_credentials output missing — re-run 02-oracle-infra (bwire) apply to populate."
+            else
+              # NOTE: omni_backup_writer_credentials.bucket points at
+              # omni-backup-storage. We override it here with the
+              # cluster-image-registry bucket name, since the same
+              # CSK has access to both.
+              oci_access_key_id=$(jq -r '.outputs.omni_backup_writer_credentials.value.access_key_id' "$state")
+              oci_secret_access_key=$(jq -r '.outputs.omni_backup_writer_credentials.value.secret_access_key' "$state")
+              oci_region=$(jq -r '.outputs.omni_backup_writer_credentials.value.region' "$state")
+              oci_endpoint=$(jq -r '.outputs.omni_backup_writer_credentials.value.endpoint' "$state")
+              oci_dest_prefix="s3://cluster-image-registry/${schematic_id}"
+              for f in "${upload_files[@]}"; do
+                name=$(basename "$f")
+                AWS_ACCESS_KEY_ID="$oci_access_key_id" \
+                AWS_SECRET_ACCESS_KEY="$oci_secret_access_key" \
+                AWS_EC2_METADATA_DISABLED=true \
+                  aws s3 cp "$f" "${oci_dest_prefix}/${name}" \
+                    --content-type "$(content_type_for "$name")" \
+                    --endpoint-url "$oci_endpoint" \
+                    --region "$oci_region"
+              done
+              echo "::notice::Mirrored to s3://cluster-image-registry/${schematic_id}/ in bwire tenancy"
+            fi
           fi
 
           # ----- Compute SHA-256s and emit job outputs -----
