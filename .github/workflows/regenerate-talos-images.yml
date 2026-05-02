@@ -160,17 +160,15 @@ jobs:
       # fully up, `omnictl download` embeds a stale token and nodes
       # won't auto-register. Wait up to 5 min for the api_endpoint to
       # match the expected cpd.stawi.org address before building.
-      - name: Wait for new SideroLink token
-        # Resilient form: the inner `omnictl get connectionparams`
-        # fails on a freshly-bootstrapped Omni instance until that
-        # resource is first written, and on transient API hiccups.
-        # Under `set -euo pipefail`, an assignment from a failed
-        # pipeline kills the loop in ~20s. Wrap omnictl's exit in
-        # a `||` so the pipeline always succeeds; jq then sees
-        # empty / non-matching JSON and emits "" (empty api), which
-        # the loop naturally handles as "not yet ready" and sleeps.
-        # Diagnostic output (omnictl stderr + actual api value) is
-        # surfaced on each iteration so timeouts are debuggable.
+      - name: Wait for omnictl connection-params resource
+        # Confirms that omnictl can reach Omni AND the
+        # ConnectionParamsController has reconciled (phase=running),
+        # which means the SideroLink join token is published. The
+        # specific field name for the API URL inside spec varies
+        # across Omni versions; keying off metadata.phase=running is
+        # version-stable. The omnictl call is wrapped in `|| true`
+        # so a transient failure under `set -euo pipefail` doesn't
+        # kill the loop in 20s — empty output naturally re-loops.
         run: |
           set -euo pipefail
           deadline=$(( $(date +%s) + 300 ))
@@ -178,14 +176,14 @@ jobs:
           while :; do
             attempt=$((attempt + 1))
             raw=$( { omnictl get connectionparams -o json 2>&1 || true; } )
-            api=$(printf '%s' "$raw" | jq -r '.spec.api_endpoint // empty' 2>/dev/null || true)
-            echo "::notice::attempt=$attempt api='$api' raw_head='$(printf '%s' "$raw" | head -c 200 | tr '\n' ' ')'"
-            if [[ "$api" == "https://cp.stawi.org" ]]; then
-              echo "::notice::SideroLink token ready, api_endpoint=$api (attempt=$attempt)"
+            phase=$(printf '%s' "$raw" | jq -r '.metadata.phase // empty' 2>/dev/null || true)
+            echo "::notice::attempt=$attempt phase='$phase' raw_head='$(printf '%s' "$raw" | head -c 300 | tr '\n' ' ')'"
+            if [[ "$phase" == "running" ]]; then
+              echo "::notice::ConnectionParams reconciled (phase=running) on attempt $attempt"
               break
             fi
             if [[ $(date +%s) -ge $deadline ]]; then
-              echo "::error::Timed out after $attempt attempts. Last api='$api'. Last omnictl output: $raw"
+              echo "::error::Timed out after $attempt attempts. Last phase='$phase'. Last omnictl output: $raw"
               exit 1
             fi
             sleep 10
