@@ -152,20 +152,20 @@ Write the exact content to `tofu/shared/clusters/per-node-patches.yaml.tmpl`:
 metadata:
   namespace: default
   type: ConfigPatches.omni.sidero.dev
-  id: ${id}
+  id: ${ID}
   labels:
     omni.sidero.dev/cluster: stawi
 spec:
   target_label_selectors:
-${target_selectors_block}
+${TARGET_SELECTORS_BLOCK}
   data: |
-${indented_data}
+${INDENTED_DATA}
 ```
 
-The template is consumed by Bash (`envsubst`) in the workflow; it does NOT use OpenTofu `${...}` interpolation — Bash variable substitution suffices because the workflow runs the rendering, not tofu. The variables are:
-- `id` — unique resource id (use `<cluster>-<nodename>-link`)
-- `target_selectors_block` — pre-rendered YAML list-of-strings (4-space indent)
-- `indented_data` — pre-rendered Talos patch body (4-space indent for the `|` literal block)
+The template is consumed by Bash (`envsubst`) in the workflow; it does NOT use OpenTofu `${...}` interpolation — Bash variable substitution suffices because the workflow runs the rendering, not tofu. The variables are (uppercase to match POSIX env-var convention; multi-line values are pre-indented by the workflow before substitution, so placeholders stay at column 0 in this template):
+- `ID` — unique resource id (use `<cluster>-<nodename>-link`)
+- `TARGET_SELECTORS_BLOCK` — pre-rendered YAML list-of-strings, multi-line, each line pre-indented to 4 spaces
+- `INDENTED_DATA` — pre-rendered Talos patch body, multi-line, each line pre-indented to 4 spaces (so the `data: |` literal block is properly nested)
 
 - [ ] **2.2 Commit**
 
