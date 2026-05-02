@@ -116,7 +116,14 @@ resource "oci_core_subnet" "this" {
   route_table_id             = oci_core_route_table.this.id
   security_list_ids          = [oci_core_security_list.this.id]
   prohibit_public_ip_on_vnic = false
-  ipv6cidr_blocks            = var.enable_ipv6 ? [oci_core_vcn.this.ipv6cidr_blocks[0]] : null
+  # OCI subnets MUST be /64 IPv6 CIDRs. The VCN's IPv6 block is a
+  # /56 (the only size OCI allocates), so carve a /64 from it: take
+  # the first 4 hextets of the /56 prefix and append "::/64". The
+  # 5th hextet's high bits are zero in OCI's /56 allocations, so
+  # this slice is always within the VCN block.
+  ipv6cidr_blocks = var.enable_ipv6 ? [
+    "${join(":", slice(split(":", split("/", oci_core_vcn.this.ipv6cidr_blocks[0])[0]), 0, 4))}::/64"
+  ] : null
 }
 
 # Reserved public IPv4 — survives instance recreate. AAAA records
