@@ -197,3 +197,21 @@ resource "cloudflare_dns_record" "cpd_stawi_v6" {
   ttl     = 300
   comment = "Omni Talos-facing — gray-cloud (v6)."
 }
+
+# Cloudflare zone setting: enable gRPC pass-through on the stawi.org
+# zone. With grpc=off (CF default), CF treats gRPC traffic as
+# generic HTTPS and may inject security challenge pages (bot fight,
+# browser integrity check) — observed as 403 with content-type
+# text/html in omnictl's gRPC client. With grpc=on, CF preserves
+# HTTP/2 end-to-end for gRPC and skips the browser-integrity path.
+#
+# This is a zone-wide setting; it affects every host under stawi.org
+# that's CF-proxied. cp.stawi.org is the only gRPC host today, so
+# the blast radius is the omnictl management plane only. Other CF-
+# proxied hosts (browser dashboards, REST APIs) are unaffected by
+# the gRPC bit being on.
+resource "cloudflare_zone_setting" "grpc" {
+  zone_id    = var.cloudflare_zone_id_stawi
+  setting_id = "grpc"
+  value      = "on"
+}
