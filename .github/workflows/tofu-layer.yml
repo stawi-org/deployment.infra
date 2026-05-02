@@ -125,7 +125,11 @@ jobs:
           done
 
       - name: OCI workload-identity federation
-        if: inputs.layer == '02-oracle-infra'
+        # Fires for any layer that needs OCI provider auth at plan/apply
+        # time. 02-oracle-infra is the per-account compute matrix;
+        # 00-omni-server now provisions the omni-host VM in OCI bwire
+        # (post-PR #156) and needs the bwire profile in ~/.oci/config.
+        if: inputs.layer == '02-oracle-infra' || inputs.layer == '00-omni-server'
         env:
           AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
