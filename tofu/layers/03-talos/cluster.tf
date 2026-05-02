@@ -1,22 +1,18 @@
 # tofu/layers/03-talos/cluster.tf
 #
-# Tofu drives Omni cluster lifecycle by shelling out to omnictl from
-# null_resources. There is no official `siderolabs/omni` Terraform
-# provider — only `siderolabs/talos` (which manages talosconfig /
-# machineconfig, not Omni's resource model). Sidero's intended path
-# is declarative YAML applied via omnictl, authenticated with
-# OMNI_SERVICE_ACCOUNT_KEY. That's what these null_resources do.
+# Per-node MachineLabels reconciliation against Omni's machine
+# inventory. Earlier versions of this layer also drove
+# `omnictl apply -f machine-classes.yaml` and `omnictl cluster
+# template sync -f main.yaml`, but those are now owned by the
+# standalone sync-cluster-template.yml workflow (path-based trigger
+# on tofu/shared/clusters/**) — keeping a copy here was duplicative
+# and tied cluster-spec lifecycle to node-provisioning applies.
 #
-# Resource ordering (depends_on chain):
-#   1. omnictl_machine_classes   — applies tofu/shared/clusters/machine-classes.yaml
-#   2. omnictl_cluster_template  — validates + syncs tofu/shared/clusters/main.yaml
-#   3. omnictl_machine_labels    — labels each registered Omni Machine with this
-#                                  node's `derived_labels`, so the machine-class
-#                                  selectors (`role=cp`, `role=worker`, etc.) match
-#
-# Triggers are content hashes — re-runs only on actual file change, not
-# on every plan. The omnictl invocations themselves are idempotent so
-# manual runs are also safe.
+# What stays here: per-node label sync. Each upstream node module
+# emits `derived_labels` via its `node` output, merged with topology
+# / role / provider / account info. We reconcile that desired map
+# against Omni's MachineStatus list, matching by hostname → machine
+# ID and applying labels via `omnictl machine update`.
 #
 # Auth + endpoint come from environment:
 #   OMNI_SERVICE_ACCOUNT_KEY  — set by the workflow from the repo secret
@@ -24,97 +20,9 @@
 #                               var.omni_endpoint, exported below
 #
 # When omnictl isn't installed (e.g. fresh local clone), the
-# null_resources fail with a clear message; the workflow installs
+# null_resource fails with a clear message; the workflow installs
 # omnictl as part of layer-03 setup.
 
-locals {
-  cluster_template_path    = "${path.module}/../../shared/clusters/main.yaml"
-  machine_classes_path     = "${path.module}/../../shared/clusters/machine-classes.yaml"
-  cluster_template_sha     = filesha256(local.cluster_template_path)
-  machine_classes_sha      = filesha256(local.machine_classes_path)
-  sync_machine_labels_path = "${path.module}/scripts/sync-machine-labels.sh"
-}
-
-# MachineClass + cluster-template sync: always run on every apply.
-#
-# Earlier iterations gated these via file-SHA triggers + a probe
-# data source that read Omni's actual state. Both approaches were
-# subtly broken — file-SHA missed out-of-band wipes (omni-cluster-
-# delete, /var/lib/omni reinstalls), and the probe captured pre-
-# apply state at plan time, so tfstate's stored trigger value
-# matched the next apply's pre-apply probe and the resource was
-# silently skipped even when the actual state was missing.
-#
-# Switched to `triggers_replace = [timestamp()]` via a
-# terraform_data sentinel: each plan generates a fresh timestamp,
-# the sentinel is replaced, the omnictl_* resource is replaced via
-# replace_triggered_by, and the local-exec runs. The omnictl
-# operations themselves are idempotent — `apply -f` is a no-op when
-# the resource matches, `cluster template sync` walks the diff and
-# updates only what changed. So "always run" costs ~5s extra apply
-# time and zero correctness risk.
-
-resource "terraform_data" "omnictl_apply_token" {
-  input = timestamp()
-}
-
-resource "null_resource" "omnictl_machine_classes" {
-  lifecycle {
-    replace_triggered_by = [terraform_data.omnictl_apply_token]
-  }
-
-  provisioner "local-exec" {
-    interpreter = ["bash", "-c"]
-    environment = {
-      OMNI_ENDPOINT = var.omni_endpoint
-    }
-    command = <<-EOT
-      set -euo pipefail
-      command -v omnictl >/dev/null || { echo "omnictl not found in PATH; install it first." >&2; exit 1; }
-      [[ -n "$${OMNI_SERVICE_ACCOUNT_KEY:-}" ]] || { echo "OMNI_SERVICE_ACCOUNT_KEY not set in env." >&2; exit 1; }
-      omnictl apply -f "${local.machine_classes_path}"
-    EOT
-  }
-}
-
-# Validate + sync the cluster template. `cluster template sync` is
-# idempotent — running on every change to the file produces zero-noop
-# applies when the template is already in sync.
-resource "null_resource" "omnictl_cluster_template" {
-  depends_on = [null_resource.omnictl_machine_classes]
-
-  lifecycle {
-    replace_triggered_by = [terraform_data.omnictl_apply_token]
-  }
-
-  triggers = {
-    sha      = local.cluster_template_sha
-    endpoint = var.omni_endpoint
-  }
-
-  provisioner "local-exec" {
-    interpreter = ["bash", "-c"]
-    environment = {
-      OMNI_ENDPOINT = var.omni_endpoint
-    }
-    command = <<-EOT
-      set -euo pipefail
-      command -v omnictl >/dev/null || { echo "omnictl not found in PATH; install it first." >&2; exit 1; }
-      [[ -n "$${OMNI_SERVICE_ACCOUNT_KEY:-}" ]] || { echo "OMNI_SERVICE_ACCOUNT_KEY not set in env." >&2; exit 1; }
-      omnictl cluster template validate -f "${local.cluster_template_path}"
-      omnictl cluster template diff     -f "${local.cluster_template_path}" || true
-      omnictl cluster template sync     -f "${local.cluster_template_path}" --verbose
-    EOT
-  }
-}
-
-# Per-node label sync. Each upstream node module emits derived_labels
-# via its `node` output, already merged with topology / role / provider
-# / account information. We dump the full map to a JSON file and a
-# helper script reconciles it against Omni's MachineStatus list,
-# matching by hostname → machine ID and applying labels via
-# `omnictl machine update`.
-#
 # Why a JSON file rather than a per-node null_resource: the matching
 # (hostname → machine ID) requires a single `omnictl get machinestatus`
 # fetch, and a per-node resource would either pay that cost N times or
@@ -125,6 +33,8 @@ resource "null_resource" "omnictl_cluster_template" {
 #                                    machine config, not Omni metadata)
 #   - any empty-key entries        (defensive)
 locals {
+  sync_machine_labels_path = "${path.module}/scripts/sync-machine-labels.sh"
+
   # Per-node labels-and-ip envelope. The script matches Omni Machines
   # by hostname first (works for OCI), then falls back to ipv4 (works
   # for Contabo, where Talos doesn't pick up the friendly platform
@@ -147,8 +57,6 @@ resource "local_sensitive_file" "node_labels_json" {
 }
 
 resource "null_resource" "omnictl_machine_labels" {
-  depends_on = [null_resource.omnictl_cluster_template]
-
   # Triggers on:
   #   labels_sha — re-run when the desired-labels content changes (e.g.
   #                operator adds a label to a node).

@@ -1,6 +1,6 @@
-# Omni MachineClass resources, applied via `omnictl apply` by tofu's
-# layer-03 cluster.tf (null_resource.omnictl_machine_classes) before
-# the cluster template sync.
+# Omni MachineClass resources, applied via `omnictl apply` by the
+# sync-cluster-template workflow on every change under
+# tofu/shared/clusters/**.
 #
 # Selector keys match the labels tofu's per-node `derived_labels`
 # emits — see `tofu/modules/node-{contabo,oracle,onprem}/main.tf`.
