@@ -20,13 +20,13 @@
 # oraclecloud.com. Region is the OCI region tag (treated as opaque
 # AWS region label).
 #
-# Credentials: OCI Customer Secret Key on a dedicated IAM user
-# (omni-backup-writer), all tofu-managed in
-# tofu/layers/02-oracle-infra/omni-backup-iam.tf. The values reach
-# this template via sync-cluster-template.yml's "Apply
-# EtcdBackupS3Configs" step, which reads the bwire tfstate's
-# `omni_backup_writer_credentials` output and exports each field as
-# the env var below before envsubst.
+# Credentials: OCI Customer Secret Key on the existing bwire
+# operator user (single CSK shared with cluster-image-registry
+# writes), tofu-managed in tofu/layers/02-oracle-infra/oci-operator-
+# csk.tf. The values reach this template via sync-cluster-template
+# .yml's "Apply EtcdBackupS3Configs" step, which reads the bwire
+# tfstate's `omni_backup_writer_credentials` output and exports each
+# field as the env var below before envsubst.
 #
 # Validation: Omni does a list-objects probe at apply time — an
 # `omnictl apply` failure here means the access key is wrong/expired

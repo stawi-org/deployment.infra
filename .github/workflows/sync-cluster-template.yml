@@ -99,9 +99,9 @@ jobs:
       # field, so it goes through `omnictl apply` separately.
       #
       # Credentials come from the bwire 02-oracle-infra tfstate's
-      # `omni_backup_writer_credentials` output (tofu-managed IAM
-      # user + Customer Secret Key live in
-      # tofu/layers/02-oracle-infra/omni-backup-iam.tf). Reading the
+      # `omni_backup_writer_credentials` output (single Customer
+      # Secret Key on the existing operator user, tofu-managed in
+      # tofu/layers/02-oracle-infra/oci-operator-csk.tf). Reading the
       # tfstate JSON directly (rather than `tofu output -json`)
       # avoids needing a tofu init in this workflow — we only need
       # five string fields and the state file is plain JSON.

@@ -22,6 +22,15 @@ variable "oci_operator_user_name" {
   type        = string
   description = "Name of the existing OCI operator user in the bwire tenancy. CSK minted against this user. Empty when not bwire."
   default     = ""
+  validation {
+    # Fail loudly on the bwire cell if the operator forgot to set this.
+    # Other accounts (alimbacho67/brianelvis33/ambetera) don't mint a
+    # CSK so an empty value is fine; we'd ideally key the validation
+    # on local.is_bwire but tofu validation conditions can't read
+    # locals — gate via account_key directly.
+    condition     = var.account_key != "bwire" || var.oci_operator_user_name != ""
+    error_message = "oci_operator_user_name must be set for the bwire cell (the existing operator user that owns the shared S3-compat CSK)."
+  }
 }
 
 data "oci_identity_users" "bwire_operator" {

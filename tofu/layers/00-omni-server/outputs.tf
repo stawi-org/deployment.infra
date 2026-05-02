@@ -1,5 +1,5 @@
 output "omni_url" {
-  value       = "https://cp.antinvestor.com"
+  value       = "https://cp.stawi.org"
   description = "Public Omni endpoint."
 }
 
@@ -8,6 +8,6 @@ output "omni_host_instance_id" {
 }
 
 output "siderolink_advertised_host" {
-  value       = "cp.antinvestor.com"
+  value       = "cp.stawi.org"
   description = "Hostname downstream layers should use to construct siderolink URLs."
 }
