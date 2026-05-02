@@ -110,7 +110,13 @@ resource "oci_core_instance" "this" {
   }
 
   metadata = {
-    user_data = base64encode(local.user_data)
+    # OCI's instance.metadata is capped at 32 KB total. The omni-
+    # host's cloud-init template is ~800 lines and base64-encodes
+    # to ~54 KB — over the cap. base64gzip() (gzip + base64) gets
+    # us to ~15-20 KB. cloud-init auto-detects gzip-compressed
+    # user_data and decompresses transparently, so no consumer-
+    # side change is needed.
+    user_data = base64gzip(local.user_data)
   }
 
   preserve_boot_volume = false
