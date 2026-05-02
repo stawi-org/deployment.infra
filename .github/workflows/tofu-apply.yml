@@ -38,22 +38,15 @@ jobs:
       environment: production
     secrets: inherit
 
-  # Self-hosted Omni control plane (provisions cluster-omni-contabo + CF
-  # Tunnel + orange-cloud DNS for cp.{antinvestor.com,stawi.org}). No
-  # dependency on the talos layers — runs in parallel with `secrets`.
-  # Once Phase B cuts over, downstream layers (04-flux) read the
-  # kubeconfig from this layer's tfstate output instead of 03-talos.
-  omni-server:
-    permissions:
-      contents: read
-      id-token: write
-      pull-requests: write
-    uses: ./.github/workflows/tofu-layer.yml
-    with:
-      layer: 00-omni-server
-      mode: apply
-      environment: production
-    secrets: inherit
+  # NOTE: layer 00-omni-server (the Omni-host VPS itself) has its own
+  # workflow — .github/workflows/tofu-omni-host.yml — triggered by
+  # paths/dispatch on tofu/modules/omni-host/** + tofu/layers/
+  # 00-omni-server/**. Separated 2026-05-02 so a node-only PR can
+  # never reinstall the host (which burns the Let's Encrypt
+  # 5-certs-per-168h quota and rotates the SideroLink join token).
+  # Operators trigger an omni-host apply manually (or by editing
+  # files under those paths); this workflow assumes the omni-host is
+  # already healthy when talos-layer's omnictl ops run.
 
   # All three infra layers (contabo, oracle, onprem) keep one tfstate per
   # account. Run each account as its own matrix cell with fail-fast=false
@@ -161,16 +154,12 @@ jobs:
     secrets: inherit
 
   talos:
-    # omni-server gate is critical: layer 03 shells out to omnictl
-    # against the omni-host's HTTPS endpoint to sync the cluster
-    # template + apply MachineLabels. If 00-omni-server is mid-
-    # reinstall (force_reinstall_generation bumped), those omnictl
-    # calls fail and machines never get labelled. The omni-host
-    # module's null_resource.wait_for_omni_ready blocks 00 until
-    # Omni's /healthz returns 200, so this dependency turns the
-    # workflow-level ordering into "talos runs after Omni has fully
-    # restored".
-    needs: [omni-server, contabo-infra, oracle-infra, onprem-infra]
+    # talos layer runs omnictl against cpd.stawi.org for cluster-
+    # template sync + machine-labels. omni-host lifecycle is owned
+    # by tofu-omni-host.yml — this workflow assumes the host is
+    # already up. If it isn't, the omnictl calls fail loudly here,
+    # which is preferable to silently kicking off a reinstall.
+    needs: [contabo-infra, oracle-infra, onprem-infra]
     # Per-account isolation across all three providers: each infra layer
     # is now a fail-fast=false matrix, so `needs.X.result == 'success'`
     # would block talos unless EVERY cell succeeded. That's the wrong

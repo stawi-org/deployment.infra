@@ -1,0 +1,74 @@
+# .github/workflows/tofu-omni-host.yml
+#
+# Owns the lifecycle of layer 00-omni-server (the Contabo VPS that
+# runs Omni + dex + nginx). Separated from tofu-apply.yml/tofu-plan.yml
+# so a node-only PR can never trigger an omni-host reinstall — that
+# was the failure mode that burned through the Let's Encrypt
+# 5-certs-per-168h quota during the 2026-05-02 reinstall iteration.
+#
+# Triggers:
+#   - PR touching omni-host paths → plan
+#   - push to main touching omni-host paths → apply
+#   - workflow_dispatch → operator-driven plan or apply (e.g. when
+#     bumping force_reinstall_generation)
+#
+# Concurrency: own group `tofu-omni-host-production`. The node-
+# provisioning workflow's group is `tofu-apply-production`; the two
+# do not serialize against each other. If an operator manually fires
+# both at once, talos-layer omnictl ops will fail noisily during the
+# omni-host reinstall window — explicit failure is preferable to
+# silent state corruption.
+#
+# Security note: the only operator-supplied inputs are `mode` (a
+# `choice` with fixed options) and `extra_plan_args` (passed to
+# tofu-layer.yml's `extra_plan_args` input, which routes it into a
+# tofu CLI invocation, not a shell expansion). Neither comes from
+# untrusted GitHub event payloads (PR titles, issue bodies, etc.).
+name: tofu-omni-host
+
+on:
+  pull_request:
+    paths:
+      - tofu/modules/omni-host/**
+      - tofu/layers/00-omni-server/**
+      - .github/workflows/tofu-omni-host.yml
+  push:
+    branches: [main]
+    paths:
+      - tofu/modules/omni-host/**
+      - tofu/layers/00-omni-server/**
+      - .github/workflows/tofu-omni-host.yml
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: plan or apply
+        type: choice
+        default: plan
+        options: [plan, apply]
+      extra_plan_args:
+        description: "Extra args appended to tofu plan (e.g. -replace=foo.bar). Recovery use only."
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+concurrency:
+  group: tofu-omni-host-${{ github.event_name == 'pull_request' && github.ref || 'production' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  omni-host:
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    uses: ./.github/workflows/tofu-layer.yml
+    with:
+      layer: 00-omni-server
+      mode: ${{ github.event_name == 'pull_request' && 'plan' || (github.event_name == 'workflow_dispatch' && inputs.mode || 'apply') }}
+      environment: production
+      extra_plan_args: ${{ github.event_name == 'workflow_dispatch' && inputs.extra_plan_args || '' }}
+    secrets: inherit
