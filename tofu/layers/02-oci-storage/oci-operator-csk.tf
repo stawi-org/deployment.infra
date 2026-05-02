@@ -19,14 +19,44 @@
 # the same `aws s3 cp + jq` pattern sync-cluster-template.yml uses
 # today.
 
-data "oci_identity_users" "bwire_operator" {
+# Looking up the operator user by exact name fails when OCI stores
+# the user under a federated/IDCS namespace prefix (typical patterns:
+#   oracleidentitycloudservice/<email>
+#   <idp_name>/<email>
+# ). Listing ALL users in the tenancy and matching by suffix-or-exact
+# is more robust across federation shapes. The match runs over the
+# raw provider response and surfaces the matched OCID via a local;
+# if no match, validation triggers a clear error.
+data "oci_identity_users" "all" {
   provider       = oci.bwire
   compartment_id = local.bwire_tenancy_ocid
-  name           = var.oci_operator_user_name
+}
+
+locals {
+  # Try exact match first; if not, search for a name ending in
+  # "/${var.oci_operator_user_name}" (federated prefix form).
+  bwire_operator_users = [
+    for u in data.oci_identity_users.all.users :
+    u
+    if u.name == var.oci_operator_user_name
+    || endswith(u.name, "/${var.oci_operator_user_name}")
+  ]
+}
+
+check "bwire_operator_user_found" {
+  assert {
+    condition = length(local.bwire_operator_users) > 0
+    error_message = format(
+      "No user matching '%s' (or '<idp>/%s') in bwire tenancy. Available users: %s",
+      var.oci_operator_user_name,
+      var.oci_operator_user_name,
+      jsonencode([for u in data.oci_identity_users.all.users : u.name]),
+    )
+  }
 }
 
 resource "oci_identity_customer_secret_key" "bwire_operator" {
   provider     = oci.bwire
-  user_id      = data.oci_identity_users.bwire_operator.users[0].id
+  user_id      = local.bwire_operator_users[0].id
   display_name = "stawi-cluster-s3-compat"
 }
