@@ -1,0 +1,30 @@
+# Per-machine ConfigPatch resource — applied via `omnictl apply` by
+# the sync-cluster-template workflow, one resource per node that
+# needs a machine-specific Talos patch (today: every Contabo node).
+#
+# Rendered by Bash (envsubst), NOT by OpenTofu. The ${...} forms
+# below are environment-variable references resolved at workflow
+# runtime; tofu never reads this file. Three variables consumed:
+#   ID                       unique resource id (e.g. stawi-<node>-link)
+#   TARGET_SELECTORS_BLOCK   pre-rendered YAML list-of-strings, 4-space indent
+#   INDENTED_DATA            pre-rendered Talos patch body, 4-space indent
+#
+# `target_label_selectors` is an array of label-equality predicates;
+# Omni binds the patch to whichever Machine carries ALL the listed
+# labels. cluster=stawi plus per-node-name (synced by layer-03's
+# machine-labels reconciler) ensures exactly one match.
+#
+# `data` carries the multi-doc Talos config patch verbatim. The
+# rendered file is fed to `omnictl apply -f <path>` (omnictl rejects
+# stdin in v1.7.x — must be a real file).
+metadata:
+  namespace: default
+  type: ConfigPatches.omni.sidero.dev
+  id: ${ID}
+  labels:
+    omni.sidero.dev/cluster: stawi
+spec:
+  target_label_selectors:
+${TARGET_SELECTORS_BLOCK}
+  data: |
+${INDENTED_DATA}

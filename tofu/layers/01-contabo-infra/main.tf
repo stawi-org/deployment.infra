@@ -8,7 +8,12 @@ locals {
     }
   }
 
-  contabo_nodes = length(local.contabo_accounts_effective) > 0 ? merge([
+  # Drop the conditional: merge([]...) is {} when the input list is
+  # empty, so the whole expression naturally degenerates without the
+  # ternary. The ternary previously broke type inference when the
+  # true branch produced a typed object with known attributes (e.g.
+  # contabo-bwire-node-1) and the false {} couldn't unify with it.
+  contabo_nodes = merge([
     for account_key, account in local.contabo_accounts_effective : {
       for node_key, node in account.nodes : node_key => {
         account_key = account_key
@@ -17,7 +22,7 @@ locals {
         node        = node
       }
     }
-  ]...) : {}
+  ]...)
 }
 
 locals {

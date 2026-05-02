@@ -168,6 +168,9 @@ patches:
 # hourly, so a CP-host failure is recoverable via Contabo PUT-based
 # reinstall + omni-restore. We'll re-introduce HA as part of a
 # separate KubeSpan-or-equivalent full-mesh PR.
+#
+# Current sole CP: oci-bwire-node-1 (OCI bwire ARM A1.Flex; same
+# compute family as workers).
 kind: ControlPlane
 machineClass:
   name: cp
@@ -182,18 +185,19 @@ machineClass:
 # join the cluster — exactly the failure mode that motivated this
 # layout).
 #
-# Current count is 3: contabo-bwire-{1,2} (Contabo public-IPv4,
-# LB-labelled for `prod.<zone>` ingress) + oci-brianelvis33-node-1
-# (OCI worker, also LB-labelled — ephemeral public IPv4 + GUA IPv6
-# make it a valid LB target too).
+# Current count is 5:
+#   - contabo-bwire-{1,2,3} (3 Contabo VPSes; bwire-1 also LB-targeted
+#     for prod.<zone> ingress, bwire-2 + bwire-3 ingress-off).
+#   - oci-alimbacho67-node-1 (OCI ARM A1.Flex, LB-targeted).
+#   - oci-brianelvis33-node-1 (OCI ARM A1.Flex, LB-targeted).
 #
-# `oci-ambetera-node-1` was temporarily removed 2026-05-02 (operator
-# directive) and the ambetera nodes.yaml in R2 inventory was emptied.
-# Restoring ambetera = re-add the node entry to its R2 nodes.yaml
-# AND bump this back to 4. After the omni-host migrates off Contabo
-# the freed Contabo VPS rejoins as `contabo-bwire-node-3` and this
-# bumps to size: 4 (or 5 if ambetera is also restored).
+# Cross-account redundancy on prod.<zone>: 3 LB-targeted nodes
+# spread across 3 distinct accounts (Contabo bwire + OCI alimbacho67
+# + OCI brianelvis33) — survives any single account outage.
+#
+# tindase on-prem worker is OUT OF SCOPE for this realignment;
+# restoring it = bump size to 6 and re-add to its inventory.
 kind: Workers
 machineClass:
   name: workers
-  size: 3
+  size: 5

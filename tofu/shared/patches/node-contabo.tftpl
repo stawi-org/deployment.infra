@@ -37,8 +37,8 @@ machine:
   kubelet:
     nodeIP:
       validSubnets:
-        - ${ipv6_subnet}
-        - ${ipv4}/32
+        - ${IPV6_SUBNET}
+        - ${IPV4}/32
 
 ---
 apiVersion: v1alpha1
@@ -56,15 +56,15 @@ apiVersion: v1alpha1
 kind: LinkConfig
 name: wan
 addresses:
-  - address: ${ipv4}/24
-  - address: ${ipv6}/64
+  - address: ${IPV4}/24
+  - address: ${IPV6}/64
 routes:
-  - gateway: ${ipv4_gateway}
-  - gateway: ${ipv6_gateway}
+  - gateway: ${IPV4_GATEWAY}
+  - gateway: ${IPV6_GATEWAY}
 
 ---
 
 apiVersion: v1alpha1
 kind: HostnameConfig
-hostname: ${hostname}
+hostname: ${HOSTNAME}
 auto: off

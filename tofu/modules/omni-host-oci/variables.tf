@@ -3,22 +3,6 @@ variable "name" {
   description = "Hostname for the Omni host VPS, e.g. cluster-omni-contabo."
 }
 
-variable "contabo_product_id" {
-  type        = string
-  default     = "V94" # Same shape the existing Contabo CPs use; V47 was retired by Contabo.
-  description = "Contabo product ID for the omni-host VPS shape."
-}
-
-variable "contabo_image_id" {
-  type        = string
-  description = "Contabo image ID for Ubuntu 24.04 LTS Minimal. Resolve via the Contabo API."
-}
-
-variable "contabo_region" {
-  type    = string
-  default = "EU"
-}
-
 variable "omni_version" { type = string }
 variable "dex_version" { type = string }
 variable "nginx_version" {
@@ -58,38 +42,6 @@ variable "github_oidc_allowed_orgs" {
   default = ["stawi-org"]
 }
 
-variable "ssh_authorized_keys" {
-  type        = list(string)
-  default     = []
-  description = "Operator SSH public keys (sourced from the CONTABO_PUBLIC_SSH_KEY github secret). Authorised for root login on the omni-host VPS — used for diagnostics (Omni stack troubleshooting, container log inspection). Only honoured when ssh_enabled = true."
-}
-
-variable "ssh_enabled" {
-  type        = bool
-  default     = true
-  description = <<-EOT
-    Toggle whether SSH access is provisioned on the omni-host. When
-    true (default) cloud-init threads ssh_authorized_keys onto root
-    and sshd is configured with PermitRootLogin prohibit-password.
-    When false, no keys are added and PermitRootLogin is no — sshd
-    refuses every login attempt at PreAuth.
-
-    Operator workflow for safely flipping to false:
-      1. Apply with ssh_enabled = true (default), verify the host
-         comes up cleanly (cluster-health green, /healthz 200).
-      2. Set ssh_enabled = false in tfvars, bump
-         force_reinstall_generation, apply.
-    The reinstall lands the lockdown on a known-good host so a
-    cloud-init bug can't deadlock recovery (we hit that on PR #131
-    where lockdown + a transient networking issue at first boot
-    locked us out completely).
-
-    Break-glass with ssh_enabled = false is the Contabo serial
-    console; the wg-users user-VPN keeps tunnel access independent
-    of sshd.
-  EOT
-}
-
 variable "cf_dns_api_token" {
   type        = string
   sensitive   = true
@@ -119,6 +71,12 @@ variable "eula_name" {
 variable "eula_email" {
   type        = string
   description = "Email supplied to Omni's --eula-accept-email flag."
+}
+
+variable "ssh_authorized_keys" {
+  type        = list(string)
+  default     = []
+  description = "Operator SSH public keys (sourced from the CONTABO_PUBLIC_SSH_KEY github secret). Authorised for root login on the omni-host VPS — used for diagnostics (Omni stack troubleshooting, container log inspection). Only honoured when ssh_enabled = true."
 }
 
 # ---- R2 backup / restore -----------------------------------------------------
@@ -186,49 +144,6 @@ variable "etcd_backup_enabled" {
   description = "Render --etcd-backup-s3 on the omni-server command line. Pair with an EtcdBackupS3Configs resource in Omni and a backupConfiguration block in the cluster template."
 }
 
-# ---- Contabo PUT-driven reinstall path ---------------------------------------
-# Contabo's image_id-only PUT is silently a metadata update, so the contabo
-# provider's own update path doesn't actually re-image a running disk. We use
-# the same ensure-image.sh script the cluster nodes use (in node-contabo), and
-# need the OAuth2 creds to call the Contabo API directly. Pulled from
-# module.contabo_account_state in layer 00-omni-server (same source the
-# contabo provider already reads from).
-variable "contabo_client_id" {
-  type      = string
-  sensitive = true
-}
-variable "contabo_client_secret" {
-  type      = string
-  sensitive = true
-}
-variable "contabo_api_user" {
-  type      = string
-  sensitive = true
-}
-variable "contabo_api_password" {
-  type      = string
-  sensitive = true
-}
-
-variable "force_reinstall_generation" {
-  type        = number
-  default     = 1
-  description = <<-EOT
-    Bump to force a Contabo reinstall of the omni-host VPS via
-    null_resource.ensure_image. The canonical path for any cloud-init
-    template change that needs to land on the running host (new
-    sysctl, systemd unit, certbot config). omni-restore.service pulls
-    the most recent /var/lib/omni snapshot from R2 on first boot, so
-    as long as omni-backup.timer has fired recently the reinstall is
-    non-destructive — every cluster, every Link, every machine UUID
-    survives.
-  EOT
-  validation {
-    condition     = var.force_reinstall_generation >= 1
-    error_message = "force_reinstall_generation must be >= 1."
-  }
-}
-
 # ---- WireGuard user-VPN ------------------------------------------------------
 # Adds users to the wg-users interface on the omni-host. The user-VPN is
 # distinct from SideroLink (Omni's own management mesh): different port,
@@ -262,4 +177,68 @@ variable "vpn_users" {
 
     Removing a user: drop their entry, bump force_reinstall_generation.
   EOT
+}
+
+# --- OCI substrate ---------------------------------------------------------
+
+variable "compartment_ocid" {
+  type        = string
+  description = "OCID of the bwire compartment that owns the omni-host VM, VCN, and reserved IP."
+}
+
+variable "availability_domain_index" {
+  type        = number
+  default     = 0
+  description = "0-based index into the tenancy's availability_domains list. Default 0 picks the first AD; bump if AD-1 is out of A1.Flex capacity. Mirrors the pattern used by oracle-account-infra — operator doesn't have to know the AD-name string."
+  validation {
+    condition     = var.availability_domain_index >= 0
+    error_message = "availability_domain_index must be >= 0."
+  }
+}
+
+variable "shape" {
+  type        = string
+  default     = "VM.Standard.A1.Flex"
+  description = "OCI compute shape. A1.Flex is ARM Always-Free."
+}
+
+variable "ocpus" {
+  type        = number
+  default     = 2
+  description = "vCPU count. 2 OCPUs leaves room for a sibling cluster-CP VM in the same tenancy under the 4-OCPU Always-Free ARM cap."
+}
+
+variable "memory_gb" {
+  type        = number
+  default     = 12
+  description = "Memory (GB). 2 VMs at 12 GB exactly fills the 24-GB Always-Free ARM cap."
+}
+
+variable "boot_volume_size_gb" {
+  type        = number
+  default     = 90
+  description = "Boot volume size (GB). 2 VMs at 90 GB plus the cluster CP fits inside the 200-GB Always-Free block-volume cap."
+}
+
+variable "ubuntu_image_ocid" {
+  type        = string
+  description = "OCI Ubuntu 24.04 LTS Minimal aarch64 image OCID. Looked up by the caller via oci_core_images data source (operating_system='Canonical Ubuntu', operating_system_version='24.04', shape='VM.Standard.A1.Flex')."
+}
+
+variable "vcn_cidr" {
+  type        = string
+  default     = "10.42.0.0/16"
+  description = "Dedicated VCN CIDR for the omni-host. Separate from oracle-account-infra's cluster-node VCN to keep blast radius small."
+}
+
+variable "subnet_cidr" {
+  type        = string
+  default     = "10.42.1.0/24"
+  description = "Subnet CIDR within the omni-host VCN."
+}
+
+variable "enable_ipv6" {
+  type        = bool
+  default     = true
+  description = "Enable IPv6 on the VCN + VNIC. Required for cp/cpd AAAA records."
 }

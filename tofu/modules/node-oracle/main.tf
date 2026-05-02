@@ -158,6 +158,7 @@ locals {
       "node.antinvestor.io/provider"  = "oracle"
       "node.antinvestor.io/account"   = var.account_key
       "node.antinvestor.io/role"      = var.role
+      "node.antinvestor.io/name"      = var.name
     },
     var.role == "controlplane" ? {
       "node-role.kubernetes.io/control-plane" = ""
