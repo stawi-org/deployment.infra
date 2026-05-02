@@ -182,14 +182,18 @@ machineClass:
 # join the cluster — exactly the failure mode that motivated this
 # layout).
 #
-# Current count is 4: contabo-bwire-{1,2} (Contabo public-IPv4,
+# Current count is 3: contabo-bwire-{1,2} (Contabo public-IPv4,
 # LB-labelled for `prod.<zone>` ingress) + oci-brianelvis33-node-1
-# + oci-ambetera-node-1 (OCI workers, also LB-labelled — they have
-# ephemeral public IPv4 + GUA IPv6 so are valid LB targets too).
-# After the omni-host migrates off Contabo (oci-bwire-node-1
-# becomes the new omni-host), the freed Contabo VPS rejoins as
-# `contabo-bwire-node-3` and this bumps to size: 5.
+# (OCI worker, also LB-labelled — ephemeral public IPv4 + GUA IPv6
+# make it a valid LB target too).
+#
+# `oci-ambetera-node-1` was temporarily removed 2026-05-02 (operator
+# directive) and the ambetera nodes.yaml in R2 inventory was emptied.
+# Restoring ambetera = re-add the node entry to its R2 nodes.yaml
+# AND bump this back to 4. After the omni-host migrates off Contabo
+# the freed Contabo VPS rejoins as `contabo-bwire-node-3` and this
+# bumps to size: 4 (or 5 if ambetera is also restored).
 kind: Workers
 machineClass:
   name: workers
-  size: 4
+  size: 3
