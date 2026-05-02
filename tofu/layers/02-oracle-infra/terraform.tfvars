@@ -1,10 +1,9 @@
 age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt"
 
 # bwire operator user name — used by oci-operator-csk.tf to look up
-# the existing admin user and mint a CSK against it.
-# operator: set to the actual OCI IAM username in the bwire tenancy
-# before merge (e.g. "peter.bwire@example.com" or the short login name).
-# oci_operator_user_name = ""
+# the existing admin user and mint a CSK against it. Only consumed
+# on the bwire matrix-cell; ignored by other accounts.
+oci_operator_user_name = "bwire@stawi.org"
 
 # Bump to force a fresh OCI custom image. Gen<N> is the image
 # display_name suffix; bumping triggers replace_triggered_by on
@@ -36,4 +35,11 @@ force_image_generation = 12
 #                   nodes land on the new-token Talos image; from now
 #                   on any var.image_id change naturally REPLACES
 #                   image_change and propagates to instance replace.
-force_reinstall_generation = 9
+#  10 — 2026-05-02: paired with the omni-host migration off Contabo
+#                   onto OCI bwire (PR #156). The new omni-host mints
+#                   a fresh SideroLink token at first boot; bumping
+#                   here rolls every OCI Talos node onto an image
+#                   carrying that token (otherwise the existing
+#                   nodes still hold the old token and Omni rejects
+#                   their joins with `has_valid_join_token: false`).
+force_reinstall_generation = 10

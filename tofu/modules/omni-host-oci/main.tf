@@ -71,9 +71,23 @@ locals {
   )
 }
 
+# Auto-discover the tenancy's ADs and pick by index — same pattern
+# oracle-account-infra uses for cluster nodes. Operator doesn't set
+# the AD-name string; index 0 picks the first AD (clamped to last
+# AD if index is out-of-range so single-AD regions still work).
+data "oci_identity_availability_domains" "this" {
+  compartment_id = var.compartment_ocid
+}
+
+locals {
+  available_ads = data.oci_identity_availability_domains.this.availability_domains[*].name
+  ad_index      = min(var.availability_domain_index, length(local.available_ads) - 1)
+  selected_ad   = local.available_ads[local.ad_index]
+}
+
 resource "oci_core_instance" "this" {
   compartment_id      = var.compartment_ocid
-  availability_domain = var.availability_domain
+  availability_domain = local.selected_ad
   shape               = var.shape
   display_name        = var.name
 

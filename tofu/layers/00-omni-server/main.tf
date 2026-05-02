@@ -52,11 +52,11 @@ module "omni_host_oci" {
   source    = "../../modules/omni-host-oci"
   providers = { oci = oci.bwire }
 
-  name                = "oci-bwire-omni"
-  compartment_ocid    = module.bwire_account_state.auth.auth.compartment_ocid
-  availability_domain = var.bwire_availability_domain
-  ubuntu_image_ocid   = data.oci_core_images.ubuntu_aarch64.images[0].id
-  enable_ipv6         = try(module.bwire_account_state.auth.auth.enable_ipv6, true)
+  name                      = "oci-bwire-omni"
+  compartment_ocid          = module.bwire_account_state.auth.auth.compartment_ocid
+  availability_domain_index = var.bwire_availability_domain_index
+  ubuntu_image_ocid         = data.oci_core_images.ubuntu_aarch64.images[0].id
+  enable_ipv6               = try(module.bwire_account_state.auth.auth.enable_ipv6, true)
 
   omni_version                         = var.omni_version
   dex_version                          = var.dex_version

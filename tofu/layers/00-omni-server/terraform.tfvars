@@ -1,7 +1,7 @@
-# OCI availability-domain in the bwire tenancy/region. Operator must
-# set this to an AD with A1.Flex capacity. Look up via:
-#   oci iam availability-domain list --profile bwire
-bwire_availability_domain = "<set-by-operator>"
+# bwire_availability_domain_index defaults to 0 (first AD). The
+# module auto-discovers ADs via oci_identity_availability_domains
+# data source — same pattern oracle-account-infra uses for cluster
+# nodes. Bump this only if AD-1 is out of A1.Flex capacity.
 
 # Native etcd backup → OCI omni-backup-storage in bwire. The CSK
 # used by Omni's --etcd-backup-s3 flag is now tofu-managed via

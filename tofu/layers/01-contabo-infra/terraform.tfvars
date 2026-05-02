@@ -43,4 +43,11 @@ age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
 #                   start for cluster nodes once cross-CP etcd peering
 #                   actually works, so SideroLink Links are minted
 #                   against an Omni that can forward.
-force_reinstall_generation = 7
+#   8 — 2026-05-02: paired with the omni-host migration off Contabo
+#                   onto OCI bwire (PR #156). New omni-host mints a
+#                   fresh SideroLink token at first boot; bumping
+#                   here rolls every Contabo VPS — including the
+#                   freed bwire-3 (was 202727781 / Contabo omni-host)
+#                   newly re-adopted by this layer — onto images
+#                   carrying that new token.
+force_reinstall_generation = 8

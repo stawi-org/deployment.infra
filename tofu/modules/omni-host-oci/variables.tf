@@ -186,9 +186,14 @@ variable "compartment_ocid" {
   description = "OCID of the bwire compartment that owns the omni-host VM, VCN, and reserved IP."
 }
 
-variable "availability_domain" {
-  type        = string
-  description = "OCI availability-domain name (e.g. 'foo:US-ASHBURN-AD-1' or short-form). VM.Standard.A1.Flex requires an AD with A1 capacity."
+variable "availability_domain_index" {
+  type        = number
+  default     = 0
+  description = "0-based index into the tenancy's availability_domains list. Default 0 picks the first AD; bump if AD-1 is out of A1.Flex capacity. Mirrors the pattern used by oracle-account-infra — operator doesn't have to know the AD-name string."
+  validation {
+    condition     = var.availability_domain_index >= 0
+    error_message = "availability_domain_index must be >= 0."
+  }
 }
 
 variable "shape" {

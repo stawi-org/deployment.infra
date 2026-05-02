@@ -86,9 +86,10 @@ variable "r2_secret_access_key" {
   sensitive = true
 }
 
-variable "bwire_availability_domain" {
-  type        = string
-  description = "OCI availability-domain name (e.g. 'foo:US-ASHBURN-AD-1' or short form) for bwire's omni-host VM. Pick an AD with A1.Flex capacity in your region. Operator sets this in terraform.tfvars before merge."
+variable "bwire_availability_domain_index" {
+  type        = number
+  default     = 0
+  description = "0-based index into bwire's availability_domains list for the omni-host VM. Default 0 picks AD-1; bump if AD-1 is out of A1.Flex capacity. Mirrors oracle-account-infra's per-node availability_domain_index pattern."
 }
 
 variable "etcd_backup_enabled" {
