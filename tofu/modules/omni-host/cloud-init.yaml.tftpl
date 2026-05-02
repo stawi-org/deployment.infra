@@ -10,19 +10,31 @@ fqdn: ${name}
 # provision. We can't override it from our side; the actual health
 # signal is omni-stack-ready.service, not cloud-init's overall status.
 
-# Root SSH login enabled for the operator keys threaded in via tofu
-# (CONTABO_PUBLIC_SSH_KEY github secret). Used for diagnostics — Omni
-# container log inspection, in-place edits to /etc/omni/* config, etc.
-# Password auth is hard-disabled and fail2ban guards sshd against
-# brute-force probing on the public IP. The security boundary for
-# Omni itself remains Omni's own auth (Dex+GitHub OIDC,
-# --initial-users gated) and the SideroLink WireGuard handshake
-# (Curve25519). Break-glass is the Contabo serial console.
+# SSH access is gated by var.omni_host_ssh_enabled. When ON, the
+# operator's CONTABO_PUBLIC_SSH_KEY is threaded onto root for
+# diagnostics; when OFF, no authorized_keys lands and sshd's
+# PermitRootLogin (in /etc/ssh/sshd_config.d/99-stawi.conf below) is
+# set to no. Either way password auth is hard-off and fail2ban
+# guards the public port. Break-glass: Contabo serial console.
+#
+# The toggle is a separate input from force_reinstall_generation so
+# operators can flip it AFTER verifying the host comes up cleanly
+# with SSH on. Pattern:
+#   1. apply with omni_host_ssh_enabled=true (default), verify
+#      /healthz returns 200 and the cluster is healthy
+#   2. set omni_host_ssh_enabled=false in tfvars, bump
+#      force_reinstall_generation, apply — host re-installs with
+#      lockdown
+# Combined with the disable_root flag and the runtime sshd drop-in,
+# locking SSH only happens when the host is already known-good,
+# which avoids the diagnostic deadlock we hit when both were
+# bundled into the first reinstall (cloud-init had a transient
+# networking failure on that boot and we had no path back in).
 
 users:
   - name: root
     lock_passwd: true
-%{ if length(ssh_authorized_keys) > 0 ~}
+%{ if ssh_enabled && length(ssh_authorized_keys) > 0 ~}
     ssh_authorized_keys:
 %{ for key in ssh_authorized_keys ~}
       - ${key}
@@ -786,17 +798,18 @@ write_files:
       APT::Periodic::Update-Package-Lists "1";
       APT::Periodic::Unattended-Upgrade "1";
 
-  # Hard-disable password auth at the sshd layer too — cloud-init's
-  # ssh_pwauth: false touches Ubuntu defaults but a stray
-  # /etc/ssh/sshd_config.d/* drop-in can re-enable it. This fragment
-  # is loaded last (alphabetically high prefix) and locks the policy.
+  # sshd policy. PasswordAuthentication is hard off either way (also
+  # mirrored at the cloud-init layer). PermitRootLogin tracks
+  # var.omni_host_ssh_enabled — `prohibit-password` (key-only) when
+  # SSH is enabled, `no` when disabled. Loaded last (alphabetically
+  # high prefix) so any earlier drop-in is overridden.
   - path: /etc/ssh/sshd_config.d/99-stawi.conf
     permissions: "0644"
     content: |
       PasswordAuthentication no
       ChallengeResponseAuthentication no
       KbdInteractiveAuthentication no
-      PermitRootLogin prohibit-password
+      PermitRootLogin ${ssh_enabled ? "prohibit-password" : "no"}
       MaxAuthTries 3
       LoginGraceTime 20s
 

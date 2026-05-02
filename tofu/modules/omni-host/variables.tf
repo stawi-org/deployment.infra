@@ -61,7 +61,33 @@ variable "github_oidc_allowed_orgs" {
 variable "ssh_authorized_keys" {
   type        = list(string)
   default     = []
-  description = "Operator SSH public keys (sourced from the CONTABO_PUBLIC_SSH_KEY github secret). Authorised for root login on the omni-host VPS — used for diagnostics (Omni stack troubleshooting, container log inspection)."
+  description = "Operator SSH public keys (sourced from the CONTABO_PUBLIC_SSH_KEY github secret). Authorised for root login on the omni-host VPS — used for diagnostics (Omni stack troubleshooting, container log inspection). Only honoured when ssh_enabled = true."
+}
+
+variable "ssh_enabled" {
+  type        = bool
+  default     = true
+  description = <<-EOT
+    Toggle whether SSH access is provisioned on the omni-host. When
+    true (default) cloud-init threads ssh_authorized_keys onto root
+    and sshd is configured with PermitRootLogin prohibit-password.
+    When false, no keys are added and PermitRootLogin is no — sshd
+    refuses every login attempt at PreAuth.
+
+    Operator workflow for safely flipping to false:
+      1. Apply with ssh_enabled = true (default), verify the host
+         comes up cleanly (cluster-health green, /healthz 200).
+      2. Set ssh_enabled = false in tfvars, bump
+         force_reinstall_generation, apply.
+    The reinstall lands the lockdown on a known-good host so a
+    cloud-init bug can't deadlock recovery (we hit that on PR #131
+    where lockdown + a transient networking issue at first boot
+    locked us out completely).
+
+    Break-glass with ssh_enabled = false is the Contabo serial
+    console; the wg-users user-VPN keeps tunnel access independent
+    of sshd.
+  EOT
 }
 
 variable "cf_dns_api_token" {

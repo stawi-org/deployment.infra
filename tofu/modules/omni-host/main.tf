@@ -56,6 +56,7 @@ locals {
       cf_dns_api_token                     = var.cf_dns_api_token
       eula_email                           = var.eula_email
       ssh_authorized_keys                  = var.ssh_authorized_keys
+      ssh_enabled                          = var.ssh_enabled
       r2_account_id                        = var.r2_account_id
       r2_access_key_id                     = var.r2_access_key_id
       r2_secret_access_key                 = var.r2_secret_access_key

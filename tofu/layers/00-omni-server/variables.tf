@@ -114,6 +114,12 @@ variable "force_reinstall_generation" {
   }
 }
 
+variable "omni_host_ssh_enabled" {
+  type        = bool
+  default     = true
+  description = "Toggle SSH access on the omni-host. Default true (operator key honoured). Flip to false in a follow-up apply (with force_reinstall_generation bumped) once the host is verified up — see modules/omni-host/variables.tf for the workflow."
+}
+
 variable "vpn_users" {
   type = map(object({
     public_key = string

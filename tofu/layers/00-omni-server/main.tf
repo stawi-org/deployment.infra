@@ -78,6 +78,7 @@ module "omni_host" {
   eula_name                            = var.omni_eula_name
   eula_email                           = var.omni_eula_email
   ssh_authorized_keys                  = var.contabo_public_ssh_key == "" ? [] : [var.contabo_public_ssh_key]
+  ssh_enabled                          = var.omni_host_ssh_enabled
 
   # R2 backup/restore — reuses the existing tofu-state credentials so
   # /var/lib/omni snapshots ride the same blast radius as the rest of
