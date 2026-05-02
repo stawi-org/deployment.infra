@@ -27,13 +27,13 @@
 #                   force_reinstall_generation bumps so the fleet
 #                   reinstalls onto new-token images and registers
 #                   from scratch.
-#   4 — 2026-05-02: lock down SSH on the omni-host. Cloud-init no
-#                   longer threads ssh_authorized_keys onto the root
-#                   user, sshd's PermitRootLogin is now no (was
-#                   prohibit-password), and disable_root: true at the
-#                   cloud-init level. From this point operators only
-#                   reach the host via the WG user-VPN (wg-users) or
-#                   the Contabo serial console; everything operational
-#                   goes through Omni UI / omnictl / kubectl /
-#                   talosctl over the public HTTPS endpoints.
-force_reinstall_generation = 4
+#   5 — 2026-05-02: re-bump after reverting the SSH-lockdown attempt
+#                   (PR #131 + revert PR #132). The lockdown's cloud-
+#                   init shape (no ssh_authorized_keys threaded onto
+#                   root + disable_root: true) left the host non-
+#                   functional after reinstall — /healthz returned
+#                   521 for 25+ min and we had no diagnostic path
+#                   in without SSH. Bumping past gen=4 (which is
+#                   the broken state in tfstate) rolls the host back
+#                   onto the known-working SSH-enabled cloud-init.
+force_reinstall_generation = 5
