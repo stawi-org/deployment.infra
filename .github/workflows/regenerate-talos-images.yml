@@ -337,6 +337,48 @@ jobs:
           done
           echo "::notice::uploaded to ${dest_prefix}/"
 
+          # ----- Mirror to OCI cluster-image-registry (dual-write) -----
+          # Same bytes, second destination. Downstream consumers still
+          # read from R2 / pkgs.stawi.org; the OCI copy is the
+          # transition target so a follow-up PR can flip the public-URL
+          # CF Worker + reader paths without a "where do the bytes
+          # live" gap.
+          #
+          # Credentials (S3-compat access key + secret) come from the
+          # alimbacho67 02-oracle-infra tfstate's
+          # `cluster_image_uploader_credentials` output (tofu-managed
+          # in cluster-image-uploader-iam.tf). Skipped cleanly when
+          # the tfstate doesn't yet carry the IAM resources (fresh
+          # repo / pre-bootstrap / pre-PR-merge run).
+          state=$(mktemp)
+          trap 'rm -f "$state"' EXIT
+          state_key="production/02-oracle-infra-alimbacho67.tfstate"
+          if ! aws s3 cp "s3://${R2_BUCKET}/${state_key}" "$state" \
+                 --endpoint-url "${R2_ENDPOINT}" \
+                 --region us-east-1 >/dev/null 2>&1; then
+            echo "::notice::02-oracle-infra-alimbacho67 tfstate not found — skipping OCI mirror (apply that layer first)."
+          elif [[ "$(jq -r '.outputs.cluster_image_uploader_credentials.value // "null"' "$state")" == "null" ]]; then
+            echo "::notice::cluster_image_uploader_credentials output missing — re-run 02-oracle-infra (alimbacho67) apply to populate."
+          else
+            oci_access_key_id=$(jq -r '.outputs.cluster_image_uploader_credentials.value.access_key_id' "$state")
+            oci_secret_access_key=$(jq -r '.outputs.cluster_image_uploader_credentials.value.secret_access_key' "$state")
+            oci_bucket=$(jq -r '.outputs.cluster_image_uploader_credentials.value.bucket' "$state")
+            oci_region=$(jq -r '.outputs.cluster_image_uploader_credentials.value.region' "$state")
+            oci_endpoint=$(jq -r '.outputs.cluster_image_uploader_credentials.value.endpoint' "$state")
+            oci_dest_prefix="s3://${oci_bucket}/${schematic_id}"
+            for f in "${upload_files[@]}"; do
+              name=$(basename "$f")
+              AWS_ACCESS_KEY_ID="$oci_access_key_id" \
+              AWS_SECRET_ACCESS_KEY="$oci_secret_access_key" \
+              AWS_EC2_METADATA_DISABLED=true \
+                aws s3 cp "$f" "${oci_dest_prefix}/${name}" \
+                  --content-type "$(content_type_for "$name")" \
+                  --endpoint-url "$oci_endpoint" \
+                  --region "$oci_region"
+            done
+            echo "::notice::mirrored to oci://${oci_bucket}/${schematic_id}/"
+          fi
+
           # ----- Compute SHA-256s and emit job outputs -----
           # Pass basenames + sha256s only — assemble-and-pr stitches
           # the URLs from R2_ACCOUNT_ID. GitHub filters any output
