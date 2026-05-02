@@ -106,7 +106,12 @@ resource "oci_core_instance" "this" {
     subnet_id        = oci_core_subnet.this.id
     assign_public_ip = false # Reserved IP attached separately (network.tf).
     assign_ipv6ip    = var.enable_ipv6
-    hostname_label   = replace(var.name, "_", "-")
+    # No hostname_label: enabling it requires dns_label on both the
+    # VCN and subnet, which wires up OCI's internal DNS service for
+    # the subnet. The omni-host is reached publicly via cp.stawi.org
+    # (Cloudflare-fronted) and SideroLink uses public IPs — no
+    # internal DNS resolution needed. Dropping the label keeps the
+    # network setup minimal.
   }
 
   metadata = {
