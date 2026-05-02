@@ -33,7 +33,7 @@ jobs:
   delete:
     runs-on: ubuntu-latest
     env:
-      OMNI_ENDPOINT: https://cpd.stawi.org
+      OMNI_ENDPOINT: https://cp.stawi.org
       OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
       MACHINE_IDS: ${{ inputs.machine_ids }}
     steps:

@@ -53,7 +53,7 @@ jobs:
       # cert is a CF Origin Cert (not publicly trusted), so omnictl
       # invocations all pass `--insecure-skip-tls-verify`. Auth still
       # comes from OMNI_SERVICE_ACCOUNT_KEY.
-      OMNI_ENDPOINT: https://cpd.stawi.org
+      OMNI_ENDPOINT: https://cp.stawi.org
       OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
       DRY_RUN: ${{ inputs.dry_run }}
     steps:

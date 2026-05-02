@@ -65,6 +65,6 @@ variable "cp_dns_zones" {
 
 variable "omni_endpoint" {
   type        = string
-  default     = "https://cpd.stawi.org"
+  default     = "https://cp.stawi.org"
   description = "Omni machine-api endpoint omnictl dials for cluster-template sync and per-machine label updates. cpd.<zone> (gray-cloud, direct-to-VPS, real LE cert) is the supported path; cp.<zone> is CF-proxied and the free plan downgrades HTTP/2 to HTTP/1.1, which breaks omnictl's gRPC client."
 }
