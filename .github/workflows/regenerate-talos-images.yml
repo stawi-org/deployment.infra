@@ -79,6 +79,15 @@ env:
   R2_IMAGE_BUCKET: ${{ vars.R2_IMAGE_BUCKET || 'cluster-image-registry' }}
   IMAGES_PUBLIC_HOST: ${{ vars.IMAGES_PUBLIC_HOST || 'pkgs.stawi.org' }}
   OMNI_VERSION: v1.7.1 # Pinned to match the running Omni server.
+  # AWS CLI 2.23+ added mandatory CRC checksums on multipart uploads,
+  # which Cloudflare R2 (and OCI Object Storage's S3-compat) reject
+  # with `MissingContentLength`. Run #25249802815 surfaced this
+  # 2026-05-02. Setting both vars to `when_required` keeps the SDK
+  # in the pre-2.23 behavior — checksums only when the bucket
+  # explicitly opts in, no chunked-transfer-encoding for uploads.
+  # Inherits into every job's env automatically.
+  AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+  AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
 
 jobs:
   build:
