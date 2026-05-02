@@ -603,16 +603,29 @@ write_files:
       aws s3 cp "s3://$R2_BUCKET/$R2_PREFIX/$latest" "$tmp/$latest" \
         --endpoint-url "$R2_ENDPOINT"
       # Backups since 2026-05-01 stage a snapshot rooted at / (so the
-      # tarball contains var/lib/omni AND etc/wireguard); unpacking at
-      # / restores both. Older backups only contain `omni/` at the
-      # root — for those, fall back to the legacy /var/lib extraction
-      # so the upgrade is non-disruptive.
-      if tar -tzf "$tmp/$latest" | head -n1 | grep -qE '^(\./|var/|etc/)'; then
+      # tarball contains var/lib/omni AND etc/wireguard AND
+      # etc/letsencrypt); unpacking at / restores all three. Older
+      # backups only contain `omni/` at the root — for those, fall
+      # back to the legacy /var/lib extraction.
+      #
+      # Capturing the first entry into a variable BEFORE the
+      # detection `if` is the load-bearing fix here. Doing it inline
+      # as `tar -tzf ... | head -n1 | grep -q ...` causes tar to
+      # SIGPIPE when head closes the pipe early; with `set -o pipefail`
+      # in the script header, the pipe's exit code is non-zero and
+      # the if-condition is FALSE — so the multi-rooted detection
+      # silently never matched and every restore went down the legacy
+      # branch. Verified on 2026-05-02: a tarball with `./var/`,
+      # `./etc/letsencrypt/`, etc. was being extracted into /var/lib
+      # (so /var/lib/etc/letsencrypt/... ended up in the wrong place
+      # and cert-bootstrap then re-issued, hitting LE rate limits).
+      first=$(tar -tzf "$tmp/$latest" 2>/dev/null | head -n1)
+      if echo "$first" | grep -qE '^(\./|var/|etc/)'; then
         tar -xzf "$tmp/$latest" -C /
-        echo "[omni-restore] restored $latest into / (multi-rooted snapshot)"
+        echo "[omni-restore] restored $latest into / (multi-rooted snapshot, first=$first)"
       else
         tar -xzf "$tmp/$latest" -C /var/lib
-        echo "[omni-restore] restored $latest into /var/lib (legacy snapshot)"
+        echo "[omni-restore] restored $latest into /var/lib (legacy snapshot, first=$first)"
       fi
 
   - path: /etc/systemd/system/omni-restore.service
