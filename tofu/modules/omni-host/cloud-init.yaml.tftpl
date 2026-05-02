@@ -608,19 +608,19 @@ write_files:
       # backups only contain `omni/` at the root — for those, fall
       # back to the legacy /var/lib extraction.
       #
-      # Capturing the first entry into a variable BEFORE the
-      # detection `if` is the load-bearing fix here. Doing it inline
-      # as `tar -tzf ... | head -n1 | grep -q ...` causes tar to
-      # SIGPIPE when head closes the pipe early; with `set -o pipefail`
-      # in the script header, the pipe's exit code is non-zero and
-      # the if-condition is FALSE — so the multi-rooted detection
-      # silently never matched and every restore went down the legacy
-      # branch. Verified on 2026-05-02: a tarball with `./var/`,
-      # `./etc/letsencrypt/`, etc. was being extracted into /var/lib
-      # (so /var/lib/etc/letsencrypt/... ended up in the wrong place
-      # and cert-bootstrap then re-issued, hitting LE rate limits).
-      first=$(tar -tzf "$tmp/$latest" 2>/dev/null | head -n1)
-      if echo "$first" | grep -qE '^(\./|var/|etc/)'; then
+      # Reading the full listing into a variable (no pipe) is the
+      # load-bearing detail. The previous form `tar -tzf ... | head
+      # -n1` causes tar to SIGPIPE when head closes the pipe after
+      # one line; under `set -o pipefail` the pipeline exits 141 and
+      # `set -e` aborts the script before the detection-if even runs.
+      # Capturing into a variable doesn't help — the assignment's
+      # exit code IS the pipeline's, so the same trap fires.
+      # Verified 2026-05-02: omni-restore.service exited 141 here on
+      # every reinstall, leaving /var/lib/omni empty and forcing
+      # omni-keys to regenerate a fresh master key on every boot.
+      listing=$(tar -tzf "$tmp/$latest" 2>/dev/null)
+      first="$${listing%%$'\n'*}"
+      if [[ "$first" =~ ^(\./|var/|etc/) ]]; then
         tar -xzf "$tmp/$latest" -C /
         echo "[omni-restore] restored $latest into / (multi-rooted snapshot, first=$first)"
       else
