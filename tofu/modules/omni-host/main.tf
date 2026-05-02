@@ -39,6 +39,7 @@ locals {
       initial_users                        = var.initial_users
       eula_name                            = var.eula_name
       eula_email                           = var.eula_email
+      etcd_backup_enabled                  = var.etcd_backup_enabled
     }
   )
 

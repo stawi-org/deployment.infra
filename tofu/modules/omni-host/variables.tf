@@ -156,6 +156,36 @@ variable "r2_backup_prefix" {
   description = "Object key prefix under r2_bucket_name where omni-*.tar.gz snapshots are written."
 }
 
+# ---- Omni native etcd backup ------------------------------------------------
+# Omni v1.7+ ships a builtin etcd-backup feature that writes point-in-time
+# consistent etcd snapshots (raft-driven, incremental) to S3-compatible
+# object storage on a per-cluster schedule.
+#
+# Architecture (verified against Omni docs 2026-05-02):
+#   - Server flag --etcd-backup-s3 is a BOOLEAN — it only enables the
+#     S3 destination; bucket/endpoint/region/credentials do NOT come
+#     from server flags or env vars.
+#   - All S3 connection details live in an `EtcdBackupS3Configs.omni.sidero.dev`
+#     resource (cluster-scoped, applied via `omnictl apply`).
+#   - Per-cluster enable + cadence lives in the Cluster template's
+#     `backupConfiguration: { interval: <duration> }` block.
+#
+# The destination bucket (omni-backup-storage in OCI bwire) and its
+# Customer Secret Key are managed in tofu/shared/clusters/etcd-backup-
+# s3-configs.yaml.tmpl + sync-cluster-template.yml — NOT here. This
+# var only toggles the server-side flag.
+#
+# Replaces the host-level tarball flow for cluster-etcd state. The
+# tarball stays for things Omni doesn't natively back up: master keys
+# at /var/lib/omni/keys, /etc/wireguard, /etc/letsencrypt, sqlite
+# audit log at /var/lib/omni/omni.db.
+
+variable "etcd_backup_enabled" {
+  type        = bool
+  default     = false
+  description = "Render --etcd-backup-s3 on the omni-server command line. Pair with an EtcdBackupS3Configs resource in Omni and a backupConfiguration block in the cluster template."
+}
+
 # ---- Contabo PUT-driven reinstall path ---------------------------------------
 # Contabo's image_id-only PUT is silently a metadata update, so the contabo
 # provider's own update path doesn't actually re-image a running disk. We use

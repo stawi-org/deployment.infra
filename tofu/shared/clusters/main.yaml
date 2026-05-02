@@ -64,6 +64,23 @@ features:
   # access. With the cluster behind CF-proxied DNS, this is the only
   # supported access mode.
   enableWorkloadProxy: true
+  # Cluster-etcd backup cadence. Omni takes a point-in-time-consistent
+  # raft snapshot every `interval` and uploads it via the destination
+  # configured by the global EtcdBackupS3Configs resource (see
+  # tofu/shared/clusters/etcd-backup-s3-configs.yaml.tmpl + the
+  # sync-cluster-template workflow).
+  #
+  # NOTE: this lives under `features.backupConfiguration` (not at
+  # cluster top level) per Omni's cluster-template schema — top-
+  # level placement fails template validation with
+  # "field backupConfiguration not found in type models.Cluster".
+  #
+  # Effective only when the omni-server has --etcd-backup-s3 set
+  # (controlled by var.etcd_backup_enabled in tofu/layers/00-omni-
+  # server/terraform.tfvars). Without that flag the field is parsed
+  # but no backups happen — strictly safe to leave on either way.
+  backupConfiguration:
+    interval: 1h
 patches:
   # Dual-stack networking. Adds IPv6 pod + service CIDRs alongside the
   # existing IPv4 ones so workloads, services, and ClusterIPs all get

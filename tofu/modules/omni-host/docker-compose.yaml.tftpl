@@ -92,6 +92,16 @@ services:
       - --eula-accept-name=${eula_name}
       - --eula-accept-email=${eula_email}
       - --siderolink-disable-last-endpoint=false
+%{ if etcd_backup_enabled ~}
+      # Enables the S3-backed etcd-backup destination. Boolean toggle
+      # only — the actual bucket/endpoint/region/credentials live in
+      # an EtcdBackupS3Configs.omni.sidero.dev resource (cluster-
+      # scoped Omni resource), applied via `omnictl apply` from
+      # tofu/shared/clusters/etcd-backup-s3-configs.yaml.tmpl in the
+      # sync-cluster-template workflow. Per-cluster cadence comes
+      # from the Cluster template's backupConfiguration.interval.
+      - --etcd-backup-s3
+%{ endif ~}
 
   dex:
     image: ghcr.io/dexidp/dex:${dex_version}
