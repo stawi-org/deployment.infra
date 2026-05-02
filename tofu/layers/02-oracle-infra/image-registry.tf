@@ -112,6 +112,43 @@ resource "oci_objectstorage_bucket" "cluster_vault_storage" {
   versioning   = "Enabled"
 }
 
+# ---- bwire: omni-backup-storage (private) ------------------------
+#
+# Backing store for Omni's builtin etcd backup feature
+# (--etcd-backup-s3 server flag + cluster.backupConfiguration in the
+# cluster template). Lives in bwire because that's where the omni-
+# host itself lands in Phase 2 — colocation keeps backup writes
+# off-network.
+#
+# Replaces the custom /var/lib/omni tarball flow targeted at R2:
+# Omni's native cluster-etcd backup is point-in-time consistent
+# (etcd snapshot via raft) and incremental, where our tarball
+# requires stopping the omni-stack to get a consistent /var/lib/omni
+# read. Native is strictly better for cluster-state recovery.
+#
+# We still keep the host-level tarball for things Omni doesn't
+# back up (master keys at /var/lib/omni/keys, sqlite audit log at
+# /var/lib/omni/omni.db, /etc/wireguard, /etc/letsencrypt). That
+# tarball can stay in cluster-state-storage (or move to
+# omni-backup-storage with a different prefix) — operator's call.
+#
+# Versioning OFF for omni-backup-storage: Omni stamps each backup
+# object with a monotonic timestamp suffix so rollbacks don't need
+# version IDs, and turning versioning on doubles storage for no
+# operational gain.
+
+resource "oci_objectstorage_bucket" "omni_backup_storage" {
+  count          = local.is_bwire ? 1 : 0
+  provider       = oci.account[var.account_key]
+  compartment_id = local.oci_accounts_effective[var.account_key].compartment_ocid
+  namespace      = data.oci_objectstorage_namespace.bwire[0].namespace
+  name           = "omni-backup-storage"
+
+  access_type  = "NoPublicAccess"
+  storage_tier = "Standard"
+  versioning   = "Disabled"
+}
+
 output "cluster_state_storage" {
   description = "Private OCI Object Storage bucket holding tofu state files (bwire only). Use the S3-compat endpoint with a Customer Secret Key."
   value = local.is_bwire ? {
@@ -131,6 +168,20 @@ output "cluster_vault_storage" {
   value = local.is_bwire ? {
     namespace = data.oci_objectstorage_namespace.bwire[0].namespace
     bucket    = oci_objectstorage_bucket.cluster_vault_storage[0].name
+    region    = local.oci_accounts_effective[var.account_key].region
+    s3_endpoint = format(
+      "https://%s.compat.objectstorage.%s.oraclecloud.com",
+      data.oci_objectstorage_namespace.bwire[0].namespace,
+      local.oci_accounts_effective[var.account_key].region,
+    )
+  } : null
+}
+
+output "omni_backup_storage" {
+  description = "Private OCI Object Storage bucket for Omni's builtin etcd backup feature (bwire only). Wire to omni-server via --etcd-backup-s3 + S3 env vars in the omni docker-compose."
+  value = local.is_bwire ? {
+    namespace = data.oci_objectstorage_namespace.bwire[0].namespace
+    bucket    = oci_objectstorage_bucket.omni_backup_storage[0].name
     region    = local.oci_accounts_effective[var.account_key].region
     s3_endpoint = format(
       "https://%s.compat.objectstorage.%s.oraclecloud.com",
