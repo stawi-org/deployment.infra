@@ -157,10 +157,22 @@ machineClass:
   size: 1
 
 ---
-# Worker machine set. Same shape; size matches the number of
-# machines carrying `node.antinvestor.io/role=worker` in the
-# inventory yaml files (oracle-side workers + the on-prem node).
+# Worker machine set. size MUST match the number of machines
+# carrying `node.antinvestor.io/role=worker` in the inventory yaml
+# files. If size > worker-labelled-count, the MachineSet sits in
+# `ScalingUp` waiting for nodes that don't exist; if size < count,
+# the surplus machines stay unbound (Omni sees them but they never
+# join the cluster — exactly the failure mode that motivated this
+# layout).
+#
+# Current count is 4: contabo-bwire-{1,2} (Contabo public-IPv4,
+# LB-labelled for `prod.<zone>` ingress) + oci-brianelvis33-node-1
+# + oci-ambetera-node-1 (OCI workers, also LB-labelled — they have
+# ephemeral public IPv4 + GUA IPv6 so are valid LB targets too).
+# After the omni-host migrates off Contabo (oci-bwire-node-1
+# becomes the new omni-host), the freed Contabo VPS rejoins as
+# `contabo-bwire-node-3` and this bumps to size: 5.
 kind: Workers
 machineClass:
   name: workers
-  size: 3
+  size: 4
