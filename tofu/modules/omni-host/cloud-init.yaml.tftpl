@@ -10,27 +10,33 @@ fqdn: ${name}
 # provision. We can't override it from our side; the actual health
 # signal is omni-stack-ready.service, not cloud-init's overall status.
 
-# Root SSH login enabled for the operator keys threaded in via tofu
-# (CONTABO_PUBLIC_SSH_KEY github secret). Used for diagnostics — Omni
-# container log inspection, in-place edits to /etc/omni/* config, etc.
-# Password auth is hard-disabled and fail2ban guards sshd against
-# brute-force probing on the public IP. The security boundary for
-# Omni itself remains Omni's own auth (Dex+GitHub OIDC,
-# --initial-users gated) and the SideroLink WireGuard handshake
-# (Curve25519). Break-glass is the Contabo serial console.
+# SSH login is fully DISABLED on the omni-host. Day-to-day operations
+# happen via:
+#   - Omni UI / API:    https://cp.stawi.org (browser) — admin auth
+#                       through Dex+GitHub OIDC, gated by initial-users
+#   - omnictl (CI):     OMNI_SERVICE_ACCOUNT_KEY → `omnictl ...`
+#   - kubectl/talosctl: `omnictl kubeconfig --service-account` /
+#                       `omnictl talosconfig` issued on demand
+#   - WG user-VPN:      see /etc/wireguard/wg-users for tunnel access
+#                       (the wg-users-init.service flow earlier in
+#                       this template)
+#   - Break-glass:      Contabo serial console (only path to a root
+#                       shell; reboot-required, no remote agent)
+#
+# The CONTABO_PUBLIC_SSH_KEY input variable is intentionally not
+# threaded into authorized_keys — sshd has no users with valid keys
+# AND password auth is off, so the daemon refuses every login attempt
+# at PreAuth. Combined with fail2ban (which still runs against any
+# probe) and nftables (which only opens 22 for legacy compatibility,
+# could be closed entirely as a follow-up), the host has no SSH
+# attack surface even though the port is reachable.
 
 users:
   - name: root
     lock_passwd: true
-%{ if length(ssh_authorized_keys) > 0 ~}
-    ssh_authorized_keys:
-%{ for key in ssh_authorized_keys ~}
-      - ${key}
-%{ endfor ~}
-%{ endif ~}
 
 ssh_pwauth: false
-disable_root: false
+disable_root: true
 
 apt:
   sources:
@@ -786,17 +792,16 @@ write_files:
       APT::Periodic::Update-Package-Lists "1";
       APT::Periodic::Unattended-Upgrade "1";
 
-  # Hard-disable password auth at the sshd layer too — cloud-init's
-  # ssh_pwauth: false touches Ubuntu defaults but a stray
-  # /etc/ssh/sshd_config.d/* drop-in can re-enable it. This fragment
-  # is loaded last (alphabetically high prefix) and locks the policy.
+  # SSH is fully locked: no users with authorized_keys, no password
+  # auth, and root login is denied at the daemon layer. Loaded last
+  # (alphabetically high prefix) so any earlier drop-in is overridden.
   - path: /etc/ssh/sshd_config.d/99-stawi.conf
     permissions: "0644"
     content: |
       PasswordAuthentication no
       ChallengeResponseAuthentication no
       KbdInteractiveAuthentication no
-      PermitRootLogin prohibit-password
+      PermitRootLogin no
       MaxAuthTries 3
       LoginGraceTime 20s
 
