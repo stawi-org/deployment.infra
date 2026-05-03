@@ -1,6 +1,6 @@
 # Omni-on-OCI cluster realignment — design
 
-> **Status:** Design proposal — awaiting user review.
+> **Status:** **Superseded** by [`2026-05-03-omni-contabo-realignment-design.md`](./2026-05-03-omni-contabo-realignment-design.md). This spec described the OCI-centric realignment shipped in PR #156 (omni-host + sole CP on OCI bwire, all Contabo as workers). After running that topology, OCI public-IPv4 instability for stable-name endpoints (`cp.stawi.org`, kube-apiserver) made the central plane fragile; the 2026-05-03 spec moves omni + CP back to Contabo while preserving the OCI bucket / IAM / worker-capacity wins from this PR.
 > **Date:** 2026-05-02
 > **Scope:** Track A (single PR + single cutover window). Track B (R2→OCI tofu state migration) brainstormed separately.
 > **Posture:** Greenfield. No production state to preserve; cluster currently degraded.
