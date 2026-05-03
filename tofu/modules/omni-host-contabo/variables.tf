@@ -29,23 +29,27 @@ variable "force_reinstall_generation" {
 }
 
 variable "contabo_client_id" {
-  type      = string
-  sensitive = true
+  type        = string
+  description = "Contabo OAuth client_id."
+  sensitive   = true
 }
 
 variable "contabo_client_secret" {
-  type      = string
-  sensitive = true
+  type        = string
+  description = "Contabo OAuth client_secret."
+  sensitive   = true
 }
 
 variable "contabo_api_user" {
-  type      = string
-  sensitive = true
+  type        = string
+  description = "Contabo API username (email)."
+  sensitive   = true
 }
 
 variable "contabo_api_password" {
-  type      = string
-  sensitive = true
+  type        = string
+  description = "Contabo API password."
+  sensitive   = true
 }
 
 # ---- Substrate-agnostic (same shape as omni-host-oci) ------------------------
