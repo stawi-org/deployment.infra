@@ -200,4 +200,4 @@ machineClass:
 kind: Workers
 machineClass:
   name: workers
-  size: 5
+  size: 4
