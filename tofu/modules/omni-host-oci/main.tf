@@ -103,9 +103,18 @@ resource "oci_core_instance" "this" {
   }
 
   create_vnic_details {
-    subnet_id        = oci_core_subnet.this.id
-    assign_public_ip = false # Reserved IP attached separately (network.tf).
-    assign_ipv6ip    = var.enable_ipv6
+    subnet_id = oci_core_subnet.this.id
+    # Ephemeral public IPv4 — same pattern node-oracle uses for cluster
+    # nodes. OCI auto-allocates from the standard pool, which has fast,
+    # reliable BGP advertisement. Reserved IPs in this tenancy converge
+    # over hours instead of seconds, which broke fresh deploys; the
+    # ephemeral path makes apply→reachable a sub-minute round-trip.
+    # IP changes on instance recreate; tofu re-renders the Cloudflare
+    # DNS records (cp.<zone>, cpd.<zone>) on the same apply, so cluster
+    # nodes always re-resolve to the current address within DNS TTL.
+    assign_public_ip       = true
+    assign_ipv6ip          = var.enable_ipv6
+    skip_source_dest_check = true
     # No hostname_label: enabling it requires dns_label on both the
     # VCN and subnet, which wires up OCI's internal DNS service for
     # the subnet. The omni-host is reached publicly via cp.stawi.org
@@ -131,7 +140,7 @@ resource "oci_core_instance" "this" {
 # follow-on layer that runs omnictl operations doesn't race a still-
 # booting Omni. Polls /healthz on the public hostname.
 resource "null_resource" "wait_for_omni_ready" {
-  depends_on = [oci_core_instance.this, oci_core_public_ip.this]
+  depends_on = [oci_core_instance.this]
 
   triggers = {
     instance_id = oci_core_instance.this.id

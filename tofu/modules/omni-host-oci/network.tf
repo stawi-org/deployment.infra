@@ -126,20 +126,12 @@ resource "oci_core_subnet" "this" {
   ] : null
 }
 
-# Reserved public IPv4 — survives instance recreate. AAAA records
-# point at the instance-attached IPv6 (which is stable while the
-# instance lives — see spec risk table for IPv6 caveat).
-resource "oci_core_public_ip" "this" {
-  compartment_id = var.compartment_ocid
-  lifetime       = "RESERVED"
-  display_name   = "${var.name}-pubip"
-  private_ip_id  = data.oci_core_private_ips.this.private_ips[0].id
-}
-
-# Look up the VNIC's primary private IP — needed to attach the
-# reserved public IP. References oci_core_instance.this which is
-# created in Task 7's main.tf — this file alone won't validate
-# until that lands.
+# IPv6 lookup — the instance attribute exposes the IPv4 directly via
+# `oci_core_instance.this.public_ip`, but the assigned IPv6 address
+# isn't on the resource itself. Read it from the primary VNIC.
+# Public IPv4 is the ephemeral one OCI auto-allocates when
+# create_vnic_details.assign_public_ip = true (see main.tf); no
+# separate oci_core_public_ip resource is needed.
 data "oci_core_vnic_attachments" "this" {
   compartment_id = var.compartment_ocid
   instance_id    = oci_core_instance.this.id
@@ -147,8 +139,4 @@ data "oci_core_vnic_attachments" "this" {
 
 data "oci_core_vnic" "this" {
   vnic_id = data.oci_core_vnic_attachments.this.vnic_attachments[0].vnic_id
-}
-
-data "oci_core_private_ips" "this" {
-  vnic_id = data.oci_core_vnic.this.id
 }

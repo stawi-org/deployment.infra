@@ -4,8 +4,8 @@ output "instance_id" {
 }
 
 output "ipv4" {
-  description = "Reserved public IPv4 attached to the omni-host VNIC."
-  value       = oci_core_public_ip.this.ip_address
+  description = "Ephemeral public IPv4 auto-assigned to the omni-host VNIC. Changes on instance recreate; tofu rewrites Cloudflare DNS on the same apply."
+  value       = oci_core_instance.this.public_ip
 }
 
 output "ipv6" {
