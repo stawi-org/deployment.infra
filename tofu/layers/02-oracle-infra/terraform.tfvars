@@ -37,4 +37,4 @@ force_image_generation = 12
 #                   carrying that token (otherwise the existing
 #                   nodes still hold the old token and Omni rejects
 #                   their joins with `has_valid_join_token: false`).
-force_reinstall_generation = 11
+force_reinstall_generation = 12
