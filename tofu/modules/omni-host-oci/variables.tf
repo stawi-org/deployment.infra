@@ -240,3 +240,14 @@ variable "enable_ipv6" {
   default     = true
   description = "Open IPv6 NSG rules and request an IPv6 address for the VNIC. Should match the parent VCN's is_ipv6enabled flag."
 }
+
+variable "omni_account_id" {
+  description = "Omni account UUID, baked into every Machine's SideroLink config. Pinned (lifecycle ignore_changes upstream)."
+  type        = string
+}
+
+variable "dex_omni_client_secret" {
+  description = "Dex OAuth client secret for Omni. Pinned upstream."
+  type        = string
+  sensitive   = true
+}

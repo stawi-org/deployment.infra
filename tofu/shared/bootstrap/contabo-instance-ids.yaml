@@ -12,5 +12,5 @@ contabo:
       contabo_instance_id: "202727783"
     contabo-bwire-node-2:
       contabo_instance_id: "202727782"
-    contabo-bwire-node-3:
-      contabo_instance_id: "202727781"
+    # contabo-bwire-node-3 removed: VPS 202727781 is now the omni-host
+    # (see tofu/layers/00-omni-server's omni-host-contabo module).

@@ -2,6 +2,25 @@ provider "cloudflare" {
   api_token = var.cloudflare_api_token
 }
 
+provider "contabo" {
+  oauth2_client_id     = var.contabo_client_id
+  oauth2_client_secret = var.contabo_client_secret
+  oauth2_user          = var.contabo_api_user
+  oauth2_pass          = var.contabo_api_password
+}
+
+# Latest Ubuntu 24.04 LTS image_id for Contabo's standard VPS pool.
+module "ubuntu_24_04_image_contabo" {
+  count  = var.omni_host_provider == "contabo" ? 1 : 0
+  source = "../../modules/contabo-image-lookup"
+
+  name_pattern  = "^ubuntu-24\\.04$"
+  client_id     = var.contabo_client_id
+  client_secret = var.contabo_client_secret
+  api_user      = var.contabo_api_user
+  api_password  = var.contabo_api_password
+}
+
 # Read bwire OCI auth from R2-backed inventory — same pattern
 # 02-oracle-infra uses. node-state reads s3://cluster-tofu-state/
 # production/inventory/oracle/bwire/auth.yaml (pre-staged by the
@@ -69,10 +88,13 @@ data "oci_core_subnets" "bwire_cluster_public" {
 }
 
 module "omni_host_oci" {
+  count     = var.omni_host_provider == "oci" ? 1 : 0
   source    = "../../modules/omni-host-oci"
   providers = { oci = oci.bwire }
 
   name                      = "oci-bwire-omni"
+  omni_account_id           = random_uuid.omni_account_id.result
+  dex_omni_client_secret    = random_password.dex_omni_client_secret.result
   compartment_ocid          = module.bwire_account_state.auth.auth.compartment_ocid
   availability_domain_index = var.bwire_availability_domain_index
   ubuntu_image_ocid         = data.oci_core_images.ubuntu_aarch64.images[0].id
@@ -82,6 +104,7 @@ module "omni_host_oci" {
 
   omni_version                         = var.omni_version
   dex_version                          = var.dex_version
+  nginx_version                        = var.nginx_version
   omni_account_name                    = "stawi"
   siderolink_api_advertised_host       = "cp.stawi.org"
   siderolink_wireguard_advertised_host = "cpd.stawi.org"
@@ -102,6 +125,52 @@ module "omni_host_oci" {
 
   # SSH stays HARD off on OCI — admin path is the WG VPN listener.
   ssh_authorized_keys = []
+}
+
+# Adopt the existing Contabo VPS rather than creating a new one.
+# omni_host_contabo_vps_id defaults to "202727781". The import targets
+# the indexed module address because the module uses count. The block
+# is a no-op once the resource is in state; safe on every subsequent apply.
+import {
+  to = module.omni_host_contabo[0].contabo_instance.this
+  id = var.omni_host_contabo_vps_id
+}
+
+module "omni_host_contabo" {
+  count  = var.omni_host_provider == "contabo" ? 1 : 0
+  source = "../../modules/omni-host-contabo"
+
+  vps_id                     = var.omni_host_contabo_vps_id
+  name                       = "contabo-bwire-node-3"
+  region                     = var.omni_host_contabo_region
+  image_id                   = try(module.ubuntu_24_04_image_contabo[0].image_id, "")
+  force_reinstall_generation = var.force_reinstall_generation
+  contabo_client_id          = var.contabo_client_id
+  contabo_client_secret      = var.contabo_client_secret
+  contabo_api_user           = var.contabo_api_user
+  contabo_api_password       = var.contabo_api_password
+
+  omni_version                         = var.omni_version
+  dex_version                          = var.dex_version
+  nginx_version                        = var.nginx_version
+  omni_account_id                      = random_uuid.omni_account_id.result
+  dex_omni_client_secret               = random_password.dex_omni_client_secret.result
+  omni_account_name                    = "stawi"
+  siderolink_api_advertised_host       = "cp.stawi.org"
+  siderolink_wireguard_advertised_host = "cpd.stawi.org"
+  github_oidc_client_id                = var.github_oidc_client_id
+  github_oidc_client_secret            = var.github_oidc_client_secret
+  cf_dns_api_token                     = var.cloudflare_api_token
+  initial_users                        = [for e in split(",", var.omni_initial_users) : trimspace(e) if trimspace(e) != ""]
+  eula_name                            = var.omni_eula_name
+  eula_email                           = var.omni_eula_email
+  etcd_backup_enabled                  = var.etcd_backup_enabled
+  vpn_users                            = var.vpn_users
+  ssh_authorized_keys                  = [] # public SSH off post-bootstrap; admin via WG
+
+  r2_account_id        = var.r2_account_id
+  r2_access_key_id     = var.r2_access_key_id
+  r2_secret_access_key = var.r2_secret_access_key
 }
 
 # DNS records pull the IPs straight from the OCI instance — tofu knows
@@ -138,6 +207,19 @@ locals {
   cpd_aaaa_id = try([for r in data.cloudflare_dns_records.cpd.result : r.id if r.type == "AAAA"][0], null)
 }
 
+locals {
+  # Active omni-host outputs, substrate-agnostic. Exactly one of the
+  # two modules has count=1; coalescelist picks its outputs.
+  omni_host_ipv4 = coalescelist(
+    module.omni_host_contabo[*].ipv4,
+    module.omni_host_oci[*].ipv4,
+  )[0]
+  omni_host_ipv6 = coalescelist(
+    module.omni_host_contabo[*].ipv6,
+    module.omni_host_oci[*].ipv6,
+  )[0]
+}
+
 import {
   for_each = local.cp_a_id == null ? toset([]) : toset([local.cp_a_id])
   to       = cloudflare_dns_record.cp_stawi
@@ -168,7 +250,7 @@ resource "cloudflare_dns_record" "cp_stawi" {
   zone_id = var.cloudflare_zone_id_stawi
   name    = "cp"
   type    = "A"
-  content = module.omni_host_oci.ipv4
+  content = local.omni_host_ipv4
   proxied = true
   ttl     = 1
   comment = "Omni UI — orange-cloud."
@@ -177,14 +259,14 @@ resource "cloudflare_dns_record" "cp_stawi" {
 resource "cloudflare_dns_record" "cp_stawi_v6" {
   # Predicate must be plan-time-known so the import-block targets
   # cp_stawi_v6[0] / cpd_stawi_v6[0] validate even on a fresh tfstate
-  # (where module.omni_host_oci.ipv6 is "known after apply"). The
+  # (where local.omni_host_ipv6 is "known after apply"). The
   # bwire auth.yaml's enable_ipv6 flag is read at plan time via the
   # node-state module, so use that directly.
   count   = try(module.bwire_account_state.auth.auth.enable_ipv6, true) ? 1 : 0
   zone_id = var.cloudflare_zone_id_stawi
   name    = "cp"
   type    = "AAAA"
-  content = module.omni_host_oci.ipv6
+  content = local.omni_host_ipv6
   proxied = true
   ttl     = 1
   comment = "Omni UI — orange-cloud (v6)."
@@ -198,7 +280,7 @@ resource "cloudflare_dns_record" "cpd_stawi" {
   zone_id = var.cloudflare_zone_id_stawi
   name    = "cpd"
   type    = "A"
-  content = module.omni_host_oci.ipv4
+  content = local.omni_host_ipv4
   proxied = false
   ttl     = 300
   comment = "Omni Talos-facing (8090/8100/50180) — gray-cloud."
@@ -207,14 +289,14 @@ resource "cloudflare_dns_record" "cpd_stawi" {
 resource "cloudflare_dns_record" "cpd_stawi_v6" {
   # Predicate must be plan-time-known so the import-block targets
   # cp_stawi_v6[0] / cpd_stawi_v6[0] validate even on a fresh tfstate
-  # (where module.omni_host_oci.ipv6 is "known after apply"). The
+  # (where local.omni_host_ipv6 is "known after apply"). The
   # bwire auth.yaml's enable_ipv6 flag is read at plan time via the
   # node-state module, so use that directly.
   count   = try(module.bwire_account_state.auth.auth.enable_ipv6, true) ? 1 : 0
   zone_id = var.cloudflare_zone_id_stawi
   name    = "cpd"
   type    = "AAAA"
-  content = module.omni_host_oci.ipv6
+  content = local.omni_host_ipv6
   proxied = false
   ttl     = 300
   comment = "Omni Talos-facing — gray-cloud (v6)."

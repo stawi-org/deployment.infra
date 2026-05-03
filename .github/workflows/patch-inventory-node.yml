@@ -29,13 +29,20 @@ on:
         required: true
         type: string
       field:
-        description: Field name on the node entry (e.g. boot_volume_size_gb)
-        required: true
+        description: Field name on the node entry (e.g. boot_volume_size_gb). Ignored when delete_node=true.
+        required: false
         type: string
+        default: ""
       value:
-        description: Field value (parsed as YAML, so 140 stays an int)
-        required: true
+        description: Field value (parsed as YAML, so 140 stays an int). Ignored when delete_node=true.
+        required: false
         type: string
+        default: ""
+      delete_node:
+        description: If true, delete the entire node entry from nodes.yaml (field/value ignored).
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   patch:
@@ -52,6 +59,7 @@ jobs:
       NODE:                      ${{ inputs.node }}
       FIELD:                     ${{ inputs.field }}
       VALUE:                     ${{ inputs.value }}
+      DELETE_NODE:               ${{ inputs.delete_node }}
     steps:
       - name: Install pyyaml
         run: python3 -m pip install --quiet pyyaml
@@ -76,10 +84,17 @@ jobs:
           node = os.environ["NODE"]
           field = os.environ["FIELD"]
           val = yaml.safe_load(os.environ["VALUE"])
+          delete = os.environ.get("DELETE_NODE", "false").lower() == "true"
           if "nodes" not in data or node not in data["nodes"]:
               keys = list(data.get("nodes", {}).keys())
               sys.exit(f"node '{node}' not in nodes.yaml — nodes present: {keys}")
-          data["nodes"][node][field] = val
+          if delete:
+              del data["nodes"][node]
+              print(f"::notice::deleted node '{node}' from nodes.yaml")
+          else:
+              if not field:
+                  sys.exit("field is required when delete_node=false")
+              data["nodes"][node][field] = val
           with open("/tmp/nodes.yaml", "w") as f:
               yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
           PY

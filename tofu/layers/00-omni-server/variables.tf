@@ -71,7 +71,7 @@ variable "sops_age_key" {
 }
 
 # ---- R2 backup / restore -----------------------------------------------------
-# Threaded into module.omni_host so the on-host omni-backup.sh /
+# Threaded into module.omni_host_oci / module.omni_host_contabo so the on-host omni-backup.sh /
 # omni-restore.sh pair can write to / read from R2 without baking
 # credentials into a script committed to the repo.
 
@@ -104,4 +104,88 @@ variable "vpn_users" {
   }))
   default     = {}
   description = "Map of WireGuard user-VPN peers (name -> {public_key}). See modules/omni-host/variables.tf for the add-user workflow. Adding/removing entries needs a force_reinstall_generation bump to land on the running host."
+}
+
+variable "nginx_version" {
+  type        = string
+  default     = "1.27-alpine"
+  description = "Nginx image tag passed to omni-host-contabo. Reverse-proxies cp.<zone> to Omni's loopback UI."
+}
+
+variable "omni_host_provider" {
+  description = "Substrate hosting omni-host. 'contabo' uses an existing Contabo VPS; 'oci' uses an OCI A1.Flex VM in bwire."
+  type        = string
+  default     = "oci"
+  validation {
+    condition     = contains(["contabo", "oci"], var.omni_host_provider)
+    error_message = "omni_host_provider must be 'contabo' or 'oci'."
+  }
+}
+
+variable "omni_host_contabo_vps_id" {
+  description = "Contabo VPS ID adopted as the omni-host when omni_host_provider=='contabo'."
+  type        = string
+  default     = "202727781"
+}
+
+variable "omni_host_contabo_region" {
+  description = "Contabo region for the omni-host VPS."
+  type        = string
+  default     = "EU"
+}
+
+# Defaulted to empty so the unconditional provider "contabo" block in
+# main.tf can initialize when omni_host_provider="oci" without
+# requiring operator-supplied creds. The actual Contabo API is never
+# called with these values when count-gated modules have count=0;
+# Task 11's tfvars flip is what activates the contabo path and
+# requires real creds in the workflow's environment.
+variable "contabo_client_id" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+
+variable "contabo_client_secret" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+
+variable "contabo_api_user" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+
+variable "contabo_api_password" {
+  type      = string
+  sensitive = true
+  default   = ""
+}
+
+variable "force_reinstall_generation" {
+  description = <<-EOT
+    Operator escape hatch for forcing a fleet-wide Contabo VPS
+    reinstall on next apply, decoupled from schematic_id changes.
+    Bump in terraform.tfvars (e.g. 1 → 2) to invalidate every
+    null_resource.ensure_image trigger; ensure-image.sh runs with
+    FORCE_REINSTALL=1 and PUTs unconditionally regardless of
+    current imageId.
+
+    Use cases:
+      - Recover from "stuck Talos" / lost SideroLink registration.
+      - Refresh kernel cmdline after Omni's join token rotates.
+      - Smoke-test reinstall paths.
+
+    Routine reinstalls driven by a real schematic change still fire
+    automatically through the target_image_id trigger; this knob
+    only matters for "want a reinstall NOW".
+  EOT
+  type        = number
+  default     = 1
+  validation {
+    condition     = var.force_reinstall_generation >= 1
+    error_message = "force_reinstall_generation must be >= 1."
+  }
 }

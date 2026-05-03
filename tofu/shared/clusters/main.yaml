@@ -185,11 +185,13 @@ machineClass:
 # join the cluster — exactly the failure mode that motivated this
 # layout).
 #
-# Current count is 5:
-#   - contabo-bwire-{1,2,3} (3 Contabo VPSes; bwire-1 also LB-targeted
-#     for prod.<zone> ingress, bwire-2 + bwire-3 ingress-off).
+# Current count is 4 (post-realignment):
+#   - contabo-bwire-node-1 (Contabo; LB-targeted for prod.<zone> ingress).
+#   - oci-bwire-node-1 (OCI ARM A1.Flex).
 #   - oci-alimbacho67-node-1 (OCI ARM A1.Flex, LB-targeted).
 #   - oci-brianelvis33-node-1 (OCI ARM A1.Flex, LB-targeted).
+# contabo-bwire-node-3 is now the omni-host substrate (see
+# tofu/layers/00-omni-server module.omni_host_contabo) — not a worker.
 #
 # Cross-account redundancy on prod.<zone>: 3 LB-targeted nodes
 # spread across 3 distinct accounts (Contabo bwire + OCI alimbacho67
@@ -200,4 +202,4 @@ machineClass:
 kind: Workers
 machineClass:
   name: workers
-  size: 5
+  size: 4

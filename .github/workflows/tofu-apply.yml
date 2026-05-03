@@ -40,7 +40,7 @@ jobs:
 
   # NOTE: layer 00-omni-server (the Omni-host VPS itself) has its own
   # workflow — .github/workflows/tofu-omni-host.yml — triggered by
-  # paths/dispatch on tofu/modules/omni-host/** + tofu/layers/
+  # paths/dispatch on tofu/modules/omni-host-{oci,contabo}/**, tofu/shared/templates/omni-host/**, + tofu/layers/
   # 00-omni-server/**. Separated 2026-05-02 so a node-only PR can
   # never reinstall the host (which burns the Let's Encrypt
   # 5-certs-per-168h quota and rotates the SideroLink join token).

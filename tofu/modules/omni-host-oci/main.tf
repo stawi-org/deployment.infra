@@ -9,31 +9,18 @@
 # null_resource.ensure_image equivalent needed — the OCI provider
 # does what Contabo's PUT script approximated.
 
-resource "random_uuid" "omni_account_id" {
-  # The Omni account ID is baked into every Machine's SideroLink
-  # config. Rotating it would orphan every cluster the host has
-  # ever provisioned. Pin it.
-  lifecycle { ignore_changes = [keepers] }
-}
-
-resource "random_password" "dex_omni_client_secret" {
-  length  = 64
-  special = false
-  lifecycle { ignore_changes = [length, special] }
-}
-
 locals {
   docker_compose_yaml = templatefile(
-    "${path.module}/docker-compose.yaml.tftpl",
+    "${path.module}/../../shared/templates/omni-host/docker-compose.yaml.tftpl",
     {
       omni_version                         = var.omni_version
       dex_version                          = var.dex_version
       nginx_version                        = var.nginx_version
-      omni_account_id                      = random_uuid.omni_account_id.result
+      omni_account_id                      = var.omni_account_id
       omni_account_name                    = var.omni_account_name
       siderolink_api_advertised_host       = var.siderolink_api_advertised_host
       siderolink_wireguard_advertised_host = var.siderolink_wireguard_advertised_host
-      dex_omni_client_secret               = random_password.dex_omni_client_secret.result
+      dex_omni_client_secret               = var.dex_omni_client_secret
       initial_users                        = var.initial_users
       eula_name                            = var.eula_name
       eula_email                           = var.eula_email
@@ -46,7 +33,7 @@ locals {
     {
       name                                 = var.name
       docker_compose_yaml                  = local.docker_compose_yaml
-      dex_omni_client_secret               = random_password.dex_omni_client_secret.result
+      dex_omni_client_secret               = var.dex_omni_client_secret
       siderolink_api_advertised_host       = var.siderolink_api_advertised_host
       siderolink_wireguard_advertised_host = var.siderolink_wireguard_advertised_host
       github_oidc_client_id                = var.github_oidc_client_id

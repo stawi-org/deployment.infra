@@ -29,13 +29,17 @@ name: tofu-omni-host
 on:
   pull_request:
     paths:
-      - tofu/modules/omni-host/**
+      - tofu/modules/omni-host-oci/**
+      - tofu/modules/omni-host-contabo/**
+      - tofu/shared/templates/omni-host/**
       - tofu/layers/00-omni-server/**
       - .github/workflows/tofu-omni-host.yml
   push:
     branches: [main]
     paths:
-      - tofu/modules/omni-host/**
+      - tofu/modules/omni-host-oci/**
+      - tofu/modules/omni-host-contabo/**
+      - tofu/shared/templates/omni-host/**
       - tofu/layers/00-omni-server/**
       - .github/workflows/tofu-omni-host.yml
   workflow_dispatch:
@@ -47,6 +51,10 @@ on:
         options: [plan, apply]
       extra_plan_args:
         description: "Extra args appended to tofu plan (e.g. -replace=foo.bar). Recovery use only."
+        type: string
+        default: ""
+      pre_apply_state_mv:
+        description: "Whitespace-separated FROM TO pairs for `tofu state mv` before plan/apply. In-state refactor only (passed to tofu-layer.yml's same input, evaluated via env, never shell-expanded)."
         type: string
         default: ""
 
@@ -71,4 +79,5 @@ jobs:
       mode: ${{ github.event_name == 'pull_request' && 'plan' || (github.event_name == 'workflow_dispatch' && inputs.mode || 'apply') }}
       environment: production
       extra_plan_args: ${{ github.event_name == 'workflow_dispatch' && inputs.extra_plan_args || '' }}
+      pre_apply_state_mv: ${{ github.event_name == 'workflow_dispatch' && inputs.pre_apply_state_mv || '' }}
     secrets: inherit

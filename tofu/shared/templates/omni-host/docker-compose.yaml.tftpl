@@ -27,9 +27,9 @@ services:
       - /etc/omni/certs:/etc/omni/certs:ro
     command:
       # account-id is rendered as a literal at tofu time (the value is
-      # known — random_uuid.omni_account_id). docker-compose's command:
-      # array does NOT expand env_file vars, so $${OMNI_ACCOUNT_ID}
-      # would reach Omni unexpanded and fail schema validation.
+      # known at plan time). docker-compose's command: array does NOT
+      # expand env_file vars, so $${OMNI_ACCOUNT_ID} would reach Omni
+      # unexpanded and fail schema validation.
       - --account-id=${omni_account_id}
       - --name=${omni_account_name}
       # Storage — paths are inside the container; /var/lib/omni is a
