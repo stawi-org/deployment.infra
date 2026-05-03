@@ -5,7 +5,11 @@ output "instance_id" {
 
 output "ipv4" {
   description = "Ephemeral public IPv4 auto-assigned to the omni-host VNIC. Changes on instance recreate; tofu rewrites Cloudflare DNS on the same apply."
-  value       = oci_core_instance.this.public_ip
+  # Read from the VNIC data source rather than oci_core_instance.this.public_ip
+  # — the latter is empty in tofu's plan output for this layer (it stayed
+  # null after the reserved-IP migration), while the VNIC datasource always
+  # reflects the address OCI has currently bound to the primary private IP.
+  value = data.oci_core_vnic.this.public_ip_address
 }
 
 output "ipv6" {
