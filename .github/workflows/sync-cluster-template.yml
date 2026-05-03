@@ -94,6 +94,58 @@ jobs:
           set -euo pipefail
           omnictl apply -f tofu/shared/clusters/machine-classes.yaml
 
+      # Bootstrap-bind unbound machines by UUID. When machines first
+      # register via SideroLink, they have no hostname/IPv4 reported,
+      # so the regular hostname/IPv4-based label sync (layer 03)
+      # can't bind them to MachineClass selectors. Without role
+      # labels, machines stay in "Available" maintenance, never get
+      # cluster config, never report network state — circular dep.
+      #
+      # This step labels every UNBOUND machine by UUID: most-
+      # recently-created → role=controlplane (likely the new OCI
+      # bwire CP); all others → role=worker. Once labels match
+      # MachineClass selectors, Omni binds machines to the cluster,
+      # pushes config, apid binds, machine reports network state,
+      # and the layer-03 hostname/IPv4-based reconciler can take
+      # over for accurate per-node labelling.
+      - name: Bootstrap-bind unbound machines by UUID
+        if: env.DRY_RUN != 'true'
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          all=$(omnictl get machinestatus -o json 2>/dev/null \
+            | jq -cs '[ .[] | select(.spec.cluster == "" or .spec.cluster == null) | {id: .metadata.id, created: .metadata.created} ]' \
+            || echo '[]')
+          count=$(jq -r 'length' <<<"$all")
+          if [[ "$count" -eq 0 ]]; then
+            echo "::notice::No unbound machines — nothing to bootstrap-bind."
+            exit 0
+          fi
+          echo "::notice::Found $count unbound machine(s):"
+          jq -r '.[] | "  id=\(.id) created=\(.created)"' <<<"$all"
+          sorted=$(jq -c 'sort_by(.created) | reverse' <<<"$all")
+          cp_id=$(jq -r '.[0].id' <<<"$sorted")
+          worker_ids=$(jq -r '.[1:] | .[].id' <<<"$sorted")
+          apply_label() {
+            local id="$1" role="$2"
+            cat > "$tmp/${id}.yaml" <<MANIFEST
+          metadata:
+            namespace: default
+            type: MachineLabels.omni.sidero.dev
+            id: ${id}
+            labels:
+              node.antinvestor.io/role: ${role}
+          spec: {}
+          MANIFEST
+            echo "::notice::labelling machine ${id} as role=${role}"
+            omnictl apply -f "$tmp/${id}.yaml"
+          }
+          apply_label "$cp_id" controlplane
+          for w in $worker_ids; do
+            apply_label "$w" worker
+          done
+
       # Render + apply the EtcdBackupS3Configs resource. Global Omni
       # resource (same kind as MachineClass) — not a Cluster template
       # field, so it goes through `omnictl apply` separately.
