@@ -73,6 +73,8 @@ module "omni_host_oci" {
   providers = { oci = oci.bwire }
 
   name                      = "oci-bwire-omni"
+  omni_account_id           = random_uuid.omni_account_id.result
+  dex_omni_client_secret    = random_password.dex_omni_client_secret.result
   compartment_ocid          = module.bwire_account_state.auth.auth.compartment_ocid
   availability_domain_index = var.bwire_availability_domain_index
   ubuntu_image_ocid         = data.oci_core_images.ubuntu_aarch64.images[0].id
