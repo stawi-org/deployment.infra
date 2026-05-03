@@ -50,4 +50,4 @@ age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
 #                   freed bwire-3 (was 202727781 / Contabo omni-host)
 #                   newly re-adopted by this layer — onto images
 #                   carrying that new token.
-force_reinstall_generation = 8
+force_reinstall_generation = 9
