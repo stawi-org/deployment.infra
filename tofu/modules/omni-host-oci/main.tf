@@ -103,24 +103,26 @@ resource "oci_core_instance" "this" {
   }
 
   create_vnic_details {
-    subnet_id = oci_core_subnet.this.id
-    # Ephemeral public IPv4 — same pattern node-oracle uses for cluster
-    # nodes. OCI auto-allocates from the standard pool, which has fast,
-    # reliable BGP advertisement. Reserved IPs in this tenancy converge
-    # over hours instead of seconds, which broke fresh deploys; the
-    # ephemeral path makes apply→reachable a sub-minute round-trip.
-    # IP changes on instance recreate; tofu re-renders the Cloudflare
-    # DNS records (cp.<zone>, cpd.<zone>) on the same apply, so cluster
-    # nodes always re-resolve to the current address within DNS TTL.
+    # The omni-host VNIC lives in the cluster VCN's public subnet,
+    # passed in by 00-omni-server (looked up by name there). Same
+    # subnet as the CP node — that one's IP propagates BGP normally
+    # within minutes, so we inherit a working announcement path.
+    subnet_id = var.subnet_id
+    # Ephemeral public IPv4 — same pattern node-oracle uses for
+    # cluster nodes. IPs change on instance recreate; tofu re-renders
+    # the Cloudflare DNS records (cp.<zone>, cpd.<zone>) on the same
+    # apply, so cluster nodes re-resolve within DNS TTL.
     assign_public_ip       = true
     assign_ipv6ip          = var.enable_ipv6
     skip_source_dest_check = true
-    # No hostname_label: enabling it requires dns_label on both the
-    # VCN and subnet, which wires up OCI's internal DNS service for
-    # the subnet. The omni-host is reached publicly via cp.stawi.org
-    # (Cloudflare-fronted) and SideroLink uses public IPs — no
-    # internal DNS resolution needed. Dropping the label keeps the
-    # network setup minimal.
+    # Per-VNIC NSG opens the omni-specific ports (8090/8100/50180/
+    # 51820/443/80) without touching the shared subnet's seclist —
+    # cluster nodes don't accidentally inherit them.
+    nsg_ids = [oci_core_network_security_group.this.id]
+    # No hostname_label: dns_label is set on the VCN/subnet by
+    # oracle-account-infra, so we could set one here, but the omni-
+    # host is reached only via cp.stawi.org / cpd.stawi.org public
+    # DNS — no internal-DNS path is consumed.
   }
 
   metadata = {

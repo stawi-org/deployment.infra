@@ -225,20 +225,18 @@ variable "ubuntu_image_ocid" {
   description = "OCI Ubuntu 24.04 LTS Minimal aarch64 image OCID. Looked up by the caller via oci_core_images data source (operating_system='Canonical Ubuntu', operating_system_version='24.04', shape='VM.Standard.A1.Flex')."
 }
 
-variable "vcn_cidr" {
+variable "vcn_id" {
   type        = string
-  default     = "10.42.0.0/16"
-  description = "Dedicated VCN CIDR for the omni-host. Separate from oracle-account-infra's cluster-node VCN to keep blast radius small."
+  description = "OCID of the VCN that owns var.subnet_id. Used as the parent for the per-VNIC NSG (NSGs are scoped to a VCN)."
 }
 
-variable "subnet_cidr" {
+variable "subnet_id" {
   type        = string
-  default     = "10.42.1.0/24"
-  description = "Subnet CIDR within the omni-host VCN."
+  description = "OCID of the subnet the omni-host's VNIC attaches to. Currently the same subnet the cluster CP uses (oracle-account-infra's public subnet for the bwire account) — that subnet's prefix announces over BGP reliably, while a dedicated omni-host VCN spent hours stuck below 10% global propagation in the 2026-05-03 incident."
 }
 
 variable "enable_ipv6" {
   type        = bool
   default     = true
-  description = "Enable IPv6 on the VCN + VNIC. Required for cp/cpd AAAA records."
+  description = "Open IPv6 NSG rules and request an IPv6 address for the VNIC. Should match the parent VCN's is_ipv6enabled flag."
 }

@@ -1,137 +1,108 @@
-# Dedicated VCN for the omni-host. Separate from the cluster-node
-# VCN (oracle-account-infra creates that one) so the omni-host's
-# blast radius stays narrow and the security-list inbound surface
-# stays tighter than what cluster nodes need.
-resource "oci_core_vcn" "this" {
+# tofu/modules/omni-host-oci/network.tf
+#
+# The omni-host shares the cluster VCN's public subnet (passed in via
+# var.subnet_id from 00-omni-server). That VCN already announces its
+# IPs reliably in BGP (the cluster CP node's IP is globally reachable
+# within minutes of allocation), whereas a dedicated omni-host VCN
+# spent hours stuck below 10% global propagation across multiple
+# fresh /16 blocks — see the 2026-05-03 incident for the test data.
+#
+# Per-VNIC ports the omni-host needs (8090/8100/443/80/50180/51820)
+# come from a Network Security Group attached to the omni-host's VNIC
+# only. NSGs and security lists are evaluated as a UNION (any-allow
+# wins), so the cluster subnet's existing seclist stays untouched and
+# cluster nodes don't accidentally get those ports exposed.
+
+resource "oci_core_network_security_group" "this" {
   compartment_id = var.compartment_ocid
-  cidr_blocks    = [var.vcn_cidr]
-  display_name   = "${var.name}-vcn"
-  is_ipv6enabled = var.enable_ipv6
+  vcn_id         = var.vcn_id
+  display_name   = "${var.name}-nsg"
 }
 
-resource "oci_core_internet_gateway" "this" {
-  compartment_id = var.compartment_ocid
-  vcn_id         = oci_core_vcn.this.id
-  display_name   = "${var.name}-igw"
-  enabled        = true
-}
-
-resource "oci_core_route_table" "this" {
-  compartment_id = var.compartment_ocid
-  vcn_id         = oci_core_vcn.this.id
-  display_name   = "${var.name}-rt"
-
-  route_rules {
-    destination       = "0.0.0.0/0"
-    network_entity_id = oci_core_internet_gateway.this.id
-  }
-
-  dynamic "route_rules" {
-    for_each = var.enable_ipv6 ? [1] : []
-    content {
-      destination       = "::/0"
-      network_entity_id = oci_core_internet_gateway.this.id
-    }
-  }
-}
-
-# Inbound: 80/443 (Omni UI via CF), 8090 (SideroLink API), 8100
-# (k8s-proxy), 50180/UDP (SideroLink WG), 51820/UDP (admin WG).
-# SSH (22) is NOT exposed — admin path is the WG VPN. Egress: all.
-resource "oci_core_security_list" "this" {
-  compartment_id = var.compartment_ocid
-  vcn_id         = oci_core_vcn.this.id
-  display_name   = "${var.name}-sl"
-
-  egress_security_rules {
-    destination = "0.0.0.0/0"
-    protocol    = "all"
-  }
-
-  dynamic "egress_security_rules" {
-    for_each = var.enable_ipv6 ? [1] : []
-    content {
-      destination = "::/0"
-      protocol    = "all"
-    }
-  }
-
-  # TCP ingress: 80, 443, 8090, 8100
-  dynamic "ingress_security_rules" {
-    for_each = toset(["80", "443", "8090", "8100"])
-    content {
-      protocol = "6" # TCP
-      source   = "0.0.0.0/0"
-      tcp_options {
-        min = tonumber(ingress_security_rules.value)
-        max = tonumber(ingress_security_rules.value)
-      }
-    }
-  }
-
-  # UDP ingress: 50180 (SideroLink WG), 51820 (admin WG)
-  dynamic "ingress_security_rules" {
-    for_each = toset(["50180", "51820"])
-    content {
-      protocol = "17" # UDP
-      source   = "0.0.0.0/0"
-      udp_options {
-        min = tonumber(ingress_security_rules.value)
-        max = tonumber(ingress_security_rules.value)
-      }
-    }
-  }
-
-  # IPv6 mirrors of the same rules (when var.enable_ipv6).
-  dynamic "ingress_security_rules" {
-    for_each = var.enable_ipv6 ? toset(["80", "443", "8090", "8100"]) : []
-    content {
-      protocol = "6"
-      source   = "::/0"
-      tcp_options {
-        min = tonumber(ingress_security_rules.value)
-        max = tonumber(ingress_security_rules.value)
-      }
-    }
-  }
-
-  dynamic "ingress_security_rules" {
-    for_each = var.enable_ipv6 ? toset(["50180", "51820"]) : []
-    content {
-      protocol = "17"
-      source   = "::/0"
-      udp_options {
-        min = tonumber(ingress_security_rules.value)
-        max = tonumber(ingress_security_rules.value)
-      }
+# TCP ingress: 80, 443, 8090, 8100
+resource "oci_core_network_security_group_security_rule" "tcp_ingress_v4" {
+  for_each                  = toset(["80", "443", "8090", "8100"])
+  network_security_group_id = oci_core_network_security_group.this.id
+  direction                 = "INGRESS"
+  protocol                  = "6"
+  source_type               = "CIDR_BLOCK"
+  source                    = "0.0.0.0/0"
+  tcp_options {
+    destination_port_range {
+      min = tonumber(each.value)
+      max = tonumber(each.value)
     }
   }
 }
 
-resource "oci_core_subnet" "this" {
-  compartment_id             = var.compartment_ocid
-  vcn_id                     = oci_core_vcn.this.id
-  cidr_block                 = var.subnet_cidr
-  display_name               = "${var.name}-subnet"
-  route_table_id             = oci_core_route_table.this.id
-  security_list_ids          = [oci_core_security_list.this.id]
-  prohibit_public_ip_on_vnic = false
-  # OCI subnets MUST be /64 IPv6 CIDRs. The VCN's IPv6 block is a
-  # /56 (the only size OCI allocates), so carve a /64 from it: take
-  # the first 4 hextets of the /56 prefix and append "::/64". The
-  # 5th hextet's high bits are zero in OCI's /56 allocations, so
-  # this slice is always within the VCN block.
-  ipv6cidr_blocks = var.enable_ipv6 ? [
-    "${join(":", slice(split(":", split("/", oci_core_vcn.this.ipv6cidr_blocks[0])[0]), 0, 4))}::/64"
-  ] : null
+resource "oci_core_network_security_group_security_rule" "tcp_ingress_v6" {
+  for_each                  = var.enable_ipv6 ? toset(["80", "443", "8090", "8100"]) : toset([])
+  network_security_group_id = oci_core_network_security_group.this.id
+  direction                 = "INGRESS"
+  protocol                  = "6"
+  source_type               = "CIDR_BLOCK"
+  source                    = "::/0"
+  tcp_options {
+    destination_port_range {
+      min = tonumber(each.value)
+      max = tonumber(each.value)
+    }
+  }
+}
+
+# UDP ingress: 50180 (SideroLink WG), 51820 (admin user-VPN)
+resource "oci_core_network_security_group_security_rule" "udp_ingress_v4" {
+  for_each                  = toset(["50180", "51820"])
+  network_security_group_id = oci_core_network_security_group.this.id
+  direction                 = "INGRESS"
+  protocol                  = "17"
+  source_type               = "CIDR_BLOCK"
+  source                    = "0.0.0.0/0"
+  udp_options {
+    destination_port_range {
+      min = tonumber(each.value)
+      max = tonumber(each.value)
+    }
+  }
+}
+
+resource "oci_core_network_security_group_security_rule" "udp_ingress_v6" {
+  for_each                  = var.enable_ipv6 ? toset(["50180", "51820"]) : toset([])
+  network_security_group_id = oci_core_network_security_group.this.id
+  direction                 = "INGRESS"
+  protocol                  = "17"
+  source_type               = "CIDR_BLOCK"
+  source                    = "::/0"
+  udp_options {
+    destination_port_range {
+      min = tonumber(each.value)
+      max = tonumber(each.value)
+    }
+  }
+}
+
+# Egress: all (matches the cluster subnet's seclist, so the union is
+# still all-egress regardless of which list is consulted).
+resource "oci_core_network_security_group_security_rule" "egress_v4" {
+  network_security_group_id = oci_core_network_security_group.this.id
+  direction                 = "EGRESS"
+  protocol                  = "all"
+  destination_type          = "CIDR_BLOCK"
+  destination               = "0.0.0.0/0"
+}
+
+resource "oci_core_network_security_group_security_rule" "egress_v6" {
+  count                     = var.enable_ipv6 ? 1 : 0
+  network_security_group_id = oci_core_network_security_group.this.id
+  direction                 = "EGRESS"
+  protocol                  = "all"
+  destination_type          = "CIDR_BLOCK"
+  destination               = "::/0"
 }
 
 # IPv6 lookup — the instance attribute exposes the IPv4 directly via
 # `oci_core_instance.this.public_ip`, but the assigned IPv6 address
 # isn't on the resource itself. Read it from the primary VNIC.
-# Public IPv4 is the ephemeral one OCI auto-allocates when
-# create_vnic_details.assign_public_ip = true (see main.tf); no
-# separate oci_core_public_ip resource is needed.
 data "oci_core_vnic_attachments" "this" {
   compartment_id = var.compartment_ocid
   instance_id    = oci_core_instance.this.id

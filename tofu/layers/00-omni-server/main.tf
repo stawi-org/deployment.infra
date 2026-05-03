@@ -48,6 +48,26 @@ provider "aws" {
   }
 }
 
+# Cluster VCN + public subnet, looked up by the conventional names
+# 02-oracle-infra creates them with. Sharing this subnet (same one the
+# cluster CP uses) is the workaround for the 2026-05-03 BGP-propagation
+# incident — fresh prefixes from a dedicated omni-host VCN stayed
+# under 10% global reachability for hours, while the cluster VCN's
+# announcement path was solid throughout. Side benefit: one VCN per
+# tenancy keeps the always-free network resource count lower.
+data "oci_core_vcns" "bwire_cluster" {
+  provider       = oci.bwire
+  compartment_id = module.bwire_account_state.auth.auth.compartment_ocid
+  display_name   = "cluster-vcn-bwire"
+}
+
+data "oci_core_subnets" "bwire_cluster_public" {
+  provider       = oci.bwire
+  compartment_id = module.bwire_account_state.auth.auth.compartment_ocid
+  vcn_id         = data.oci_core_vcns.bwire_cluster.virtual_networks[0].id
+  display_name   = "cluster-subnet-public-bwire"
+}
+
 module "omni_host_oci" {
   source    = "../../modules/omni-host-oci"
   providers = { oci = oci.bwire }
@@ -57,6 +77,8 @@ module "omni_host_oci" {
   availability_domain_index = var.bwire_availability_domain_index
   ubuntu_image_ocid         = data.oci_core_images.ubuntu_aarch64.images[0].id
   enable_ipv6               = try(module.bwire_account_state.auth.auth.enable_ipv6, true)
+  vcn_id                    = data.oci_core_vcns.bwire_cluster.virtual_networks[0].id
+  subnet_id                 = data.oci_core_subnets.bwire_cluster_public.subnets[0].id
 
   omni_version                         = var.omni_version
   dex_version                          = var.dex_version
