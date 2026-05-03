@@ -104,6 +104,7 @@ module "omni_host_oci" {
 
   omni_version                         = var.omni_version
   dex_version                          = var.dex_version
+  nginx_version                        = var.nginx_version
   omni_account_name                    = "stawi"
   siderolink_api_advertised_host       = "cp.stawi.org"
   siderolink_wireguard_advertised_host = "cpd.stawi.org"
@@ -249,7 +250,7 @@ resource "cloudflare_dns_record" "cp_stawi" {
 resource "cloudflare_dns_record" "cp_stawi_v6" {
   # Predicate must be plan-time-known so the import-block targets
   # cp_stawi_v6[0] / cpd_stawi_v6[0] validate even on a fresh tfstate
-  # (where module.omni_host_oci.ipv6 is "known after apply"). The
+  # (where local.omni_host_ipv6 is "known after apply"). The
   # bwire auth.yaml's enable_ipv6 flag is read at plan time via the
   # node-state module, so use that directly.
   count   = try(module.bwire_account_state.auth.auth.enable_ipv6, true) ? 1 : 0
@@ -279,7 +280,7 @@ resource "cloudflare_dns_record" "cpd_stawi" {
 resource "cloudflare_dns_record" "cpd_stawi_v6" {
   # Predicate must be plan-time-known so the import-block targets
   # cp_stawi_v6[0] / cpd_stawi_v6[0] validate even on a fresh tfstate
-  # (where module.omni_host_oci.ipv6 is "known after apply"). The
+  # (where local.omni_host_ipv6 is "known after apply"). The
   # bwire auth.yaml's enable_ipv6 flag is read at plan time via the
   # node-state module, so use that directly.
   count   = try(module.bwire_account_state.auth.auth.enable_ipv6, true) ? 1 : 0

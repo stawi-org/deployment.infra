@@ -134,24 +134,34 @@ variable "omni_host_contabo_region" {
   default     = "EU"
 }
 
+# Defaulted to empty so the unconditional provider "contabo" block in
+# main.tf can initialize when omni_host_provider="oci" without
+# requiring operator-supplied creds. The actual Contabo API is never
+# called with these values when count-gated modules have count=0;
+# Task 11's tfvars flip is what activates the contabo path and
+# requires real creds in the workflow's environment.
 variable "contabo_client_id" {
   type      = string
   sensitive = true
+  default   = ""
 }
 
 variable "contabo_client_secret" {
   type      = string
   sensitive = true
+  default   = ""
 }
 
 variable "contabo_api_user" {
   type      = string
   sensitive = true
+  default   = ""
 }
 
 variable "contabo_api_password" {
   type      = string
   sensitive = true
+  default   = ""
 }
 
 variable "force_reinstall_generation" {
