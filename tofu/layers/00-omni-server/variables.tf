@@ -71,7 +71,7 @@ variable "sops_age_key" {
 }
 
 # ---- R2 backup / restore -----------------------------------------------------
-# Threaded into module.omni_host so the on-host omni-backup.sh /
+# Threaded into module.omni_host_oci / module.omni_host_contabo so the on-host omni-backup.sh /
 # omni-restore.sh pair can write to / read from R2 without baking
 # credentials into a script committed to the repo.
 
