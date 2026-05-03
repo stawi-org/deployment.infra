@@ -94,6 +94,32 @@ jobs:
           set -euo pipefail
           omnictl apply -f tofu/shared/clusters/machine-classes.yaml
 
+      # Sweep stale, disconnected machines that have been disconnected
+      # for >5 min AND aren't bound to any cluster. Stuck Machine
+      # resources block fresh registrations of the same physical node
+      # (Talos re-registers with same UUID; Omni keeps the stale
+      # entry as `disconnected` instead of refreshing). Delete them
+      # so the next Talos boot creates a clean registration.
+      - name: Sweep stale disconnected unbound machines
+        if: env.DRY_RUN != 'true'
+        run: |
+          set -euo pipefail
+          stale=$(omnictl get machinestatus -o json 2>/dev/null \
+            | jq -r '. | select(
+                (.metadata.labels."omni.sidero.dev/disconnected" != null)
+                and (.spec.connected == false)
+                and (.spec.cluster == "" or .spec.cluster == null)
+              ) | .metadata.id' \
+            || true)
+          if [[ -z "$stale" ]]; then
+            echo "::notice::No stale disconnected unbound machines."
+            exit 0
+          fi
+          for id in $stale; do
+            echo "::notice::deleting stale machine $id"
+            omnictl delete machine "$id" || echo "::warning::failed to delete $id (may already be gone)"
+          done
+
       # Bootstrap-bind unbound machines by UUID. When machines first
       # register via SideroLink, they have no hostname/IPv4 reported,
       # so the regular hostname/IPv4-based label sync (layer 03)
