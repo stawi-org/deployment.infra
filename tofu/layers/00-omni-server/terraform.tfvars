@@ -1,3 +1,8 @@
+# Substrate hosting omni-host: "contabo" adopts existing VPS 202727781
+# (former bwire-3); "oci" provisions an A1.Flex in OCI bwire. Flipped
+# to contabo 2026-05-03 — OCI public IPv4 is unstable for cp.stawi.org.
+omni_host_provider = "contabo"
+
 # bwire_availability_domain_index defaults to 0 (first AD). The
 # module auto-discovers ADs via oci_identity_availability_domains
 # data source — same pattern oracle-account-infra uses for cluster
