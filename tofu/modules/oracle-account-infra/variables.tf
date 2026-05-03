@@ -30,6 +30,14 @@ variable "nodes" {
     # when this default changes. Operators can set 1 or 2 explicitly
     # to spread off AD-1 once they've confirmed multi-AD access.
     availability_domain_index = optional(number, 0)
+    # Per-node boot volume size in GB. Optional; null falls back to
+    # node-oracle's 180 GB default. OCI rejects in-place shrink, so
+    # changing this on an existing node forces destroy+create. Floor
+    # 50 (Talos QCOW2 base), ceiling 195 (per-tenancy free-tier cap).
+    # Trim where you can — bwire's tenancy holds both a cluster CP
+    # and the omni-host, so the CP entry typically wants 140 GB to
+    # leave 50 GB for the omni-host inside the 200 GB cap.
+    boot_volume_size_gb = optional(number)
   }))
   validation {
     condition = alltrue([

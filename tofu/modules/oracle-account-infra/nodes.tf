@@ -12,21 +12,22 @@ module "node" {
   for_each = var.nodes
   source   = "../node-oracle"
 
-  name                = each.key
-  role                = each.value.role
-  shape               = each.value.shape
-  ocpus               = each.value.ocpus
-  memory_gb           = each.value.memory_gb
-  subnet_id           = oci_core_subnet.public.id
-  image_id            = local.image_ocid
-  compartment_ocid    = var.compartment_ocid
-  assign_ipv6         = var.enable_ipv6
-  availability_domain = local.per_node_ad[each.key]
-  labels              = merge(var.labels, each.value.labels)
-  annotations         = merge(var.annotations, each.value.annotations)
-  bastion_id          = oci_bastion_bastion.this.id
-  account_key         = var.account_key
-  region              = var.region
+  name                    = each.key
+  role                    = each.value.role
+  shape                   = each.value.shape
+  ocpus                   = each.value.ocpus
+  memory_gb               = each.value.memory_gb
+  boot_volume_size_in_gbs = coalesce(each.value.boot_volume_size_gb, 180)
+  subnet_id               = oci_core_subnet.public.id
+  image_id                = local.image_ocid
+  compartment_ocid        = var.compartment_ocid
+  assign_ipv6             = var.enable_ipv6
+  availability_domain     = local.per_node_ad[each.key]
+  labels                  = merge(var.labels, each.value.labels)
+  annotations             = merge(var.annotations, each.value.annotations)
+  bastion_id              = oci_bastion_bastion.this.id
+  account_key             = var.account_key
+  region                  = var.region
 
   # Operator-controlled fleet-reinstall escape hatch — see
   # `node-oracle` and `node-contabo` variables for the full story.
