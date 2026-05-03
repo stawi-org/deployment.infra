@@ -14,7 +14,7 @@ module "ubuntu_24_04_image_contabo" {
   count  = var.omni_host_provider == "contabo" ? 1 : 0
   source = "../../modules/contabo-image-lookup"
 
-  name_pattern  = "^Ubuntu 24\\.04"
+  name_pattern  = "^ubuntu-24\\.04$"
   client_id     = var.contabo_client_id
   client_secret = var.contabo_client_secret
   api_user      = var.contabo_api_user
