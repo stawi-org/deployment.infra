@@ -284,3 +284,12 @@ jobs:
           echo "::group::machine inventory (cluster=stawi)"
           omnictl get machinestatus -l "omni.sidero.dev/cluster=stawi" -o table
           echo "::endgroup::"
+          echo "::group::ALL machinestatus (no filter, full YAML)"
+          omnictl get machinestatus -o yaml || true
+          echo "::endgroup::"
+          echo "::group::ALL machine resources (no filter, full YAML)"
+          omnictl get machine -o yaml || true
+          echo "::endgroup::"
+          echo "::group::Talos clusters"
+          omnictl get clusters -o yaml || true
+          echo "::endgroup::"
