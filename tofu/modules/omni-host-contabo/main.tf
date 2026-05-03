@@ -80,9 +80,14 @@ resource "contabo_instance" "this" {
   image_id     = var.image_id
   period       = 1
 
-  # See node-contabo's identical block: the provider's image_id-only
-  # PUT is broken, so we ignore it and let ensure-image.sh own
-  # reinstall drift correction.
+  # The contabo provider's image_id-only PUT is treated by Contabo's
+  # API as a metadata update (~40s, disk untouched), not a reinstall —
+  # the provider's HasChange-driven payload assembly omits the fields
+  # that would actually trigger disk wipe. Ignoring image_id changes
+  # here lets null_resource.ensure_image (below) own the reinstall via
+  # ensure-image.sh, which PUTs a full payload that mirrors what
+  # contabo.py / Ansible have done for years. See node-contabo's
+  # main.tf module-header for the full provider archaeology.
   lifecycle {
     ignore_changes = [image_id]
   }
@@ -93,7 +98,12 @@ resource "null_resource" "ensure_image" {
     instance_id                = contabo_instance.this.id
     target_image_id            = var.image_id
     force_reinstall_generation = var.force_reinstall_generation
-    user_data_sha256           = sha256(local.user_data)
+    # Cloud-init drift triggers a full reinstall — the omni-host has
+    # no in-place config-reload path. Bumping vpn_users, omni_version,
+    # or any other templated input wipes Omni's etcd and reregisters
+    # every machine. Edits here should be batched with operator-coordinated
+    # cluster recovery.
+    user_data_sha256 = sha256(local.user_data)
   }
 
   provisioner "local-exec" {
@@ -106,7 +116,7 @@ resource "null_resource" "ensure_image" {
       CONTABO_CLIENT_SECRET = var.contabo_client_secret
       CONTABO_API_USER      = var.contabo_api_user
       CONTABO_API_PASSWORD  = var.contabo_api_password
-      NODE_ROLE             = "omni-host"
+      NODE_ROLE             = "controlplane"
       # FORCE_REINSTALL=1 skips the imageId-equality short-circuit so the
       # PUT fires unconditionally — used for config-only redeployments
       # where the image hasn't changed (e.g. vpn_users update).
