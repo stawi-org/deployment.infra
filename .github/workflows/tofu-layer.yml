@@ -9,6 +9,11 @@ on:
       environment:      { required: false, type: string, default: "" }
       extra_plan_args:  { required: false, type: string, default: "", description: "Extra args appended to tofu plan (e.g. -replace=foo.bar). Recovery use only." }
       account:          { required: false, type: string, default: "", description: "Account key for per-account-state layers (01-contabo-infra, 02-oracle-infra, 02-onprem-infra). When non-empty, the Init step overrides the backend key to production/<layer>-<account>.tfstate and TF_VAR_account_key is exported so the layer's variable validation accepts the run." }
+      pre_apply_state_mv:
+        required: false
+        type: string
+        default: ""
+        description: "Whitespace-separated FROM TO pairs to `tofu state mv` before plan/apply. Used for in-state refactors (e.g. hoisting a resource out of a module) where rm+import would lose sensitive values. One pair per move; pairs flow left-to-right."
   # Direct operator dispatch — used for one-off recovery actions that
   # don't fit the standard plan/apply graph (e.g. -replace= a single
   # resource without dragging the whole layer chain along).
@@ -24,6 +29,11 @@ on:
         type: string
         default: ""
         description: "Whitespace-separated resource addresses to `tofu state rm` before plan/apply. Recovery / cross-layer move use only."
+      pre_apply_state_mv:
+        required: false
+        type: string
+        default: ""
+        description: "Whitespace-separated FROM TO pairs to `tofu state mv` before plan/apply. Used for in-state refactors (e.g. hoisting a resource out of a module) where rm+import would lose sensitive values. One pair per move; pairs flow left-to-right."
     secrets:
       R2_ACCOUNT_ID:            { required: true }
       R2_ACCESS_KEY_ID:         { required: true }
@@ -377,6 +387,40 @@ jobs:
           for addr in ${{ inputs.pre_apply_state_rm }}; do
             echo "::warning::tofu state rm $addr (manual recovery)"
             tofu state rm "$addr" || echo "::warning::$addr not in state, continuing"
+          done
+
+      - name: Pre-apply state mv (in-state refactor)
+        if: inputs.pre_apply_state_mv != ''
+        working-directory: tofu/layers/${{ inputs.layer }}
+        env:
+          AWS_ACCESS_KEY_ID:         ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY:     ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
+          TF_VAR_account_key:        ${{ inputs.account }}
+          PRE_APPLY_STATE_MV:        ${{ inputs.pre_apply_state_mv }}
+        run: |
+          set -euo pipefail
+          # PRE_APPLY_STATE_MV is whitespace-separated FROM TO pairs.
+          # Read positionally: ($1=FROM, $2=TO), then ($3=FROM, $4=TO), ...
+          # Idempotent: a missing FROM (already moved on a prior run) is a warning, not an error.
+          # shellcheck disable=SC2086
+          set -- $PRE_APPLY_STATE_MV
+          if [[ $# -eq 0 || $(( $# % 2 )) -ne 0 ]]; then
+            echo "::error::pre_apply_state_mv must be whitespace-separated FROM TO pairs (got $# tokens)"
+            exit 1
+          fi
+          while [[ $# -gt 0 ]]; do
+            from=$1; to=$2
+            echo "::warning::tofu state mv $from -> $to (in-state refactor)"
+            if tofu state mv "$from" "$to"; then
+              :
+            else
+              # `tofu state mv` exits non-zero if FROM isn't present. Treat as
+              # idempotent — the move likely already happened on a prior run
+              # and we don't want to fail when re-running for repeatability.
+              echo "::warning::$from not in state (already moved?), continuing"
+            fi
+            shift 2
           done
 
       - name: Plan

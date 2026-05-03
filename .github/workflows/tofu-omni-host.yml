@@ -53,6 +53,10 @@ on:
         description: "Extra args appended to tofu plan (e.g. -replace=foo.bar). Recovery use only."
         type: string
         default: ""
+      pre_apply_state_mv:
+        description: "Whitespace-separated FROM TO pairs for `tofu state mv` before plan/apply. In-state refactor only (passed to tofu-layer.yml's same input, evaluated via env, never shell-expanded)."
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -75,4 +79,5 @@ jobs:
       mode: ${{ github.event_name == 'pull_request' && 'plan' || (github.event_name == 'workflow_dispatch' && inputs.mode || 'apply') }}
       environment: production
       extra_plan_args: ${{ github.event_name == 'workflow_dispatch' && inputs.extra_plan_args || '' }}
+      pre_apply_state_mv: ${{ github.event_name == 'workflow_dispatch' && inputs.pre_apply_state_mv || '' }}
     secrets: inherit
