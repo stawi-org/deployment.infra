@@ -11,7 +11,7 @@
 
 locals {
   docker_compose_yaml = templatefile(
-    "${path.module}/docker-compose.yaml.tftpl",
+    "${path.module}/../../shared/templates/omni-host/docker-compose.yaml.tftpl",
     {
       omni_version                         = var.omni_version
       dex_version                          = var.dex_version
