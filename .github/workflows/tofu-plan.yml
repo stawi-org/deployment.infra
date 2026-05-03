@@ -32,9 +32,9 @@ jobs:
     with: { layer: 00-talos-secrets, mode: plan }
     secrets: inherit
   # NOTE: layer 00-omni-server (Omni-host VPS) is planned by
-  # tofu-omni-host.yml on PRs touching tofu/modules/omni-host/** or
-  # tofu/layers/00-omni-server/**. Excluded here so node-only PRs
-  # don't waste a runner on a no-op omni-host plan.
+  # tofu-omni-host.yml on PRs touching tofu/modules/omni-host-{oci,contabo}/**,
+  # tofu/shared/templates/omni-host/**, or tofu/layers/00-omni-server/**.
+  # Excluded here so node-only PRs don't waste a runner on a no-op omni-host plan.
 
   # All three infra layers (contabo, oracle, onprem) are matrixed
   # per-account to mirror tofu-apply.yml — same reasoning, same
