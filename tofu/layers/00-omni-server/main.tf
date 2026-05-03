@@ -127,6 +127,15 @@ module "omni_host_oci" {
   ssh_authorized_keys = []
 }
 
+# Adopt the existing Contabo VPS rather than creating a new one.
+# omni_host_contabo_vps_id defaults to "202727781". The import targets
+# the indexed module address because the module uses count. The block
+# is a no-op once the resource is in state; safe on every subsequent apply.
+import {
+  to = module.omni_host_contabo[0].contabo_instance.this
+  id = var.omni_host_contabo_vps_id
+}
+
 module "omni_host_contabo" {
   count  = var.omni_host_provider == "contabo" ? 1 : 0
   source = "../../modules/omni-host-contabo"

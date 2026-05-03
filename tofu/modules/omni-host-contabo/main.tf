@@ -13,7 +13,7 @@
 #     Bumping force_reinstall_generation re-runs unconditionally.
 #
 # product_id is intentionally omitted: the module adopts an existing
-# VPS (imported via var.vps_id at the layer level), and Contabo's API
+# VPS (imported via var.omni_host_contabo_vps_id in the layer's import block),
 # cannot change a VPS product class in-place. Setting product_id here
 # would only matter at create time — which never happens for adopted
 # instances. No variable needed; whatever the VPS already has is
