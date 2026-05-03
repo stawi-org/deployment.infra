@@ -692,7 +692,7 @@ write_files:
   #   2. User shares ONLY the public key over a secure channel.
   #   3. Operator adds a record to var.vpn_users in
   #      tofu/layers/00-omni-server/terraform.tfvars and applies
-  #      (OCI provider recreates the VM on user_data change).
+  #      (triggered by the ensure-image.sh reinstall path on user_data drift).
   #   4. Operator gives user the server pubkey
   #      (`cat /etc/wireguard/wg-users.pubkey` on omni-host) and the
   #      assigned VPN IP. User assembles their .conf with their own
@@ -700,7 +700,7 @@ write_files:
   #
   # Server keypair: generated on first boot if /etc/wireguard/
   # wg-users.privkey doesn't exist; included in the omni-backup tar
-  # so an OCI VM recreation doesn't rotate the server pubkey out from
+  # so a Contabo VPS reinstall doesn't rotate the server pubkey out from
   # under existing users.
   - path: /etc/wireguard/wg-users.conf.template
     permissions: "0640"
@@ -832,8 +832,10 @@ write_files:
           ip6 nexthdr icmpv6 accept
 
           # SSH — gated by ssh_authorized_keys variable. If the operator
-          # provided keys, allow public 22; if not, the OCI substrate
-          # disables SSH entirely. Mirror that here: do NOT open 22 by
+          # provided keys, allow public 22; if not, no rule is emitted, so
+          # input policy drop closes port 22. (Mirrors the OCI substrate's
+          # behaviour where empty ssh_authorized_keys means an empty
+          # AuthorizedKeysFile + closed security-list rule.) Do NOT open 22 by
           # default. Operator opens via WireGuard (see below) and only
           # needs public 22 during initial bootstrap (template renders
           # this rule conditionally).
@@ -847,7 +849,17 @@ write_files:
           udp dport { 50180, 51820 } accept
         }
 
-        chain forward { type filter hook forward priority filter; policy drop; }
+        chain forward {
+          type filter hook forward priority filter; policy drop;
+          # wg-users full-tunnel egress: clients route 0.0.0.0/0 + ::/0
+          # through this host. POSTROUTING NAT (set up by wg-users PostUp)
+          # rewrites the source address; the FORWARD path needs an explicit
+          # accept since policy is drop. Established/related covers return
+          # traffic; invalid drop catches malformed flow state.
+          ct state established,related accept
+          ct state invalid drop
+          iif "wg-users" accept
+        }
         chain output { type filter hook output priority filter; policy accept; }
       }
 
