@@ -159,15 +159,40 @@ jobs:
           fi
           # Tolerate control-plane taints so the operator can schedule
           # on a single-CP cluster while no workers are Ready.
+          # --wait omitted: flux-operator pod readiness is checked by
+          # the dedicated wait step below. Helm's wait is brittle
+          # against transient apiserver hiccups (Omni proxy through
+          # CF). The operator becoming Ready is what matters; helm
+          # returning is just "manifests applied".
           helm upgrade --install flux-operator \
             oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator \
             -n flux-system \
             "${version_arg[@]}" \
-            --wait \
-            --timeout 5m \
             --set 'tolerations[0].key=node-role.kubernetes.io/control-plane' \
             --set 'tolerations[0].operator=Exists' \
             --set 'tolerations[0].effect=NoSchedule'
+
+      - name: Wait for flux-operator pod Ready
+        run: |
+          set -euo pipefail
+          # Poll deploy/flux-operator until at least one replica is
+          # Ready. The FluxInstance CRD comes from this deploy, so
+          # apply must wait until it's registered.
+          deadline=$(( $(date +%s) + 600 ))
+          while :; do
+            ready=$(kubectl -n flux-system get deploy flux-operator \
+              -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)
+            if [[ "$ready" =~ ^[1-9][0-9]*$ ]]; then
+              echo "flux-operator Ready ($ready replica(s))"
+              break
+            fi
+            if (( $(date +%s) >= deadline )); then
+              echo "::error::flux-operator not Ready after 10min"
+              kubectl -n flux-system get deploy,pods
+              exit 1
+            fi
+            sleep 10
+          done
 
       - name: Apply FluxInstance
         run: |
