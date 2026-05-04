@@ -91,10 +91,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ~/.kube ~/.talos
-          omnictl kubeconfig "$HOME/.kube/config" \
-            --cluster "$CLUSTER_NAME" --service-account
-          omnictl talosconfig "$HOME/.talos/config" \
-            --cluster "$CLUSTER_NAME" --service-account
+          # --user sets kubeconfig context (cosmetic); --groups
+          # system:masters gives cluster-admin (deploy-flux installs
+          # Flux components in flux-system + kube-system).
+          omnictl kubeconfig --cluster "$CLUSTER_NAME" --service-account \
+            --user deploy-flux --groups system:masters --force \
+            "$HOME/.kube/config"
+          # talosconfig: proxied through Omni's siderolink — sufficient
+          # for the talosconfig Secret consumed by the etcd-backup
+          # CronJob (it doesn't need direct apid access).
+          omnictl talosconfig --cluster "$CLUSTER_NAME" --force \
+            "$HOME/.talos/config"
           chmod 0600 "$HOME/.kube/config" "$HOME/.talos/config"
 
       - name: Wait for cluster apiserver
