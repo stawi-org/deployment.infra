@@ -382,9 +382,22 @@ jobs:
           AWS_SECRET_ACCESS_KEY:    ${{ secrets.R2_SECRET_ACCESS_KEY }}
           AWS_EC2_METADATA_DISABLED: "true"
           TF_VAR_account_key:       ${{ inputs.account }}
+          # Routed via env: so dquotes inside indexed addresses like
+          # module.nodes["key"] survive into the shell. Direct
+          # ${{ inputs.* }} interpolation in `run:` strips them.
+          PRE_APPLY_STATE_RM: ${{ inputs.pre_apply_state_rm }}
         run: |
           set -euo pipefail
-          for addr in ${{ inputs.pre_apply_state_rm }}; do
+          # Newline-separated when any line carries a dquote
+          # (indexed-address mode); whitespace-split otherwise to
+          # keep legacy `addr1 addr2` callers working.
+          if printf '%s' "$PRE_APPLY_STATE_RM" | grep -q '"'; then
+            mapfile -t addrs < <(printf '%s\n' "$PRE_APPLY_STATE_RM")
+          else
+            read -ra addrs <<<"$PRE_APPLY_STATE_RM"
+          fi
+          for addr in "${addrs[@]}"; do
+            [[ -z "$addr" ]] && continue
             echo "::warning::tofu state rm $addr (manual recovery)"
             tofu state rm "$addr" || echo "::warning::$addr not in state, continuing"
           done
