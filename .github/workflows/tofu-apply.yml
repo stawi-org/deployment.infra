@@ -1,11 +1,22 @@
 # .github/workflows/tofu-apply.yml
 name: tofu-apply
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      contabo_pre_apply_state_rm:
+        description: "Whitespace-separated resource addresses to `tofu state rm` before plan/apply on the 01-contabo-infra layer. Recovery / cross-layer move use only."
+        required: false
+        type: string
+        default: ""
   # Reusable from cluster-reinstall.yml and cluster-reset.yml so the
   # reconstruction flows can carry the apply through the same job
   # graph instead of dispatching a separate tofu-apply run.
-  workflow_call: {}
+  workflow_call:
+    inputs:
+      contabo_pre_apply_state_rm:
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
