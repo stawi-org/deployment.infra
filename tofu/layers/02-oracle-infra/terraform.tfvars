@@ -37,4 +37,10 @@ force_image_generation = 12
 #                   carrying that token (otherwise the existing
 #                   nodes still hold the old token and Omni rejects
 #                   their joins with `has_valid_join_token: false`).
-force_reinstall_generation = 12
+#  13 — 2026-05-04: post cluster delete + recreate (omni-on-Contabo
+#                   cutover). Two OCI nodes (bwire, brianelvis33) had
+#                   stale SideroLink tokens for the destroyed cluster
+#                   and never re-registered. Forcing fleet reinstall
+#                   pulls the fresh-token image baked by the
+#                   regenerate-talos-images PR #176 merge.
+force_reinstall_generation = 13
