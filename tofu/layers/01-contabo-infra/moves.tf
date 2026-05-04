@@ -75,15 +75,9 @@ removed {
 
 # --- bwire-3 leaves the cluster pool ---------------------------------
 # VPS 202727781 was promoted to omni-host (adopted by 00-omni-server's
-# omni-host-contabo module). Remove from this layer's tfstate without
-# destroying the underlying resource — Contabo's destroy path is
-# unimplemented in the provider anyway (tries DELETE, gets HTTP error),
-# and a Contabo VPS reinstall in place is how the omni-host gets its
-# Ubuntu image. Pairs with the bwire-3 entry already removed from
-# tofu/shared/bootstrap/contabo-instance-ids.yaml.
-removed {
-  from = module.nodes["contabo-bwire-node-3"]
-  lifecycle {
-    destroy = false
-  }
-}
+# omni-host-contabo module). The OpenTofu version in CI rejects a
+# `removed{}` block targeting a single for_each key on a module, so
+# the drop is done via `pre_apply_state_rm` on the next tofu-apply
+# dispatch instead. Once the layer's state no longer contains the
+# bwire-3 module instance, this comment becomes purely historical
+# (the for_each input from R2 inventory already excludes it).

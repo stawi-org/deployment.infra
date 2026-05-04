@@ -85,6 +85,7 @@ jobs:
       account: ${{ matrix.account }}
       mode: apply
       environment: production
+      pre_apply_state_rm: ${{ inputs.contabo_pre_apply_state_rm }}
     secrets: inherit
 
   read-oracle-accounts:
