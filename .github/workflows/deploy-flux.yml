@@ -150,6 +150,17 @@ jobs:
             --from-literal=R2_ACCOUNT_ID="$R2_ACCOUNT_ID" \
             --dry-run=client -o yaml | kubectl apply -f -
 
+      - name: Clear stuck flux-operator pods on Contabo nodes
+        run: |
+          set -euo pipefail
+          # Old pods scheduled to Contabo nodes get stuck in
+          # ContainerCreating because flannel's v6 init fails on
+          # those nodes (Contabo doesn't deliver SLAAC IPv6) and
+          # CNI never registers. Deleting them lets the new
+          # nodeSelector-pinned pod take their place cleanly.
+          kubectl -n flux-system delete pod -l app.kubernetes.io/name=flux-operator \
+            --field-selector status.phase!=Running --grace-period=0 --force 2>&1 || true
+
       - name: Helm install/upgrade flux-operator
         run: |
           set -euo pipefail
@@ -157,28 +168,29 @@ jobs:
           if [[ -n "$FLUX_VERSION_INPUT" ]]; then
             version_arg=(--version "$FLUX_VERSION_INPUT")
           fi
-          # nodeSelector pins the operator to OCI nodes (provider=oracle).
-          # Why: kube-flannel doesn't fully come up on Contabo nodes —
-          # the dual-stack patch tells flannel to set up v6 tunnels,
-          # but Contabo doesn't deliver IPv6 to nodes (no SLAAC RAs
-          # by default), so flannel crash-loops on v6-init failure
-          # and CNI never registers. Pods scheduled to Contabo nodes
-          # sit in ContainerCreating indefinitely. OCI nodes have
-          # working v6 from VCN metadata; flannel works there.
-          #
-          # --wait omitted: flux-operator pod readiness is checked by
-          # the dedicated wait step below. Helm's wait is brittle
-          # against transient apiserver hiccups (Omni proxy through
-          # CF). The operator becoming Ready is what matters; helm
-          # returning is just "manifests applied".
+          # values via temp file — helm --set with dotted label keys
+          # needs single-quoting of every dot escape, which is fragile
+          # in shell. YAML is unambiguous.
+          values=$(mktemp --suffix=.yaml)
+          trap 'rm -f "$values"' EXIT
+          cat > "$values" <<'EOF'
+          # Pin to OCI nodes — kube-flannel doesn't initialise on
+          # Contabo nodes (no SLAAC IPv6 from Contabo's network →
+          # dual-stack v6 init fails → CNI doesn't register on
+          # those nodes → pods stick in ContainerCreating forever).
+          # OCI nodes have v6 from VCN metadata; flannel works.
+          nodeSelector:
+            node.antinvestor.io/provider: oracle
+          tolerations:
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
+              effect: NoSchedule
+          EOF
           helm upgrade --install flux-operator \
             oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator \
             -n flux-system \
             "${version_arg[@]}" \
-            --set 'nodeSelector.node\.antinvestor\.io/provider=oracle' \
-            --set 'tolerations[0].key=node-role.kubernetes.io/control-plane' \
-            --set 'tolerations[0].operator=Exists' \
-            --set 'tolerations[0].effect=NoSchedule'
+            -f "$values"
 
       - name: Wait for flux-operator pod Ready
         run: |
