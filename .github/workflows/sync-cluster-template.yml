@@ -248,81 +248,24 @@ jobs:
           envsubst < tofu/shared/clusters/etcd-backup-s3-configs.yaml.tmpl > "$rendered"
           omnictl apply -f "$rendered"
 
-      # Render + apply per-node ConfigPatches for Contabo nodes.
-      # Reads each Contabo tfstate's `nodes` output, renders the
-      # node-contabo.tftpl patch with that node's IPv4/IPv6/gateway/
-      # hostname, wraps it in a ConfigPatches.omni.sidero.dev resource
-      # label-targeted by node.antinvestor.io/name=<n>, and applies.
+      # Per-node link ConfigPatches retired 2026-05-04 — they set
+      # static IPs with a self-routing v6 gateway (<prefix>::1, the
+      # same address Contabo assigns to the host) that broke Talos
+      # networking and stalled CP bootstrap for 30+ min. Replaced
+      # with Talos defaults (DHCPv4 + accept_ra=2 from the cluster's
+      # contabo-ipv6-ra patch). Where Contabo's network doesn't
+      # deliver RAs, nodes stay v4-only; dual-stack tolerates that.
       #
-      # Why this lives here (not in tofu): per-machine patches are
-      # cluster spec, not infrastructure. Tofu owns provisioning;
-      # cluster-template.yml + this workflow own everything Omni
-      # consumes. Same boundary as etcd-backup-s3-configs.
-      - name: Apply per-node ConfigPatches (Contabo)
+      # This step removes legacy stawi-<node>-link patches that may
+      # still exist in Omni state from prior runs. Idempotent.
+      - name: Remove legacy per-node link patches
         if: env.DRY_RUN != 'true'
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_EC2_METADATA_DISABLED: "true"
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
         run: |
           set -euo pipefail
-          ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          tmp=$(mktemp -d)
-          trap 'rm -rf "$tmp"' EXIT
-
-          # accounts.yaml lists every contabo account; iterate.
-          mapfile -t accounts < <(yq -r '.contabo[]' tofu/shared/accounts.yaml)
-
-          for acct in "${accounts[@]}"; do
-            STATE_KEY="production/01-contabo-infra-${acct}.tfstate"
-            if ! aws s3api head-object --bucket cluster-tofu-state --key "$STATE_KEY" \
-                 --endpoint-url "$ENDPOINT" --region us-east-1 >/dev/null 2>&1; then
-              echo "::notice::contabo/$acct tfstate not found — skipping per-node patches for this account."
-              continue
-            fi
-            state="$tmp/${acct}.tfstate"
-            aws s3 cp "s3://cluster-tofu-state/$STATE_KEY" "$state" \
-              --endpoint-url "$ENDPOINT" --region us-east-1 >/dev/null
-
-            # Iterate every node in this account's `nodes` output.
-            mapfile -t nodes < <(jq -r '.outputs.nodes.value | keys[]' "$state")
-            for n in "${nodes[@]}"; do
-              ipv4=$(jq -r ".outputs.nodes.value[\"$n\"].ipv4" "$state")
-              ipv6=$(jq -r ".outputs.nodes.value[\"$n\"].ipv6 // empty" "$state")
-              [[ -z "$ipv4" ]] && { echo "::warning::no ipv4 for $n; skipping"; continue; }
-
-              # Derive gateways from IP. Contabo convention: /24 for
-              # IPv4 with gateway = first three octets + .1; /64 for
-              # IPv6 with gateway = subnet prefix + ::1.
-              ipv4_gateway=$(awk -F. '{print $1"."$2"."$3".1"}' <<<"$ipv4")
-              if [[ -n "$ipv6" ]]; then
-                ipv6_prefix=$(awk -F: '{print $1":"$2":"$3":"$4}' <<<"$ipv6")
-                ipv6_gateway="${ipv6_prefix}::1"
-                ipv6_subnet="${ipv6_prefix}::/64"
-              else
-                ipv6_gateway=""
-                ipv6_subnet=""
-              fi
-
-              # Render the Talos patch body.
-              patch_body=$(IPV4="$ipv4" IPV6="$ipv6" \
-                IPV4_GATEWAY="$ipv4_gateway" IPV6_GATEWAY="$ipv6_gateway" \
-                IPV6_SUBNET="$ipv6_subnet" HOSTNAME="$n" \
-                envsubst < tofu/shared/patches/node-contabo.tftpl)
-
-              # Wrap in ConfigPatch resource.
-              indented_data=$(sed 's/^/    /' <<<"$patch_body")
-              targets=$(printf '    - "node.antinvestor.io/name=%s"\n' "$n")
-
-              ID="stawi-${n}-link" \
-              TARGET_SELECTORS_BLOCK="$targets" \
-              INDENTED_DATA="$indented_data" \
-                envsubst < tofu/shared/clusters/per-node-patches.yaml.tmpl \
-                > "$tmp/${n}.yaml"
-
-              omnictl apply -f "$tmp/${n}.yaml"
-            done
+          for id in $(omnictl get configpatches -o jsonpath='{.metadata.id}' 2>/dev/null \
+                      | tr ' ' '\n' | grep -E '^stawi-.+-link$' || true); do
+            echo "removing legacy per-node patch: $id"
+            omnictl delete configpatches "$id" || true
           done
 
       # Validate before sync — catches schema typos that would
