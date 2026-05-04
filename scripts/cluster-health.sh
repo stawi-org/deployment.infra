@@ -139,6 +139,16 @@ STUCK=$(kubectl get pods -A --request-timeout=10s -o json 2>/dev/null | jq -r '
 if [[ -n "$STUCK" ]]; then
   fail "stuck pods:"
   printf '%s\n' "$STUCK" | sed 's/^/    /'
+  echo "::group::stuck pods diagnostic (kubectl describe + tail logs)"
+  while IFS=/ read -r ns name_phase; do
+    name="${name_phase%% *}"
+    [[ -z "$ns" || -z "$name" ]] && continue
+    echo "---- describe $ns/$name ----"
+    kubectl describe -n "$ns" pod "$name" --request-timeout=10s 2>&1 | tail -40 || true
+    echo "---- last 20 lines of logs ----"
+    kubectl logs -n "$ns" "$name" --tail=20 --all-containers --request-timeout=10s 2>&1 | head -40 || true
+  done <<<"$STUCK"
+  echo "::endgroup::"
 else
   pass "no stuck pods"
 fi
