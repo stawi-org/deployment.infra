@@ -11,8 +11,13 @@
 #
 # `target_label_selectors` is an array of label-equality predicates;
 # Omni binds the patch to whichever Machine carries ALL the listed
-# labels. cluster=stawi plus per-node-name (synced by layer-03's
-# machine-labels reconciler) ensures exactly one match.
+# labels. The selectors carry the per-node binding; the
+# `omni.sidero.dev/cluster: stawi` label is deliberately NOT set —
+# it would cause `omnictl cluster template sync` to claim ownership
+# of these per-node patches and prune them as "not in template" on
+# the next sync run, breaking Contabo node networking. Selectors
+# alone keep the patch attached to the right Machine; the resource
+# sits outside any cluster template's ownership scope.
 #
 # `data` carries the multi-doc Talos config patch verbatim. The
 # rendered file is fed to `omnictl apply -f <path>` (omnictl rejects
@@ -22,7 +27,7 @@ metadata:
   type: ConfigPatches.omni.sidero.dev
   id: ${ID}
   labels:
-    omni.sidero.dev/cluster: stawi
+    stawi.local/per-node-link: "true"
 spec:
   target_label_selectors:
 ${TARGET_SELECTORS_BLOCK}
