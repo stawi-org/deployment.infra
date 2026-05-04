@@ -171,6 +171,16 @@ module "omni_host_contabo" {
   r2_account_id        = var.r2_account_id
   r2_access_key_id     = var.r2_access_key_id
   r2_secret_access_key = var.r2_secret_access_key
+
+  # Fresh restore namespace. Older OCI-substrate snapshots under
+  # production/omni-backups/ left /var/lib/omni in a state that the
+  # new Contabo-substrate Omni binary couldn't open (omni up, but
+  # 127.0.0.1:18080 never bound — nginx serves 502 on /healthz while
+  # Dex remains healthy). Pointing omni-restore + omni-backup at a
+  # fresh prefix means restore finds nothing → omni-keys generates
+  # fresh master keys → Omni starts clean. Greenfield: every cluster
+  # gets re-registered, no production state lost.
+  r2_backup_prefix = "production/omni-backups-2026-05-04"
 }
 
 # DNS records pull the IPs straight from the OCI instance — tofu knows
