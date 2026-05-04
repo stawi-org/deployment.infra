@@ -125,6 +125,26 @@ patches:
               - 0.0.0.0/0
               - ::/0
               - "!fdae:41e4:649b:9303::/64"
+  # Contabo IPv6 default route via SLAAC. Without this, kube-flannel
+  # crash-loops on Contabo nodes with "failed to get default v6
+  # interface: unable to find default v6 route" — the dual-stack
+  # patch above tells flannel to set up v6 tunnels, but Contabo
+  # delivers IPv6 only via Router Advertisements, and Linux defaults
+  # to `accept_ra=1` (= accept RAs only when forwarding=0). Cluster
+  # nodes have forwarding=1 (kube-proxy + CNI), so default behaviour
+  # ignores RAs and no v6 default route ever lands. accept_ra=2
+  # forces RA acceptance even with forwarding on.
+  #
+  # Cluster-wide instead of per-account: harmless on OCI nodes whose
+  # v6 is delivered statically via OCI metadata (no RAs in flight to
+  # accept anyway). Avoids needing a per-machine ConfigPatch + Omni
+  # selector machinery just for one sysctl pair.
+  - name: contabo-ipv6-ra
+    inline:
+      machine:
+        sysctls:
+          net.ipv6.conf.all.accept_ra: "2"
+          net.ipv6.conf.default.accept_ra: "2"
 # NOTE: KubeSpan + Flux extraManifests patches were removed
 # 2026-05-01 after a 1+ hour cluster bootstrap stall — Talos apid
 # wasn't responding on any of the 5 nodes. Both will be re-introduced
