@@ -157,8 +157,15 @@ jobs:
           if [[ -n "$FLUX_VERSION_INPUT" ]]; then
             version_arg=(--version "$FLUX_VERSION_INPUT")
           fi
-          # Tolerate control-plane taints so the operator can schedule
-          # on a single-CP cluster while no workers are Ready.
+          # nodeSelector pins the operator to OCI nodes (provider=oracle).
+          # Why: kube-flannel doesn't fully come up on Contabo nodes —
+          # the dual-stack patch tells flannel to set up v6 tunnels,
+          # but Contabo doesn't deliver IPv6 to nodes (no SLAAC RAs
+          # by default), so flannel crash-loops on v6-init failure
+          # and CNI never registers. Pods scheduled to Contabo nodes
+          # sit in ContainerCreating indefinitely. OCI nodes have
+          # working v6 from VCN metadata; flannel works there.
+          #
           # --wait omitted: flux-operator pod readiness is checked by
           # the dedicated wait step below. Helm's wait is brittle
           # against transient apiserver hiccups (Omni proxy through
@@ -168,6 +175,7 @@ jobs:
             oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator \
             -n flux-system \
             "${version_arg[@]}" \
+            --set 'nodeSelector.node\.antinvestor\.io/provider=oracle' \
             --set 'tolerations[0].key=node-role.kubernetes.io/control-plane' \
             --set 'tolerations[0].operator=Exists' \
             --set 'tolerations[0].effect=NoSchedule'
