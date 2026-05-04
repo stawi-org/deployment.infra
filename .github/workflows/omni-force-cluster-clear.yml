@@ -1,0 +1,103 @@
+# Force-clear a wedged Omni cluster.
+#
+# Used when `omnictl cluster delete` hangs because one or more
+# machines are unreachable: Omni's drain waits for the machines to
+# acknowledge config-removal, which they never do, so the cluster
+# resource stays in `tearing-down` forever and `cluster template
+# sync` rejects with "resource is not in phase running". This
+# workflow goes around the drain: it deletes Links + ClusterMachineRequest
+# + ClusterMachine + Cluster resources directly, releasing finalizers
+# so the controller can collapse state.
+#
+# Use ONLY when the standard delete has failed and the operator has
+# decided to nuke the cluster. After this workflow runs, the cluster
+# resource is gone and machines can rejoin a fresh cluster created
+# by sync-cluster-template.
+
+name: omni-force-cluster-clear
+on:
+  workflow_dispatch:
+    inputs:
+      cluster_name:
+        type: string
+        required: true
+        default: stawi
+      confirm:
+        type: string
+        required: true
+        description: Type the cluster name to confirm
+
+permissions:
+  contents: read
+
+env:
+  OMNI_VERSION: v1.7.1
+
+jobs:
+  clear:
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT:            https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+      CLUSTER_NAME:             ${{ inputs.cluster_name }}
+      CONFIRM:                  ${{ inputs.confirm }}
+    steps:
+      - name: Confirm
+        run: |
+          set -euo pipefail
+          if [[ "$CLUSTER_NAME" != "$CONFIRM" ]]; then
+            echo "::error::confirm does not match cluster_name; aborting"
+            exit 1
+          fi
+
+      - name: Install omnictl
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64"
+          chmod +x /tmp/omnictl.real
+          sudo install -m 0755 /tmp/omnictl.real /usr/local/bin/omnictl.real
+          cat > /tmp/omnictl <<'WRAP'
+          #!/usr/bin/env bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /tmp/omnictl
+          sudo install -m 0755 /tmp/omnictl /usr/local/bin/omnictl
+
+      - name: Force-delete cluster-scoped resources
+        run: |
+          set -euo pipefail
+          # Resources to clear, in the order Omni's controllers expect.
+          kinds=(
+            "MachineSetNodes.omni.sidero.dev"
+            "ConfigPatches.omni.sidero.dev"
+            "ClusterMachineConfigStatuses.omni.sidero.dev"
+            "ClusterMachines.omni.sidero.dev"
+            "MachineSets.omni.sidero.dev"
+            "MachineLabels.omni.sidero.dev"
+            "Clusters.omni.sidero.dev"
+          )
+          for kind in "${kinds[@]}"; do
+            echo "::group::$kind (cluster=$CLUSTER_NAME)"
+            ids=$(omnictl get "$kind" -l "omni.sidero.dev/cluster=$CLUSTER_NAME" \
+                  -o jsonpath='{.metadata.id}' 2>/dev/null | tr ' ' '\n' | grep -v '^$' || true)
+            for id in $ids; do
+              echo "deleting $kind/$id"
+              omnictl delete "$kind" "$id" || echo "(absent or already torn down)"
+            done
+            echo "::endgroup::"
+          done
+
+          # Direct cluster resource delete by name (no label filter).
+          omnictl delete Clusters.omni.sidero.dev "$CLUSTER_NAME" || \
+            echo "(cluster $CLUSTER_NAME not found — already gone)"
+
+      - name: Show remaining cluster + machine state
+        run: |
+          set -euo pipefail
+          echo "::group::clusters"
+          omnictl get clusters -o table || true
+          echo "::endgroup::"
+          echo "::group::machines"
+          omnictl get machinestatus -o table || true
+          echo "::endgroup::"
