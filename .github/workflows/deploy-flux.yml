@@ -1,0 +1,198 @@
+# Deploy Flux into the cluster.
+#
+# Replaces tofu/layers/04-flux which depended on a kubeconfig output
+# from 03-talos that no longer exists (Omni owns kubeconfig now). This
+# workflow takes the same set of inputs (FluxInstance + secrets +
+# Helm-installed flux-operator) and applies them via Omni-issued
+# kubeconfig, fetched at runtime — no tfstate plumbing.
+#
+# Idempotent: re-running on a cluster that already has Flux installed
+# is a no-op (helm upgrade --install + kubectl apply both converge).
+# Run after tofu-apply when the cluster is healthy enough to accept
+# workloads (kube-apiserver reachable, kube-system pods Ready).
+#
+# All workflow_dispatch inputs are routed through env: before any
+# shell expansion (workflow injection guard).
+
+name: deploy-flux
+
+on:
+  workflow_dispatch:
+    inputs:
+      cluster_name:
+        type: string
+        required: false
+        default: stawi
+      flux_version:
+        description: "Flux operator chart version (e.g. v0.40.0). Empty = latest."
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-flux-${{ inputs.cluster_name }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT:            https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+      CLUSTER_NAME:             ${{ inputs.cluster_name }}
+      OMNI_VERSION:             v1.7.1
+      FLUX_VERSION_INPUT:       ${{ inputs.flux_version }}
+      FLUX_GITHUB_APP_ID:               ${{ secrets.FLUX_GITHUB_APP_ID }}
+      FLUX_GITHUB_APP_INSTALLATION_ID:  ${{ secrets.FLUX_GITHUB_APP_INSTALLATION_ID }}
+      FLUX_GITHUB_APP_PRIVATE_KEY:      ${{ secrets.FLUX_GITHUB_APP_PRIVATE_KEY }}
+      SOPS_AGE_KEY:                     ${{ secrets.SOPS_AGE_KEY }}
+      ETCD_BACKUP_R2_ACCESS_KEY_ID:     ${{ secrets.ETCD_BACKUP_R2_ACCESS_KEY_ID }}
+      ETCD_BACKUP_R2_SECRET_ACCESS_KEY: ${{ secrets.ETCD_BACKUP_R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID:                    ${{ secrets.R2_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install omnictl + talosctl + kubectl + helm + flux
+        run: |
+          set -euo pipefail
+          # CF strips client TLS during proxying. cp.stawi.org sees a
+          # CF-edge cert that omnictl rejects without --insecure-skip-
+          # tls-verify. Wrap omnictl so every invocation passes it.
+          curl -fsSL -o /tmp/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64"
+          chmod +x /tmp/omnictl.real
+          sudo install -m 0755 /tmp/omnictl.real /usr/local/bin/omnictl.real
+          cat > /tmp/omnictl <<'WRAP'
+          #!/usr/bin/env bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /tmp/omnictl
+          sudo install -m 0755 /tmp/omnictl /usr/local/bin/omnictl
+
+          TALOS_VERSION=$(jq -r '.talos_version' tofu/shared/versions.auto.tfvars.json)
+          curl -fsSL "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64" -o /tmp/talosctl
+          sudo install -m 0755 /tmp/talosctl /usr/local/bin/talosctl
+
+          curl -fsSLO "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          sudo install -m 0755 kubectl /usr/local/bin/kubectl
+
+          curl -fsSL https://get.helm.sh/helm-v3.16.2-linux-amd64.tar.gz | tar xz
+          sudo install -m 0755 linux-amd64/helm /usr/local/bin/helm
+
+          FLUX_FILE_VERSION=$(jq -r '.flux_version' tofu/shared/versions.auto.tfvars.json)
+          FLUX_VERSION="${FLUX_FILE_VERSION#v}"
+          curl -fsSL "https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/flux_${FLUX_VERSION}_linux_amd64.tar.gz" | tar xz
+          sudo install -m 0755 flux /usr/local/bin/flux
+
+      - name: Fetch kubeconfig + talosconfig from Omni
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.kube ~/.talos
+          omnictl kubeconfig "$HOME/.kube/config" \
+            --cluster "$CLUSTER_NAME" --service-account
+          omnictl talosconfig "$HOME/.talos/config" \
+            --cluster "$CLUSTER_NAME" --service-account
+          chmod 0600 "$HOME/.kube/config" "$HOME/.talos/config"
+
+      - name: Wait for cluster apiserver
+        run: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + 600 ))
+          while :; do
+            if kubectl version --request-timeout=5s >/dev/null 2>&1; then
+              echo "apiserver reachable"
+              break
+            fi
+            if (( $(date +%s) >= deadline )); then
+              echo "::error::apiserver unreachable after 10min — aborting" >&2
+              exit 1
+            fi
+            sleep 10
+          done
+
+      - name: Create flux-system namespace + secrets (idempotent)
+        run: |
+          set -euo pipefail
+          kubectl get ns flux-system >/dev/null 2>&1 || \
+            kubectl create ns flux-system
+
+          # SOPS age key for kustomize-controller decryption.
+          kubectl -n flux-system create secret generic sops-age-keys \
+            --from-literal=age.agekey="$SOPS_AGE_KEY" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          # GitHub App credentials for source-controller git auth.
+          kubectl -n flux-system create secret generic ghapp-secret \
+            --from-literal=githubAppID="$FLUX_GITHUB_APP_ID" \
+            --from-literal=githubAppInstallationID="$FLUX_GITHUB_APP_INSTALLATION_ID" \
+            --from-literal=githubAppPrivateKey="$FLUX_GITHUB_APP_PRIVATE_KEY" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          # talosconfig for the etcd-backup CronJob's initContainer.
+          kubectl -n kube-system create secret generic talosconfig \
+            --from-file=config="$HOME/.talos/config" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          # R2 credentials for the etcd-backup upload container.
+          kubectl -n kube-system create secret generic r2-etcd-backup-credentials \
+            --from-literal=AWS_ACCESS_KEY_ID="$ETCD_BACKUP_R2_ACCESS_KEY_ID" \
+            --from-literal=AWS_SECRET_ACCESS_KEY="$ETCD_BACKUP_R2_SECRET_ACCESS_KEY" \
+            --from-literal=R2_ACCOUNT_ID="$R2_ACCOUNT_ID" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Helm install/upgrade flux-operator
+        run: |
+          set -euo pipefail
+          version_arg=()
+          if [[ -n "$FLUX_VERSION_INPUT" ]]; then
+            version_arg=(--version "$FLUX_VERSION_INPUT")
+          fi
+          # Tolerate control-plane taints so the operator can schedule
+          # on a single-CP cluster while no workers are Ready.
+          helm upgrade --install flux-operator \
+            oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator \
+            -n flux-system \
+            "${version_arg[@]}" \
+            --wait \
+            --timeout 5m \
+            --set 'tolerations[0].key=node-role.kubernetes.io/control-plane' \
+            --set 'tolerations[0].operator=Exists' \
+            --set 'tolerations[0].effect=NoSchedule'
+
+      - name: Apply FluxInstance
+        run: |
+          set -euo pipefail
+          kubectl apply -f tofu/layers/04-flux/fluxcd-setup.yaml
+
+      - name: Wait for Flux controllers Ready
+        run: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + 300 ))
+          while :; do
+            if kubectl -n flux-system get deploy --no-headers 2>/dev/null \
+                | awk '{print $4}' | grep -qE '^[1-9]+$'; then
+              break
+            fi
+            if (( $(date +%s) >= deadline )); then
+              echo "::warning::flux controllers not all Ready after 5min — surfacing current state below"
+              break
+            fi
+            sleep 10
+          done
+          echo "::group::flux controller state"
+          kubectl -n flux-system get deploy
+          kubectl -n flux-system get pods
+          echo "::endgroup::"
+
+      - name: Surface Flux reconciliation status
+        run: |
+          set -euo pipefail
+          echo "::group::flux check"
+          flux check || true
+          echo "::endgroup::"
+          echo "::group::flux get all"
+          flux get all -A || true
+          echo "::endgroup::"
