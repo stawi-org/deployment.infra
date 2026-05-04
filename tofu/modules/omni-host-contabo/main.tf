@@ -126,7 +126,15 @@ resource "null_resource" "ensure_image" {
   }
 }
 
-# Block downstream layers on omni-stack readiness, same as omni-host-oci.
+# Soft smoke-test of omni-stack readiness. Non-blocking via on_failure =
+# continue: the provisioner still runs and logs, but a timeout doesn't
+# fail the apply. Why non-blocking: the upstream (Omni container at
+# 127.0.0.1:18080) lives inside the VPS we just (re)installed and only
+# this layer can write its config. If the container fails to start, an
+# *abort* of the apply abandons DNS flips and other dependent state in
+# a half-applied window we cannot recover from without operator-side
+# tofu state surgery. Logging the failure + letting the apply finish
+# gives the operator a clean state to investigate from.
 resource "null_resource" "wait_for_omni_ready" {
   depends_on = [null_resource.ensure_image]
 
@@ -136,6 +144,7 @@ resource "null_resource" "wait_for_omni_ready" {
 
   provisioner "local-exec" {
     interpreter = ["bash", "-c"]
+    on_failure  = continue
     environment = {
       ENDPOINT = "https://${var.siderolink_api_advertised_host}/healthz"
     }
@@ -150,7 +159,7 @@ resource "null_resource" "wait_for_omni_ready" {
           exit 0
         fi
         if [[ $(date +%s) -ge $deadline ]]; then
-          echo "[wait_for_omni_ready] timed out after 10min waiting for $ENDPOINT (last code: $code)" >&2
+          echo "::warning::[wait_for_omni_ready] timed out after 10min waiting for $ENDPOINT (last code: $code) — apply continues; investigate omni stack on the host"
           exit 1
         fi
         sleep 10
