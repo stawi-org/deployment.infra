@@ -72,3 +72,18 @@ removed {
     destroy = false
   }
 }
+
+# --- bwire-3 leaves the cluster pool ---------------------------------
+# VPS 202727781 was promoted to omni-host (adopted by 00-omni-server's
+# omni-host-contabo module). Remove from this layer's tfstate without
+# destroying the underlying resource — Contabo's destroy path is
+# unimplemented in the provider anyway (tries DELETE, gets HTTP error),
+# and a Contabo VPS reinstall in place is how the omni-host gets its
+# Ubuntu image. Pairs with the bwire-3 entry already removed from
+# tofu/shared/bootstrap/contabo-instance-ids.yaml.
+removed {
+  from = module.nodes["contabo-bwire-node-3"]
+  lifecycle {
+    destroy = false
+  }
+}
