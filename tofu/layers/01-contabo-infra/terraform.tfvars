@@ -50,4 +50,11 @@ age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
 #                   freed bwire-3 (was 202727781 / Contabo omni-host)
 #                   newly re-adopted by this layer — onto images
 #                   carrying that new token.
-force_reinstall_generation = 10
+#  11 — 2026-05-04: post cluster delete + recreate. Contabo nodes
+#                   booted with Talos's Contabo-platform-default
+#                   hostnames (vmi2727782/3) because the per-node
+#                   link patches couldn't bind to running machines.
+#                   Force-reinstall lets the patches apply at first
+#                   boot, picking up canonical hostnames + static
+#                   IPv4/IPv6 + LinkAliasConfig.
+force_reinstall_generation = 11
