@@ -9,6 +9,11 @@ on:
       environment:      { required: false, type: string, default: "" }
       extra_plan_args:  { required: false, type: string, default: "", description: "Extra args appended to tofu plan (e.g. -replace=foo.bar). Recovery use only." }
       account:          { required: false, type: string, default: "", description: "Account key for per-account-state layers (01-contabo-infra, 02-oracle-infra, 02-onprem-infra). When non-empty, the Init step overrides the backend key to production/<layer>-<account>.tfstate and TF_VAR_account_key is exported so the layer's variable validation accepts the run." }
+      pre_apply_state_rm:
+        required: false
+        type: string
+        default: ""
+        description: "Whitespace- or newline-separated resource addresses to `tofu state rm` before plan/apply. Indexed addresses like module.nodes[\"key\"] are supported via env-passthrough; see Pre-apply state rm step. Recovery / cross-layer move use only."
       pre_apply_state_mv:
         required: false
         type: string
