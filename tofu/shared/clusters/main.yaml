@@ -86,8 +86,25 @@ patches:
   # first physical Ethernet interface. MUST precede any per-node
   # LinkConfig that references `wan0` — Omni applies cluster-template
   # patches to every Machine, so order is positional within this list.
+  #
+  # Inlined (rather than `file: ../patches/link-alias.yaml`) because
+  # Omni's cluster-template `file:` resolution goes through
+  # filepath.Abs(path) (see siderolabs/omni client/pkg/template/
+  # internal/models/patch.go), which resolves relative to the process
+  # CWD — not relative to the template file's directory. The
+  # sync-cluster-template workflow invokes `omnictl cluster template
+  # validate -f tofu/shared/clusters/main.yaml` from the repo root,
+  # so any `../patches/...` path lands outside the os.Root-restricted
+  # area and fails. Keep the underlying patch source (link-alias.yaml)
+  # for its comments + ergonomic editing in isolation; the inline
+  # block here is the single point of truth that Omni reads.
   - name: link-alias
-    file: ../patches/link-alias.yaml
+    inline:
+      apiVersion: v1alpha1
+      kind: LinkAliasConfig
+      name: wan%d
+      selector:
+        match: link.type == "ether"
   # Dual-stack networking. Adds IPv6 pod + service CIDRs alongside the
   # existing IPv4 ones so workloads, services, and ClusterIPs all get
   # both v4 and v6. Talos's default Flannel CNI supports this.
