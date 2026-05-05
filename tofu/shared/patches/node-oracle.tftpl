@@ -1,0 +1,41 @@
+---
+# tofu/shared/patches/node-oracle.tftpl
+#
+# Per-OCI-node Talos patch. OCI nodes carry no LinkConfig — Talos's
+# OCI platform driver reads OCI's instance metadata service for
+# addresses and default routes, and that path works.
+#
+# What we DO need on OCI:
+#   1. machine.nodeLabels                         — Kubernetes labels.
+#   2. machine.nodeAnnotations including:
+#      - flannel.alpha.coreos.com/public-ip-overwrite     (v4)
+#      - flannel.alpha.coreos.com/public-ipv6-overwrite   (v6)
+#      OCI's public IPv4 is NAT'd at the VCN gateway; the on-NIC
+#      address is the private RFC1918. Without these annotations,
+#      kubelet auto-detects InternalIP as the private IP, Flannel
+#      reads InternalIP for its public-ip annotation, and cross-
+#      node VXLAN tunnels target a non-routable RFC1918 address.
+#      The annotations were already computed in node-oracle's
+#      derived_annotations but the only sync code (cluster.tf
+#      omnictl_machine_labels) sends labels — not annotations.
+#      This template closes that gap by routing them through Talos
+#      machine.nodeAnnotations, which kubelet propagates to the K8s
+#      Node object on registration.
+#   3. HostnameConfig                             — pin canonical
+#      hostname (consistency with Contabo nodes).
+
+machine:
+  nodeLabels:
+%{ for k, v in node_labels ~}
+    ${k}: "${v}"
+%{ endfor ~}
+  nodeAnnotations:
+%{ for k, v in node_annotations ~}
+    ${k}: "${v}"
+%{ endfor ~}
+
+---
+apiVersion: v1alpha1
+kind: HostnameConfig
+hostname: ${hostname}
+auto: off
