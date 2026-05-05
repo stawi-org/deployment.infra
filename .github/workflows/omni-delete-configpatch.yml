@@ -1,0 +1,73 @@
+# Delete a single ConfigPatches.omni.sidero.dev resource by id.
+# Recovery / surgical-debug knob — when a per-node patch is causing a
+# regression and the cluster needs to revert to cluster-template
+# defaults for that one machine while keeping the rest of the
+# template + other per-node patches in place.
+#
+# Use case (2026-05-05): the per-node-patches PR (#177) introduced
+# static LinkConfig for Contabo nodes; the CP node's LB went Not
+# Ready post-apply. Deleting `stawi-contabo-bwire-node-2-link`
+# isolates whether the LinkConfig is the cause.
+#
+# Workflow_dispatch only — no automatic triggers. The next sync-
+# cluster-template run will RE-CREATE the patch from R2 if R2 still
+# has it; combine with a guard env or a parallel R2 deletion if you
+# want the deletion to stick.
+#
+# Security: the only user-supplied input (patch_id) is allowlist-
+# validated against the `stawi-<node>-link` pattern before being
+# passed to omnictl. No untrusted github.event inputs are used.
+name: omni-delete-configpatch
+on:
+  workflow_dispatch:
+    inputs:
+      patch_id:
+        description: ConfigPatch id (e.g. stawi-contabo-bwire-node-2-link)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  OMNI_VERSION: v1.7.1
+
+jobs:
+  delete:
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+      PATCH_ID: ${{ inputs.patch_id }}
+    steps:
+      - name: Install omnictl
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          cat > /usr/local/bin/omnictl <<'WRAP'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /usr/local/bin/omnictl
+      - name: Validate input + show before
+        run: |
+          set -euo pipefail
+          if ! [[ "$PATCH_ID" =~ ^stawi-[a-zA-Z0-9-]+-link$ ]]; then
+            echo "::error::patch_id must match stawi-<node>-link (got: $PATCH_ID)"
+            exit 1
+          fi
+          omnictl get configpatches "$PATCH_ID" -o yaml || echo "(patch not found, nothing to delete)"
+      - name: Delete patch
+        run: |
+          set -euo pipefail
+          omnictl delete configpatches "$PATCH_ID" || echo "::warning::delete returned non-zero — may already be gone"
+      - name: Confirm absent
+        run: |
+          set -euo pipefail
+          if omnictl get configpatches "$PATCH_ID" -o yaml 2>/dev/null; then
+            echo "::warning::patch still present after delete"
+          else
+            echo "::notice::patch $PATCH_ID is gone"
+          fi
