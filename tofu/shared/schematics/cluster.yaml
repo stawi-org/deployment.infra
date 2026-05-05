@@ -13,21 +13,14 @@
 customization:
   extraKernelArgs:
     - ipv6.disable=0
-    # ipv6.autoconf=0 — restored 2026-05-05 after `=1` left Contabo
-    # VPSes in an unbootable state (post-reinstall: nodes responded
-    # to ICMP but Talos apid never came up, Omni "CONFIGURING"
-    # indefinitely). Suspected interaction between SLAAC during
-    # boot and Contabo's RA delivery; not fully root-caused.
-    # Revert to known-working `=0` + ICR token bump to roll the
-    # cluster back to the prior schematic. Keeping the constraint
-    # that Contabo nodes have no IPv6 at the link level — same as
-    # pre-#177 state. Cluster-level dual-stack (pod/service IPv6
-    # subnets) still works through flannel-on-SideroLink-ULA tunnels.
     - ipv6.autoconf=0
     # Vendor-namespaced no-op arg whose only purpose is to bump the
     # rendered schematic_id when we need to force a fleet-wide reinstall
-    # without changing real Talos / k8s versions.
-    - cluster.regen-token=2026-05-05-2
+    # without changing real Talos / k8s versions. The kernel logs unknown
+    # args at boot but ignores them. Bump the date+seq when re-rolling
+    # the cluster (e.g. to refresh SideroLink registrations after an
+    # Omni-host backup-restore left the public-key store stale).
+    - cluster.regen-token=2026-05-01-2
   systemExtensions:
     officialExtensions:
       - siderolabs/util-linux-tools

@@ -13,9 +13,6 @@
 customization:
   extraKernelArgs:
     - ipv6.disable=0
-    # ipv6.autoconf=0 — restored after the `=1` flip caused Contabo
-    # VPSes to not boot (see tofu/shared/schematics/cluster.yaml
-    # comment for context).
     - ipv6.autoconf=0
   systemExtensions:
     officialExtensions:
