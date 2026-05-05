@@ -377,7 +377,7 @@ jobs:
             | select(.type == "local_sensitive_file" and .name == "node_labels_json")
             | .instances[0].attributes.content
           ' "$state" | jq -r 'keys[]')
-          live_set=$(printf '%s\n' "${live_nodes[@]}" | sort -u)
+          live_set=$(printf '%s\n' "${live_nodes[@]+"${live_nodes[@]}"}" | sort -u)
           # List all stawi-<node>-link patches in Omni and delete
           # those whose <node> isn't in live_set.
           for id in $(omnictl get configpatches -o jsonpath='{.metadata.id}' 2>/dev/null \

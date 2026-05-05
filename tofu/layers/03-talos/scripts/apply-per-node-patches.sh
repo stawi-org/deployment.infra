@@ -73,6 +73,13 @@ machines_arr=$(fetch_machines)
 machine_count=$(jq -r 'length' <<<"$machines_arr")
 echo "[apply-per-node-patches] cluster=${OMNI_CLUSTER:-stawi}, registered machines: $machine_count"
 
+# Diagnostic — when a node-name doesn't match by hostname or IP
+# we want to be able to see what Omni knows about each machine.
+if (( machine_count > 0 )); then
+  echo "[apply-per-node-patches] machine inventory:"
+  jq -r '.[] | "  id=\(.metadata.id) host=\(.spec.network.hostname // "?") addrs=\(.spec.network.addresses // [] | join(","))"' <<<"$machines_arr"
+fi
+
 if (( machine_count == 0 )); then
   echo "[apply-per-node-patches] WARN: no machines registered — nothing to apply"
   exit 0
@@ -142,4 +149,12 @@ MANIFEST
 done < <(jq -c 'to_entries[]' "$NODES_JSON")
 
 echo "[apply-per-node-patches] done: applied=$applied skipped=$skipped errored=$errored"
+# Per-node fail-isolation: partial failure exits 0 (other nodes
+# may have applied successfully). But total failure — every
+# attempted apply errored and nothing succeeded — should mark the
+# step failed so the GitHub Actions log doesn't show green.
+if (( errored > 0 && applied == 0 )); then
+  echo "[apply-per-node-patches] ERROR: all attempted applies failed — marking step failed" >&2
+  exit 1
+fi
 exit 0
