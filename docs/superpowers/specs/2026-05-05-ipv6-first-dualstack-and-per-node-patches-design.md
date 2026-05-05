@@ -180,8 +180,9 @@ node-contabo outputs                          node-oracle outputs
 - **`tofu/shared/patches/link-alias.yaml`** — single-doc cluster-wide LinkAliasConfig.
 - **`tofu/shared/patches/node-contabo.tftpl`** — per-Contabo-node template: `machine.nodeLabels` + `machine.nodeAnnotations` + `LinkConfig name: wan0` + `HostnameConfig`.
 - **`tofu/shared/patches/node-oracle.tftpl`** — per-OCI-node template: `machine.nodeLabels` + `machine.nodeAnnotations` (incl. flannel public-ip overrides) + `HostnameConfig`.
-- **`tofu/shared/clusters/per-node-patches.yaml.tmpl`** — wraps a rendered Talos patch in `ConfigPatches.omni.sidero.dev` envelope, named `stawi-<node>-link`, scoped to the matching machine ID.
-- **`tofu/layers/03-talos/per-node-patches.tf`** — `for_each` over `local.all_nodes_from_state`; branches on `v.provider`: `contabo` → render `node-contabo.tftpl`, `oracle` → render `node-oracle.tftpl`, `onprem` → skip. Wraps each in the envelope template. Writes the result via `aws_s3_object` (R2 backend, same provider as `node-state`) to path `production/per-node-patches/<talos-version>/<node>.yaml`. Uses a layer-local `aws_s3_object` rather than extending `node-state` because the R2 path is cluster-scoped (top-level), not account-scoped — outside `node-state`'s `<account>/<talos-version>/` key shape.
+- **`tofu/layers/03-talos/per-node-patches.tf`** — `for_each` over `local.all_nodes_from_state`; branches on `v.provider`: `contabo` → render `node-contabo.tftpl`, `oracle` → render `node-oracle.tftpl`, `onprem` → skip. Writes each rendered **Talos** patch (NOT yet wrapped in the Omni envelope) via `aws_s3_object` to R2 path `production/per-node-patches/<talos-version>/<node>.yaml`. Uses a layer-local `aws_s3_object` rather than extending `node-state` because the R2 path is cluster-scoped (top-level), not account-scoped — outside `node-state`'s `<account>/<talos-version>/` key shape.
+
+- **`tofu/layers/03-talos/scripts/apply-per-node-patches.sh`** — workflow-invoked script that, for each per-node patch in R2: (1) resolves machine-id via Omni using the hostname-then-ipv4 matching logic already used by `sync-machine-labels.sh`, (2) wraps the Talos patch content in a `ConfigPatches.omni.sidero.dev` envelope (id = `stawi-<node>-link`, machine label = the resolved id), (3) `omnictl apply` the wrapped manifest. Sibling to `sync-machine-labels.sh`; reuses the same matching pattern. Owning the envelope wrapping in the apply step — not in tofu — sidesteps the chicken-and-egg of needing machine-ids at plan time.
 
 ### Modify
 
@@ -197,8 +198,6 @@ node-contabo outputs                          node-oracle outputs
 - **`tofu/modules/node-contabo/outputs.tf`** — extend the `node` contract with `ipv4_cidr`, `ipv4_gateway`, `ipv6_cidr`, `ipv6_gateway`.
 
 - **`tofu/modules/node-oracle/outputs.tf`** — extend the `node` contract with `public_ipv4` (= `oci_core_instance.this.public_ip`, distinct from the existing `ipv4` which falls back to private). Render skips the flannel `public-ip-overwrite` annotation when `public_ipv4` is null/empty.
-
-- **`tofu/modules/node-onprem/outputs.tf`** — extend with the same fields, all null. Keeps the cross-provider contract uniform; renderer skips on-prem regardless.
 
 - **`tofu/shared/clusters/main.yaml`** — two edits in the `patches:` block:
   1. Add `link-alias` patch reference.
