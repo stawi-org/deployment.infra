@@ -76,4 +76,31 @@ resource "aws_s3_object" "per_node_patch" {
     node    = each.key
     version = var.talos_version
   }
+
+  # Defends against rendering a malformed LinkConfig if upstream
+  # node-contabo state predates T4 (which added ipv4_cidr/gateway,
+  # ipv6_cidr/gateway). Without this, a stale state would render
+  # `address: <ip>/0, gateway: ""` — silently wrong. Layer-03's
+  # tofu plan fails loud here so the operator re-applies the
+  # affected node-contabo per-account state first.
+  #
+  # On-prem and oracle nodes are unaffected (oracle has no LinkConfig
+  # docs in its template; on-prem is filtered out of
+  # per_node_patch_eligible). Only Contabo nodes go through this
+  # check.
+  lifecycle {
+    precondition {
+      condition = (
+        try(local.all_nodes_from_state[each.key].provider, "") != "contabo"
+        ) || (
+        try(local.all_nodes_from_state[each.key].ipv4, "") != "" &&
+        try(local.all_nodes_from_state[each.key].ipv4_cidr, null) != null &&
+        try(local.all_nodes_from_state[each.key].ipv4_gateway, "") != "" &&
+        try(local.all_nodes_from_state[each.key].ipv6, "") != "" &&
+        try(local.all_nodes_from_state[each.key].ipv6_cidr, null) != null &&
+        try(local.all_nodes_from_state[each.key].ipv6_gateway, "") != ""
+      )
+      error_message = "Contabo node ${each.key} has incomplete network state in the upstream tfstate (one of ipv4/ipv4_cidr/ipv4_gateway/ipv6/ipv6_cidr/ipv6_gateway is null/empty). Re-apply the node-contabo's owning layer (01-contabo-infra-<account>) — its postcondition (added in T4) will refuse the apply if Contabo's API is returning incomplete data, or it will repopulate the output with the new schema if the state was simply pre-T4."
+    }
+  }
 }
