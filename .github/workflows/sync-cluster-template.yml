@@ -419,13 +419,24 @@ jobs:
           echo "::group::Talos clusters"
           omnictl get clusters -o yaml || true
           echo "::endgroup::"
-          # MachineConfigStatus carries per-machine config-apply errors
-          # (the "Config Apply Failed" detail in `cluster template
-          # status` is summarized FROM this resource). When a node
-          # rejects an Omni-pushed config, this is the only place the
-          # actual error string surfaces.
-          echo "::group::MachineConfigStatus (per-machine config apply errors)"
-          omnictl get machineconfigstatus -o yaml || true
+          # ClusterMachineConfigStatuses carries per-machine config-apply
+          # errors (the "Config Apply Failed" detail in `cluster
+          # template status` is summarized FROM this resource). When
+          # a node rejects an Omni-pushed config, this is the only
+          # place the actual error string surfaces. Omni's full
+          # resource type is ClusterMachineConfigStatuses.omni.sidero.dev
+          # (siderolabs/omni client/pkg/omni/resources/omni/
+          # cluster_machine_config_status.go).
+          echo "::group::ClusterMachineConfigStatuses (per-machine config apply errors)"
+          omnictl get clustermachineconfigstatuses -o yaml || true
+          echo "::endgroup::"
+          # ClusterMachineConfigPatches: the merged effective patch
+          # set Omni computed for each machine (from cluster-template
+          # patches + per-machine ConfigPatches.target_label_selectors).
+          # Useful to confirm our stawi-<node>-link patches are
+          # actually flowing into the per-machine merged config.
+          echo "::group::ClusterMachineConfigPatches"
+          omnictl get clustermachineconfigpatches -o yaml || true
           echo "::endgroup::"
           # ConfigPatches: current state, includes our per-node
           # stawi-<node>-link patches plus cluster-template patches.
