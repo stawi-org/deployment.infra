@@ -65,15 +65,20 @@ jobs:
             exit 1
           fi
 
-          echo "::notice::looking up instance id for displayName=${DISPLAY_NAME}"
+          echo "::notice::listing all Contabo instances (no name filter — the API name= filter is fuzzy and missed our display_name on prior attempts)"
           instances=$(curl -fsSL -X GET \
-            "https://api.contabo.com/v1/compute/instances?name=${DISPLAY_NAME}&size=100" \
+            "https://api.contabo.com/v1/compute/instances?size=100" \
             -H "Authorization: Bearer ${token}" \
             -H "x-request-id: $(uuid)")
+          # Diagnostic: show every (instanceId, displayName, name)
+          # tuple so a future name-mismatch is obvious from the log.
+          echo "::group::Contabo inventory"
+          jq -r '.data[] | "instanceId=\(.instanceId) displayName=\(.displayName) name=\(.name // "?")"' <<<"$instances"
+          echo "::endgroup::"
           instance_id=$(jq -r --arg n "$DISPLAY_NAME" \
             '.data[] | select(.displayName == $n) | .instanceId' <<<"$instances" | head -n1)
           if [[ -z "$instance_id" ]]; then
-            echo "::error::no Contabo instance found with displayName=${DISPLAY_NAME}"
+            echo "::error::no Contabo instance found with displayName=${DISPLAY_NAME} (see inventory dump above)"
             exit 1
           fi
           echo "::notice::resolved displayName=${DISPLAY_NAME} → instanceId=${instance_id}"
