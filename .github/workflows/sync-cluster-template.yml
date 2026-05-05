@@ -438,6 +438,42 @@ jobs:
           echo "::group::ClusterMachineConfigPatches"
           omnictl get clustermachineconfigpatches -o yaml || true
           echo "::endgroup::"
+          # LoadBalancerStatus: ControlPlaneStatus depends on this.
+          # When `cluster template status` shows "Load Balancer Not
+          # Ready", the actual probe error / target state lives here.
+          echo "::group::LoadBalancerStatus"
+          omnictl get loadbalancerstatus -o yaml 2>/dev/null \
+            || omnictl get loadbalancerstatuses -o yaml 2>/dev/null \
+            || echo "(neither loadbalancerstatus nor loadbalancerstatuses registered — check ControlPlaneStatus)"
+          echo "::endgroup::"
+          # ControlPlaneStatus: aggregates LB + per-CP-machine
+          # readiness; surfaces the precise component(s) holding
+          # `cluster template status` Not Ready.
+          echo "::group::ControlPlaneStatus"
+          omnictl get controlplanestatus -o yaml 2>/dev/null || true
+          echo "::endgroup::"
+          # Kubernetes Node states from inside the cluster — workers
+          # being Ready while CP shows Not Ready in Omni view points
+          # at K8s-Node-level health (CNI / kubelet) rather than
+          # apiserver reachability. Pull a kubeconfig via omnictl and
+          # snapshot kubectl get nodes -o wide.
+          echo "::group::kubectl get nodes (via omnictl-issued kubeconfig)"
+          KUBECONFIG_TMP=$(mktemp)
+          if omnictl --cluster stawi cluster kubeconfig --force \
+              > "$KUBECONFIG_TMP" 2>/dev/null; then
+            curl -fsSL -o /usr/local/bin/kubectl \
+              "https://dl.k8s.io/release/v1.35.2/bin/linux/amd64/kubectl"
+            chmod +x /usr/local/bin/kubectl
+            kubectl --kubeconfig "$KUBECONFIG_TMP" --insecure-skip-tls-verify \
+              get nodes -o wide || true
+            kubectl --kubeconfig "$KUBECONFIG_TMP" --insecure-skip-tls-verify \
+              get nodes -o jsonpath='{range .items[*]}{.metadata.name}{":\n"}{range .status.conditions[*]}  {.type}={.status} {.reason}{": "}{.message}{"\n"}{end}{"\n"}{end}' \
+              || true
+          else
+            echo "(failed to fetch kubeconfig via omnictl)"
+          fi
+          rm -f "$KUBECONFIG_TMP"
+          echo "::endgroup::"
           # ConfigPatches: current state, includes our per-node
           # stawi-<node>-link patches plus cluster-template patches.
           # Useful to spot-check binding via target_label_selectors.
