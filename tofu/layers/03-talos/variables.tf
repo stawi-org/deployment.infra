@@ -68,3 +68,8 @@ variable "omni_endpoint" {
   default     = "https://cp.stawi.org"
   description = "Omni machine-api endpoint omnictl dials for cluster-template sync and per-machine label updates. cpd.<zone> (gray-cloud, direct-to-VPS, real LE cert) is the supported path; cp.<zone> is CF-proxied and the free plan downgrades HTTP/2 to HTTP/1.1, which breaks omnictl's gRPC client."
 }
+
+variable "talos_version" {
+  type        = string
+  description = "Talos version pinned for this cluster (e.g. v1.13.0). Used as a path component for R2 per-node-patch artifacts so multi-version clusters don't collide. Surfaced from tofu/shared/versions.auto.tfvars.json by the workflow."
+}
