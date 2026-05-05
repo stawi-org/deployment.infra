@@ -1,0 +1,74 @@
+# Read-only cluster status snapshot. Dispatches omnictl get against
+# the live cluster and emits the same diagnostic dumps that the
+# sync-cluster-template workflow's `Cluster status` step emits, but
+# WITHOUT applying any patches first.
+#
+# Use case: after running `omni-delete-configpatch` to surgically
+# revert a per-node patch, snapshot cluster state to see the effect
+# before any subsequent sync re-applies. Also useful for general
+# health checks on demand.
+#
+# Security: workflow_dispatch only, takes no inputs, runs only
+# omnictl get / kubectl get against the cluster — no
+# github.event-derived strings reach any shell command.
+name: omni-cluster-status
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  OMNI_VERSION: v1.7.1
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+    steps:
+      - name: Install omnictl
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          cat > /usr/local/bin/omnictl <<'WRAP'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /usr/local/bin/omnictl
+      - uses: actions/checkout@v5
+      - name: Status snapshot
+        run: |
+          set +e
+          echo "::group::cluster template status"
+          timeout 30 omnictl cluster template status \
+            -f tofu/shared/clusters/main.yaml
+          echo "::endgroup::"
+          echo "::group::LoadBalancerStatus"
+          omnictl get loadbalancerstatus -o yaml || true
+          echo "::endgroup::"
+          echo "::group::ControlPlaneStatus"
+          omnictl get controlplanestatus -o yaml || true
+          echo "::endgroup::"
+          echo "::group::ClusterMachineConfigStatuses (lastconfigerror)"
+          omnictl get clustermachineconfigstatuses -o yaml || true
+          echo "::endgroup::"
+          echo "::group::ConfigPatches (per-node binding state)"
+          omnictl get configpatches -o yaml || true
+          echo "::endgroup::"
+          echo "::group::kubectl get nodes (verbose error mode)"
+          KCFG=$(mktemp)
+          if omnictl --cluster stawi cluster kubeconfig --force > "$KCFG"; then
+            curl -fsSL -o /usr/local/bin/kubectl \
+              "https://dl.k8s.io/release/v1.35.2/bin/linux/amd64/kubectl"
+            chmod +x /usr/local/bin/kubectl
+            kubectl --kubeconfig "$KCFG" --insecure-skip-tls-verify \
+              get nodes -o wide || true
+          else
+            echo "kubeconfig fetch failed (see stderr above)"
+          fi
+          rm -f "$KCFG"
+          echo "::endgroup::"
