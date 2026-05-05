@@ -27,23 +27,32 @@
 # (hostname → machine ID) requires a single `omnictl get machinestatus`
 # fetch, and a per-node resource would either pay that cost N times or
 # need a shared data-source — clunkier than one batch script.
-#
-# The labels filter strips:
-#   - `node-role.kubernetes.io/*`  (k8s-internal — propagated via Talos
-#                                    machine config, not Omni metadata)
-#   - any empty-key entries        (defensive)
 locals {
   sync_machine_labels_path = "${path.module}/scripts/sync-machine-labels.sh"
 
-  # Per-node labels-and-ip envelope. The script matches Omni Machines
-  # by hostname first (works for OCI), then falls back to ipv4 (works
-  # for Contabo, where Talos doesn't pick up the friendly platform
-  # hostname and falls back to the system UUID).
+  # Per-node labels-and-ip envelope.
+  #
+  # Narrowed 2026-05-05 to the single label MachineClass selectors
+  # actually match on (node.antinvestor.io/role). Other labels —
+  # provider, account, name, topology.kubernetes.io/* — moved to
+  # Talos `machine.nodeLabels` via per-node patches in
+  # tofu/shared/patches/node-{contabo,oracle}.tftpl. K8s Node
+  # labels live on the K8s API; Omni Machine labels live on Omni's
+  # inventory; previously these were conflated and synced together
+  # to Omni only, leaving K8s Node labels orphaned.
+  #
+  # Path to dropping this sync entirely is the kernel-cmdline
+  # initial-labels TODO in tofu/shared/clusters/main.yaml — once
+  # node.antinvestor.io/role can be baked into kernel cmdline at
+  # image-mint time, MachineClass selectors fire without any
+  # post-registration sync, and this whole reconciler retires.
   omni_machine_apply_per_node = {
     for k, v in local.all_nodes_from_state : k => {
       labels = {
-        for lk, lv in try(v.derived_labels, {}) : lk => lv
-        if !startswith(lk, "node-role.kubernetes.io/") && lk != ""
+        for lk, lv in {
+          "node.antinvestor.io/role" = try(v.derived_labels["node.antinvestor.io/role"], "")
+        } : lk => lv
+        if lv != ""
       }
       ipv4 = try(v.ipv4, null)
     }
