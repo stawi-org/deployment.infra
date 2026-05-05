@@ -8,11 +8,16 @@
 # on tofu/shared/clusters/**) — keeping a copy here was duplicative
 # and tied cluster-spec lifecycle to node-provisioning applies.
 #
-# What stays here: per-node label sync. Each upstream node module
-# emits `derived_labels` via its `node` output, merged with topology
-# / role / provider / account info. We reconcile that desired map
-# against Omni's MachineStatus list, matching by hostname → machine
-# ID and applying labels via `omnictl machine update`.
+# What stays here: per-node Omni Machine label sync, narrowed to
+# the single label MachineClass selectors match on
+# (`node.antinvestor.io/role`). Each upstream node module emits
+# `derived_labels` via its `node` output, but the rest of that map
+# (provider, account, name, topology.kubernetes.io/*) now flows to
+# the K8s Node object via Talos `machine.nodeLabels` in per-node
+# patches (see tofu/shared/patches/node-{contabo,oracle}.tftpl and
+# tofu/layers/03-talos/per-node-patches.tf). This reconciler matches
+# nodes to Omni Machines by hostname → machine ID and applies the
+# role label via `omnictl apply` of a MachineLabels resource.
 #
 # Auth + endpoint come from environment:
 #   OMNI_SERVICE_ACCOUNT_KEY  — set by the workflow from the repo secret
