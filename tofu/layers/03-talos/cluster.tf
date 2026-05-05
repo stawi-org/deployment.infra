@@ -9,15 +9,19 @@
 # and tied cluster-spec lifecycle to node-provisioning applies.
 #
 # What stays here: per-node Omni Machine label sync, narrowed to
-# the single label MachineClass selectors match on
-# (`node.antinvestor.io/role`). Each upstream node module emits
-# `derived_labels` via its `node` output, but the rest of that map
-# (provider, account, name, topology.kubernetes.io/*) now flows to
-# the K8s Node object via Talos `machine.nodeLabels` in per-node
-# patches (see tofu/shared/patches/node-{contabo,oracle}.tftpl and
-# tofu/layers/03-talos/per-node-patches.tf). This reconciler matches
-# nodes to Omni Machines by hostname → machine ID and applies the
-# role label via `omnictl apply` of a MachineLabels resource.
+# the two labels Omni-side consumers match on:
+#   - node.antinvestor.io/role — MachineClass routes Machines into
+#     the cp / workers MachineSet by selecting on this.
+#   - node.antinvestor.io/name — per-node ConfigPatches
+#     (apply-per-node-patches.sh) bind to the matching Machine via
+#     target_label_selectors keyed on this.
+# The rest of `derived_labels` (provider, account, topology.*) now
+# flows to the K8s Node object via Talos `machine.nodeLabels` in
+# per-node patches (see tofu/shared/patches/node-{contabo,oracle}.tftpl
+# and tofu/layers/03-talos/per-node-patches.tf). This reconciler
+# matches nodes to Omni Machines by hostname → machine ID and
+# applies the two labels via `omnictl apply` of a MachineLabels
+# resource.
 #
 # Auth + endpoint come from environment:
 #   OMNI_SERVICE_ACCOUNT_KEY  — set by the workflow from the repo secret
@@ -37,10 +41,17 @@ locals {
 
   # Per-node labels-and-ip envelope.
   #
-  # Narrowed 2026-05-05 to the single label MachineClass selectors
-  # actually match on (node.antinvestor.io/role). Other labels —
-  # provider, account, name, topology.kubernetes.io/* — moved to
-  # Talos `machine.nodeLabels` via per-node patches in
+  # Narrowed 2026-05-05 to the two labels Omni-side consumers
+  # actually match on:
+  #   - node.antinvestor.io/role  — MachineClass selectors in
+  #     tofu/shared/clusters/machine-classes.yaml route the Machine
+  #     into the cp / workers MachineSet.
+  #   - node.antinvestor.io/name  — per-node ConfigPatches
+  #     (apply-per-node-patches.sh, T10) bind to the matching
+  #     Machine via target_label_selectors keyed on this.
+  #
+  # Other labels — provider, account, topology.kubernetes.io/* —
+  # moved to Talos `machine.nodeLabels` via per-node patches in
   # tofu/shared/patches/node-{contabo,oracle}.tftpl. K8s Node
   # labels live on the K8s API; Omni Machine labels live on Omni's
   # inventory; previously these were conflated and synced together
@@ -48,14 +59,16 @@ locals {
   #
   # Path to dropping this sync entirely is the kernel-cmdline
   # initial-labels TODO in tofu/shared/clusters/main.yaml — once
-  # node.antinvestor.io/role can be baked into kernel cmdline at
-  # image-mint time, MachineClass selectors fire without any
-  # post-registration sync, and this whole reconciler retires.
+  # both labels can be baked into kernel cmdline at image-mint
+  # time, MachineClass selectors fire and per-node ConfigPatches
+  # bind without any post-registration sync, and this whole
+  # reconciler retires.
   omni_machine_apply_per_node = {
     for k, v in local.all_nodes_from_state : k => {
       labels = {
         for lk, lv in {
           "node.antinvestor.io/role" = try(v.derived_labels["node.antinvestor.io/role"], "")
+          "node.antinvestor.io/name" = try(v.derived_labels["node.antinvestor.io/name"], k)
         } : lk => lv
         if lv != ""
       }

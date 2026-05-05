@@ -118,11 +118,28 @@ while IFS= read -r entry; do
     continue
   fi
 
-  # Wrap the Talos patch in an Omni ConfigPatches envelope. The
-  # `cluster` label scopes the patch to this cluster; the `machine`
-  # label scopes it to one Machine. Patch ID `stawi-<node>-link`
-  # matches the legacy naming so the orphan sweep step can identify
-  # ours vs. unrelated patches.
+  # Wrap the Talos patch in an Omni ConfigPatches envelope.
+  #
+  # CRITICAL design constraints (history: see git show 6f4dccb and
+  # git show 490ae67^:tofu/shared/clusters/per-node-patches.yaml.tmpl):
+  #
+  #   1. metadata.labels MUST NOT include omni.sidero.dev/cluster.
+  #      That label triggers `omnictl cluster template sync` to claim
+  #      ownership of this resource and prune it on the next sync —
+  #      a regression that broke Contabo networking on 2026-05-04
+  #      until 6f4dccb dropped the label. The marker
+  #      stawi.local/per-node-link: "true" is enough for the orphan
+  #      sweep step to identify our patches without inviting the
+  #      template prune.
+  #
+  #   2. Binding to a Machine goes through spec.target_label_selectors,
+  #      NOT via a metadata.labels.omni.sidero.dev/machine field
+  #      (which doesn't exist in the schema). Each selector entry is
+  #      a label-equality predicate; Omni binds the patch to whichever
+  #      Machine carries ALL listed labels. cluster=stawi (set
+  #      automatically by Omni on cluster-member Machines) plus
+  #      node.antinvestor.io/name=<node> (synced by cluster.tf's
+  #      machine-label reconciler) ensures exactly one match.
   patch_yaml=$(<"$patch_file")
   envelope_file=$(mktemp -t "stawi-${node_name}-link.XXXXXX.yaml")
   cat > "$envelope_file" <<MANIFEST
@@ -131,9 +148,11 @@ metadata:
   type: ConfigPatches.omni.sidero.dev
   id: stawi-${node_name}-link
   labels:
-    omni.sidero.dev/cluster: ${OMNI_CLUSTER:-stawi}
-    omni.sidero.dev/machine: ${machine_id}
+    stawi.local/per-node-link: "true"
 spec:
+  target_label_selectors:
+    - omni.sidero.dev/cluster=${OMNI_CLUSTER:-stawi}
+    - node.antinvestor.io/name=${node_name}
   data: |
 $(printf '%s\n' "$patch_yaml" | sed 's/^/    /')
 MANIFEST
