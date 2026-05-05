@@ -42,6 +42,24 @@ resource "contabo_instance" "this" {
     # image_id change. Let null_resource.ensure_image own drift
     # correction; keep state here stable (pegged to first-create value).
     ignore_changes = [image_id]
+    # Defends layer 03's per-node-patches.tf renderer (added 2026-05-05
+    # for the IPv6-first dual-stack work) from writing a LinkConfig
+    # with an empty gateway. The 490ae67 retirement was caused by a
+    # derived-from-prefix v6 gateway colliding with the host address;
+    # the fix is to read `gateway` directly from the provider — and
+    # this postcondition fails plan loud if Contabo ever returns
+    # empty values for any of the six fields the renderer consumes.
+    postcondition {
+      condition = (
+        self.ip_config[0].v4[0].ip != "" &&
+        self.ip_config[0].v4[0].gateway != "" &&
+        self.ip_config[0].v4[0].netmask_cidr != null &&
+        try(self.ip_config[0].v6[0].ip, "") != "" &&
+        try(self.ip_config[0].v6[0].gateway, "") != "" &&
+        try(self.ip_config[0].v6[0].netmask_cidr, null) != null
+      )
+      error_message = "Contabo instance ${self.id}: ip_config v4/v6 ip+gateway+netmask_cidr must all be set. Re-run after the instance is fully provisioned (Contabo populates v6 a few seconds after v4)."
+    }
   }
 }
 
@@ -86,8 +104,12 @@ resource "null_resource" "ensure_image" {
 }
 
 locals {
-  ipv4 = contabo_instance.this.ip_config[0].v4[0].ip
-  ipv6 = try(contabo_instance.this.ip_config[0].v6[0].ip, null)
+  ipv4         = contabo_instance.this.ip_config[0].v4[0].ip
+  ipv4_cidr    = contabo_instance.this.ip_config[0].v4[0].netmask_cidr
+  ipv4_gateway = contabo_instance.this.ip_config[0].v4[0].gateway
+  ipv6         = try(contabo_instance.this.ip_config[0].v6[0].ip, null)
+  ipv6_cidr    = try(contabo_instance.this.ip_config[0].v6[0].netmask_cidr, null)
+  ipv6_gateway = try(contabo_instance.this.ip_config[0].v6[0].gateway, null)
 
   derived_labels = merge(
     var.labels,

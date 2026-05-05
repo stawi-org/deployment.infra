@@ -82,6 +82,40 @@ features:
   backupConfiguration:
     interval: 1h
 patches:
+  # Cluster-wide LinkAliasConfig: makes `wan0` resolve to each node's
+  # first physical Ethernet interface. MUST precede any per-node
+  # LinkConfig that references `wan0` — Omni applies cluster-template
+  # patches to every Machine, so order is positional within this list.
+  #
+  # Inlined (rather than `file: ../patches/...`) because Omni's
+  # cluster-template `file:` resolution goes through filepath.Abs(path)
+  # (see siderolabs/omni client/pkg/template/internal/models/patch.go),
+  # which resolves relative to the process CWD — not relative to the
+  # template file's directory. The sync-cluster-template workflow
+  # invokes `omnictl cluster template validate -f tofu/shared/clusters/
+  # main.yaml` from the repo root, so any `../patches/...` path lands
+  # outside the os.Root-restricted area and fails.
+  #
+  # Selector + alias rationale:
+  #   - `link.type == "ether"` rather than `link.driver == "virtio_net"`:
+  #     Talos already restricts LinkAliasConfig to physical links, so
+  #     wireguard / bonds / vlans / sidero are excluded automatically.
+  #     The type filter is universal across providers (Contabo / OCI
+  #     virtio_net, on-prem any driver); the driver filter is not.
+  #   - `wan%d` rather than fixed `wan`: a fixed alias requires the
+  #     selector to match exactly one link, or Talos rejects the doc.
+  #     `wan%d` accepts multiple matches and assigns sequential
+  #     aliases. Single-uplink nodes (every current cluster node) get
+  #     `wan0` deterministically; multi-NIC nodes (future on-prem)
+  #     get non-deterministic enumeration and would need a per-node
+  #     MAC-pinned override in their per-node patch.
+  - name: link-alias
+    inline:
+      apiVersion: v1alpha1
+      kind: LinkAliasConfig
+      name: wan%d
+      selector:
+        match: link.type == "ether"
   # Dual-stack networking. Adds IPv6 pod + service CIDRs alongside the
   # existing IPv4 ones so workloads, services, and ClusterIPs all get
   # both v4 and v6. Talos's default Flannel CNI supports this.
@@ -104,11 +138,11 @@ patches:
       cluster:
         network:
           podSubnets:
-            - 10.244.0.0/16
             - fd00:10:244::/56
+            - 10.244.0.0/16
           serviceSubnets:
-            - 10.96.0.0/12
             - fd00:10:96::/108
+            - 10.96.0.0/12
       # Kubelet needs `--node-ip` to include both v4 and v6 so each
       # node reports both InternalIPs and gets a v6 podCIDR. Without
       # this, kubelet auto-detects only the primary v4 address and

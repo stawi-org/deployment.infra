@@ -248,26 +248,6 @@ jobs:
           envsubst < tofu/shared/clusters/etcd-backup-s3-configs.yaml.tmpl > "$rendered"
           omnictl apply -f "$rendered"
 
-      # Per-node link ConfigPatches retired 2026-05-04 — they set
-      # static IPs with a self-routing v6 gateway (<prefix>::1, the
-      # same address Contabo assigns to the host) that broke Talos
-      # networking and stalled CP bootstrap for 30+ min. Replaced
-      # with Talos defaults (DHCPv4 + accept_ra=2 from the cluster's
-      # contabo-ipv6-ra patch). Where Contabo's network doesn't
-      # deliver RAs, nodes stay v4-only; dual-stack tolerates that.
-      #
-      # This step removes legacy stawi-<node>-link patches that may
-      # still exist in Omni state from prior runs. Idempotent.
-      - name: Remove legacy per-node link patches
-        if: env.DRY_RUN != 'true'
-        run: |
-          set -euo pipefail
-          for id in $(omnictl get configpatches -o jsonpath='{.metadata.id}' 2>/dev/null \
-                      | tr ' ' '\n' | grep -E '^stawi-.+-link$' || true); do
-            echo "removing legacy per-node patch: $id"
-            omnictl delete configpatches "$id" || true
-          done
-
       # Validate before sync — catches schema typos that would
       # otherwise fail mid-apply with partial state changes.
       - name: Validate template
@@ -291,6 +271,126 @@ jobs:
           omnictl cluster template sync \
             -f tofu/shared/clusters/main.yaml \
             --verbose
+
+      # Per-node Talos patches (LinkConfig + HostnameConfig +
+      # nodeLabels/Annotations). Re-introduced 2026-05-05 with the
+      # IPv6-gateway bug from the 2026-05-04 retirement fixed by
+      # construction (gateways read from contabo_instance.ip_config
+      # rather than derived from the prefix).
+      #
+      # Runs AFTER Sync template so the cluster-wide LinkAliasConfig
+      # (wan0 alias) is already in Omni state when per-node
+      # LinkConfig references wan0.
+      #
+      # Inputs:
+      #   - R2: production/per-node-patches/<talos-version>/<node>.yaml,
+      #     written by layer 03's per-node-patches.tf.
+      #   - tofu state: layer-03's all_nodes_from_state, surfaced as
+      #     a NODES_JSON file with each node's ipv4 (used for the
+      #     hostname-then-ipv4 machine-id match).
+      #
+      # The envelope (ConfigPatches.omni.sidero.dev wrapper with
+      # machine-id label) is built at apply time — machine-ids
+      # aren't known at tofu plan time.
+      - name: Apply per-node patches
+        if: env.DRY_RUN != 'true'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          OMNI_CLUSTER: stawi
+        run: |
+          set -euo pipefail
+          ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          STATE_KEY="production/03-talos.tfstate"
+          if ! aws s3api head-object \
+              --bucket cluster-tofu-state \
+              --key "$STATE_KEY" \
+              --endpoint-url "$ENDPOINT" \
+              --region us-east-1 >/dev/null 2>&1; then
+            echo "::notice::03-talos tfstate not found — apply that layer first to populate per-node patches in R2."
+            exit 0
+          fi
+          state=$(mktemp)
+          nodes_json=$(mktemp -p "${RUNNER_TEMP:-/tmp}" nodes-XXXXXX.json)
+          trap 'rm -f "$state" "$nodes_json"' EXIT
+          aws s3 cp "s3://cluster-tofu-state/$STATE_KEY" "$state" \
+            --endpoint-url "$ENDPOINT" \
+            --region us-east-1 >/dev/null
+          # Extract node-name → ipv4 from the layer-03 tfstate's
+          # local_sensitive_file.node_labels_json content. That
+          # resource carries the per-node envelope used by
+          # sync-machine-labels.sh; we only need the ipv4 sub-field.
+          jq -r '
+            .resources[]
+            | select(.type == "local_sensitive_file" and .name == "node_labels_json")
+            | .instances[0].attributes.content
+          ' "$state" \
+          | jq -c 'with_entries(.value |= { ipv4: .ipv4 })' \
+          > "$nodes_json"
+          if [[ "$(jq -r 'length' "$nodes_json")" -eq 0 ]]; then
+            echo "::notice::no nodes in layer-03 state — skipping per-node apply"
+            exit 0
+          fi
+          # Talos version comes from versions.auto.tfvars.json
+          # (committed) — same source layer-03 reads.
+          TALOS_VERSION=$(jq -r '.talos_version' tofu/shared/versions.auto.tfvars.json)
+          R2_PREFIX="production/per-node-patches/${TALOS_VERSION}"
+          export NODES_JSON="$nodes_json"
+          bash tofu/layers/03-talos/scripts/apply-per-node-patches.sh "$R2_PREFIX"
+
+      # Sweep orphan per-node patches: any stawi-<node>-link patch in
+      # Omni state whose <node> isn't in the current tofu node set.
+      # Replaces the previous unconditional cleanup of all
+      # stawi-*-link patches (from 2026-05-04's retirement) — that
+      # cleanup would now nuke what we just applied. The targeted
+      # sweep handles node-removal cleanly without breaking the
+      # apply-then-sweep ordering.
+      - name: Sweep orphan per-node patches
+        if: env.DRY_RUN != 'true'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          STATE_KEY="production/03-talos.tfstate"
+          if ! aws s3api head-object \
+              --bucket cluster-tofu-state \
+              --key "$STATE_KEY" \
+              --endpoint-url "$ENDPOINT" \
+              --region us-east-1 >/dev/null 2>&1; then
+            echo "::notice::03-talos tfstate missing — skipping orphan sweep"
+            exit 0
+          fi
+          state=$(mktemp)
+          trap 'rm -f "$state"' EXIT
+          aws s3 cp "s3://cluster-tofu-state/$STATE_KEY" "$state" \
+            --endpoint-url "$ENDPOINT" \
+            --region us-east-1 >/dev/null
+          # Build the set of node names currently in tofu state.
+          mapfile -t live_nodes < <(jq -r '
+            .resources[]
+            | select(.type == "local_sensitive_file" and .name == "node_labels_json")
+            | .instances[0].attributes.content
+          ' "$state" | jq -r 'keys[]')
+          live_set=$(printf '%s\n' "${live_nodes[@]+"${live_nodes[@]}"}" | sort -u)
+          # List all stawi-<node>-link patches in Omni and delete
+          # those whose <node> isn't in live_set.
+          for id in $(omnictl get configpatches -o jsonpath='{.metadata.id}' 2>/dev/null \
+                       | tr ' ' '\n' \
+                       | grep -E '^stawi-.+-link$' \
+                       || true); do
+            node="${id#stawi-}"
+            node="${node%-link}"
+            if ! grep -qx "$node" <<<"$live_set"; then
+              echo "::notice::orphan per-node patch detected: $id (node $node not in tofu state)"
+              omnictl delete configpatches "$id" || echo "::warning::failed to delete $id"
+            fi
+          done
 
       # Surface the cluster's reconciliation status so the action
       # log shows whether the cluster has converged. Non-fatal —

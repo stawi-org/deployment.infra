@@ -1,0 +1,62 @@
+---
+# tofu/shared/patches/node-contabo.tftpl
+#
+# Per-Contabo-node Talos patch — multi-document YAML applied to a
+# single Machine via Omni ConfigPatch. Rendered by layer 03 from
+# `tofu/modules/node-contabo` outputs; the Omni envelope wrap is
+# done at apply time by scripts/apply-per-node-patches.sh (machine
+# IDs aren't known at tofu plan time).
+#
+# Documents:
+#   1. machine.nodeLabels / nodeAnnotations  — kubelet propagates
+#      these to the Kubernetes Node object on registration.
+#   2. LinkConfig name: wan0                  — addresses + routes on
+#      the cluster-wide alias `wan0` (see link-alias inline patch in
+#      tofu/shared/clusters/main.yaml). Gateways come from the
+#      Contabo provider's reported `gateway` field, NOT derived (the
+#      490ae67 retirement was caused by <prefix>::1 derivation
+#      colliding with Contabo's own host address).
+#   3. HostnameConfig auto: off               — pin the canonical
+#      hostname; without this, Contabo's platform-supplied hostname
+#      is the VPS UUID.
+#
+# Multi-NIC future: this template assumes the cluster-wide
+# LinkAliasConfig deterministically resolves `wan0` to the single
+# physical Ethernet on this node. If a Contabo Private Networking
+# add-on ever attaches a second virtio_net NIC, `link.type ==
+# "ether"` matches both and `wan0` becomes enumeration-order-
+# dependent. Override that node's per-node patch with a MAC-pinned
+# LinkAliasConfig (per Talos v1.13 docs):
+#   apiVersion: v1alpha1
+#   kind: LinkAliasConfig
+#   name: wan
+#   selector:
+#     match: mac(link.permanent_addr) == "<wan-mac>"
+# and switch the LinkConfig below to `name: wan` (drop `0`).
+
+machine:
+  nodeLabels:
+%{ for k, v in node_labels ~}
+    ${k}: "${v}"
+%{ endfor ~}
+  nodeAnnotations:
+%{ for k, v in node_annotations ~}
+    ${k}: "${v}"
+%{ endfor ~}
+
+---
+apiVersion: v1alpha1
+kind: LinkConfig
+name: wan0
+addresses:
+  - address: ${ipv4}/${ipv4_cidr}
+  - address: ${ipv6}/${ipv6_cidr}
+routes:
+  - gateway: ${ipv4_gateway}
+  - gateway: ${ipv6_gateway}
+
+---
+apiVersion: v1alpha1
+kind: HostnameConfig
+hostname: ${hostname}
+auto: off
