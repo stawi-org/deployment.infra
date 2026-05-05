@@ -14,7 +14,7 @@ output "image_apply_generation" {
 }
 
 output "node" {
-  description = "Node contract consumed by layer 03. Schema identical to modules/node-oracle."
+  description = "Node contract consumed by layer 03. Cross-provider schema with provider-specific extensions: node-oracle adds public_ipv4 (NAT-mapped public IPv4 used for Flannel's public-ip-overwrite annotation); node-contabo adds ipv4_cidr/ipv4_gateway/ipv6_cidr/ipv6_gateway (read by layer 03's per-node-patch renderer to write a Talos LinkConfig). Common fields are name, role, provider, ipv4, ipv6, talos_endpoint, kubespan_endpoint, derived_labels, derived_annotations, instance_id, bastion_id, account_key, config_apply_source, image_apply_generation."
   depends_on  = [null_resource.ensure_image]
   value = {
     name                   = var.name
