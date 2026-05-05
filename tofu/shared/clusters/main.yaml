@@ -110,11 +110,11 @@ patches:
       cluster:
         network:
           podSubnets:
-            - 10.244.0.0/16
             - fd00:10:244::/56
+            - 10.244.0.0/16
           serviceSubnets:
-            - 10.96.0.0/12
             - fd00:10:96::/108
+            - 10.96.0.0/12
       # Kubelet needs `--node-ip` to include both v4 and v6 so each
       # node reports both InternalIPs and gets a v6 podCIDR. Without
       # this, kubelet auto-detects only the primary v4 address and
