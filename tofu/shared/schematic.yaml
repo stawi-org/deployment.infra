@@ -13,7 +13,12 @@
 customization:
   extraKernelArgs:
     - ipv6.disable=0
-    - ipv6.autoconf=0
+    # ipv6.autoconf=1 (re-enabled 2026-05-05): see the longer
+    # rationale block in tofu/shared/schematics/cluster.yaml — the
+    # prior `=0` made static LinkConfig the only path to IPv6 and
+    # caused live-delta disruption on Contabo nodes when applied.
+    # Re-enabling kernel autoconf lets RAs configure IPv6 cleanly.
+    - ipv6.autoconf=1
   systemExtensions:
     officialExtensions:
       - siderolabs/util-linux-tools
