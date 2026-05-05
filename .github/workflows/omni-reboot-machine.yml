@@ -78,8 +78,15 @@ jobs:
         run: |
           set -euo pipefail
           tmpcfg=$(mktemp)
-          omnictl get talosconfig --cluster stawi > "$tmpcfg" 2>/dev/null \
-            || omnictl get talosconfig > "$tmpcfg"
+          # `talosconfig` is a top-level omnictl subcommand (an RPC
+          # that mints credentials), NOT a get-resource verb. The
+          # earlier `omnictl get talosconfig` form returns
+          # PermissionDenied even with Admin role because there is
+          # no such resource — the get path goes through the COSI
+          # state machine which doesn't know about it. The real
+          # subcommand writes a kubeconfig-style file to stdout (or
+          # to --output file) when --merge=false is set.
+          omnictl talosconfig --cluster stawi --merge=false --force "$tmpcfg"
           echo "talosconfig=$tmpcfg" >> "$GITHUB_OUTPUT"
           echo "::notice::talosconfig at $tmpcfg ($(wc -c <"$tmpcfg") bytes)"
       - name: Reboot machine
