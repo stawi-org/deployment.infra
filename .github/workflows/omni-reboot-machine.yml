@@ -1,0 +1,96 @@
+# Reboot a Talos machine via omnictl + talosctl. Recovery knob for
+# when a static-network change leaves the kernel in a stuck state
+# that Talos's reactive reconciler doesn't fully clean up — a fresh
+# boot rebuilds network state from the merged config from scratch.
+#
+# Use case (2026-05-05): the per-node-patches PR (#177) introduced
+# static LinkConfig for Contabo nodes; the CP node's LB went
+# unhealthy and removing the patch via omni-delete-configpatch did
+# not recover. Reboot the CP machine so Talos rebuilds its network
+# from the (now patch-free) merged config on boot.
+#
+# Mechanism: pull a talosconfig via omnictl, talosctl reboot the
+# specific node by management address (SideroLink ULA — already
+# guaranteed reachable from the omni-host).
+#
+# Security: workflow_dispatch only. machine_id is allowlist-
+# validated as a UUID before being passed to talosctl. No
+# untrusted github.event-derived strings reach any shell command.
+name: omni-reboot-machine
+on:
+  workflow_dispatch:
+    inputs:
+      machine_id:
+        description: Omni MachineStatus id (UUID, e.g. 61475972-831c-420c-a80b-7636843e2dfb)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  OMNI_VERSION: v1.7.1
+  TALOS_VERSION: v1.13.0
+
+jobs:
+  reboot:
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+      MACHINE_ID: ${{ inputs.machine_id }}
+    steps:
+      - name: Validate input
+        run: |
+          set -euo pipefail
+          if ! [[ "$MACHINE_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            echo "::error::machine_id must be a UUID (got: $MACHINE_ID)"
+            exit 1
+          fi
+      - name: Install omnictl + talosctl
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          cat > /usr/local/bin/omnictl <<'WRAP'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /usr/local/bin/omnictl
+          curl -fsSL -o /usr/local/bin/talosctl \
+            "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64"
+          chmod +x /usr/local/bin/talosctl
+      - name: Resolve management address
+        id: resolve
+        run: |
+          set -euo pipefail
+          mgmt_addr=$(omnictl get machinestatus "$MACHINE_ID" -o json \
+            | jq -r '.spec.managementaddress // empty')
+          if [[ -z "$mgmt_addr" ]]; then
+            echo "::error::no managementaddress found for machine $MACHINE_ID"
+            exit 1
+          fi
+          echo "::notice::machine $MACHINE_ID at managementaddress=$mgmt_addr"
+          echo "mgmt=$mgmt_addr" >> "$GITHUB_OUTPUT"
+      - name: Fetch talosconfig
+        id: tcfg
+        run: |
+          set -euo pipefail
+          tmpcfg=$(mktemp)
+          omnictl get talosconfig --cluster stawi > "$tmpcfg" 2>/dev/null \
+            || omnictl get talosconfig > "$tmpcfg"
+          echo "talosconfig=$tmpcfg" >> "$GITHUB_OUTPUT"
+          echo "::notice::talosconfig at $tmpcfg ($(wc -c <"$tmpcfg") bytes)"
+      - name: Reboot machine
+        env:
+          MGMT: ${{ steps.resolve.outputs.mgmt }}
+          TALOSCONFIG: ${{ steps.tcfg.outputs.talosconfig }}
+        run: |
+          set -euo pipefail
+          export TALOSCONFIG
+          echo "::notice::issuing reboot RPC to [$MGMT]:50000"
+          talosctl --talosconfig "$TALOSCONFIG" \
+            --endpoints "$MGMT" --nodes "$MGMT" \
+            reboot --wait=false
+          echo "::notice::reboot RPC issued; node will come back up in 60-180s"
