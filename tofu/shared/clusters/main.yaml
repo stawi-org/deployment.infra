@@ -97,25 +97,35 @@ patches:
   # outside the os.Root-restricted area and fails.
   #
   # Selector + alias rationale:
-  #   - `link.type == "ether"` rather than `link.driver == "virtio_net"`:
-  #     Talos already restricts LinkAliasConfig to physical links, so
-  #     wireguard / bonds / vlans / sidero are excluded automatically.
-  #     The type filter is universal across providers (Contabo / OCI
-  #     virtio_net, on-prem any driver); the driver filter is not.
+  #   - `link.driver == "virtio_net"`: Talos's CEL binding for
+  #     LinkStatus exposes `link.type` as an int (netlink ARPHRD
+  #     enum, not the YAML-string-rendered name), so the natural-
+  #     looking `link.type == "ether"` fails CEL type-check with:
+  #       found no matching overload for '_==_' applied to (int, string)
+  #     Confirmed empirically via ClusterMachineConfigStatuses
+  #     after 0930fe2 landed. `link.driver` is string-typed, matches
+  #     the documented Talos v1.13 example for LinkAliasConfig, and
+  #     is what the 490ae67-retired patch had used. Every current
+  #     cluster node — Contabo VPS (KVM virtio_net, confirmed via
+  #     MachineStatus.network.networklinks.description="Red Hat,
+  #     Inc. Virtio network device") and OCI A1.Flex (paravirt
+  #     virtio_net) — exposes its uplink under this driver. On-prem
+  #     bare-metal (out of scope per the 2026-05-03 realignment)
+  #     would need a different selector if it returns to scope.
   #   - `wan%d` rather than fixed `wan`: a fixed alias requires the
   #     selector to match exactly one link, or Talos rejects the doc.
   #     `wan%d` accepts multiple matches and assigns sequential
   #     aliases. Single-uplink nodes (every current cluster node) get
-  #     `wan0` deterministically; multi-NIC nodes (future on-prem)
-  #     get non-deterministic enumeration and would need a per-node
-  #     MAC-pinned override in their per-node patch.
+  #     `wan0` deterministically; multi-NIC nodes (future on-prem
+  #     or Contabo Private Networking) get non-deterministic
+  #     enumeration and would need a per-node MAC-pinned override.
   - name: link-alias
     inline:
       apiVersion: v1alpha1
       kind: LinkAliasConfig
       name: wan%d
       selector:
-        match: link.type == "ether"
+        match: link.driver == "virtio_net"
   # Dual-stack networking. Adds IPv6 pod + service CIDRs alongside the
   # existing IPv4 ones so workloads, services, and ClusterIPs all get
   # both v4 and v6. Talos's default Flannel CNI supports this.
