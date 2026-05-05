@@ -59,16 +59,24 @@ jobs:
           echo "::group::ConfigPatches (per-node binding state)"
           omnictl get configpatches -o yaml || true
           echo "::endgroup::"
-          echo "::group::kubectl get nodes (verbose error mode)"
+          echo "::group::kubectl get nodes (via omnictl-issued kubeconfig)"
+          # Correct syntax: `omnictl kubeconfig` is a top-level RPC
+          # subcommand (NOT `omnictl --cluster <name> cluster
+          # kubeconfig` — that flag form was the wrong syntax in
+          # earlier diag iterations and produced "unknown flag:
+          # --cluster"). --merge=false writes the kubeconfig to the
+          # path argument directly without merging into ~/.kube.
           KCFG=$(mktemp)
-          if omnictl --cluster stawi cluster kubeconfig --force > "$KCFG"; then
+          if omnictl kubeconfig --cluster stawi --merge=false --force "$KCFG"; then
             curl -fsSL -o /usr/local/bin/kubectl \
               "https://dl.k8s.io/release/v1.35.2/bin/linux/amd64/kubectl"
             chmod +x /usr/local/bin/kubectl
             kubectl --kubeconfig "$KCFG" --insecure-skip-tls-verify \
               get nodes -o wide || true
+            kubectl --kubeconfig "$KCFG" --insecure-skip-tls-verify \
+              describe node | grep -A2 -E "^Name:|Conditions|Ready " | head -120 || true
           else
-            echo "kubeconfig fetch failed (see stderr above)"
+            echo "kubeconfig fetch failed"
           fi
           rm -f "$KCFG"
           echo "::endgroup::"
