@@ -10,29 +10,42 @@
 # Documents:
 #   1. machine.nodeLabels / nodeAnnotations  — kubelet propagates
 #      these to the Kubernetes Node object on registration.
-#   2. LinkConfig name: wan0                  — addresses + routes on
-#      the cluster-wide alias `wan0` (see link-alias inline patch in
-#      tofu/shared/clusters/main.yaml). Gateways come from the
-#      Contabo provider's reported `gateway` field, NOT derived (the
-#      490ae67 retirement was caused by <prefix>::1 derivation
-#      colliding with Contabo's own host address).
-#   3. HostnameConfig auto: off               — pin the canonical
+#   2. HostnameConfig auto: off               — pin the canonical
 #      hostname; without this, Contabo's platform-supplied hostname
 #      is the VPS UUID.
 #
-# Multi-NIC future: this template assumes the cluster-wide
-# LinkAliasConfig deterministically resolves `wan0` to the single
-# physical Ethernet on this node. If a Contabo Private Networking
-# add-on ever attaches a second virtio_net NIC, `link.type ==
-# "ether"` matches both and `wan0` becomes enumeration-order-
-# dependent. Override that node's per-node patch with a MAC-pinned
-# LinkAliasConfig (per Talos v1.13 docs):
-#   apiVersion: v1alpha1
-#   kind: LinkAliasConfig
-#   name: wan
-#   selector:
-#     match: mac(link.permanent_addr) == "<wan-mac>"
-# and switch the LinkConfig below to `name: wan` (drop `0`).
+# History — LinkConfig dropped 2026-05-05:
+#   The template originally also emitted a LinkConfig that set
+#   static IPv4 + IPv6 + default routes against the cluster-wide
+#   `wan0` alias (see the link-alias inline patch in
+#   tofu/shared/clusters/main.yaml). Live-applying that LinkConfig
+#   to a running Contabo node disrupted kernel networking state
+#   progressively: contabo-bwire-node-1 + contabo-bwire-node-2 went
+#   "Config Apply Failed" then "Not Ready" within hours of the patch
+#   landing, and removing the patch did not auto-revert the static
+#   kernel state — only a Contabo-API hypervisor reboot
+#   (contabo-reboot-vps.yml) cleared it.
+#
+#   Rendered patches that DO contain a LinkConfig are safe ONLY if
+#   the node boots WITH that config from the start (e.g. after a
+#   reboot). Live-deltas where Talos transitions from DHCPv4 to
+#   static-v4-plus-static-v6 leave the kernel in a half-converged
+#   state.
+#
+#   For now the template emits no LinkConfig. Contabo nodes stay on
+#   DHCPv4 + RA-based v6 (which Contabo doesn't reliably deliver,
+#   so they're effectively v4-only at the link level). Cluster-
+#   level dual-stack (pod/service IPv6 subnets) still works through
+#   Talos's flannel-on-SideroLink-ULA tunnels — see the dual-stack
+#   patch in main.yaml.
+#
+#   Path to re-introducing static IPv6 on Contabo:
+#     1. Bake LinkConfig into the schematic (kernel cmdline or
+#        per-role image-mint), so Talos applies it at boot rather
+#        than as a delta.
+#     2. Or wrap any future LinkConfig re-introduction with an
+#        explicit pre-reboot of the affected node so the apply
+#        happens at boot rather than on a running node.
 
 machine:
   nodeLabels:
@@ -43,17 +56,6 @@ machine:
 %{ for k, v in node_annotations ~}
     ${k}: "${v}"
 %{ endfor ~}
-
----
-apiVersion: v1alpha1
-kind: LinkConfig
-name: wan0
-addresses:
-  - address: ${ipv4}/${ipv4_cidr}
-  - address: ${ipv6}/${ipv6_cidr}
-routes:
-  - gateway: ${ipv4_gateway}
-  - gateway: ${ipv6_gateway}
 
 ---
 apiVersion: v1alpha1
