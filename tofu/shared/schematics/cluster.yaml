@@ -13,32 +13,21 @@
 customization:
   extraKernelArgs:
     - ipv6.disable=0
-    # ipv6.autoconf=1 (re-enabled 2026-05-05): the prior `=0` setting
-    # disabled kernel-level IPv6 autoconfiguration entirely, which
-    # made static LinkConfig the only path to IPv6 on the node.
-    # On the Omni-managed flow that meant per-node ConfigPatch
-    # LinkConfigs applied as live deltas to running kernels, which
-    # disrupted Contabo nodes' networking on every patch change
-    # (regression history: PR #177, root-caused via
-    # ClusterMachineConfigStatuses dump in PR #179).
-    #
-    # With `=1` the kernel does standard SLAAC: accepts Router
-    # Advertisements and derives a usable IPv6 + default route on
-    # any uplink that receives them. OCI nodes already get IPv6 via
-    # Talos's OCI platform driver — unaffected. Contabo nodes pick
-    # up RAs (combined with the cluster-wide `accept_ra=2` sysctl
-    # in tofu/shared/clusters/main.yaml's contabo-ipv6-ra patch).
-    # No per-node static LinkConfig required — the live-delta
-    # disruption is structurally avoided.
-    - ipv6.autoconf=1
+    # ipv6.autoconf=0 — restored 2026-05-05 after `=1` left Contabo
+    # VPSes in an unbootable state (post-reinstall: nodes responded
+    # to ICMP but Talos apid never came up, Omni "CONFIGURING"
+    # indefinitely). Suspected interaction between SLAAC during
+    # boot and Contabo's RA delivery; not fully root-caused.
+    # Revert to known-working `=0` + ICR token bump to roll the
+    # cluster back to the prior schematic. Keeping the constraint
+    # that Contabo nodes have no IPv6 at the link level — same as
+    # pre-#177 state. Cluster-level dual-stack (pod/service IPv6
+    # subnets) still works through flannel-on-SideroLink-ULA tunnels.
+    - ipv6.autoconf=0
     # Vendor-namespaced no-op arg whose only purpose is to bump the
     # rendered schematic_id when we need to force a fleet-wide reinstall
-    # without changing real Talos / k8s versions. The kernel logs unknown
-    # args at boot but ignores them. Bump the date+seq when re-rolling
-    # the cluster (e.g. to refresh SideroLink registrations after an
-    # Omni-host backup-restore left the public-key store stale, OR to
-    # roll out the autoconf change above).
-    - cluster.regen-token=2026-05-05-1
+    # without changing real Talos / k8s versions.
+    - cluster.regen-token=2026-05-05-2
   systemExtensions:
     officialExtensions:
       - siderolabs/util-linux-tools
