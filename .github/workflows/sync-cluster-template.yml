@@ -419,3 +419,17 @@ jobs:
           echo "::group::Talos clusters"
           omnictl get clusters -o yaml || true
           echo "::endgroup::"
+          # MachineConfigStatus carries per-machine config-apply errors
+          # (the "Config Apply Failed" detail in `cluster template
+          # status` is summarized FROM this resource). When a node
+          # rejects an Omni-pushed config, this is the only place the
+          # actual error string surfaces.
+          echo "::group::MachineConfigStatus (per-machine config apply errors)"
+          omnictl get machineconfigstatus -o yaml || true
+          echo "::endgroup::"
+          # ConfigPatches: current state, includes our per-node
+          # stawi-<node>-link patches plus cluster-template patches.
+          # Useful to spot-check binding via target_label_selectors.
+          echo "::group::ConfigPatches"
+          omnictl get configpatches -o yaml || true
+          echo "::endgroup::"
