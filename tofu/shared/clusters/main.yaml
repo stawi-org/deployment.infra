@@ -87,17 +87,28 @@ patches:
   # LinkConfig that references `wan0` — Omni applies cluster-template
   # patches to every Machine, so order is positional within this list.
   #
-  # Inlined (rather than `file: ../patches/link-alias.yaml`) because
-  # Omni's cluster-template `file:` resolution goes through
-  # filepath.Abs(path) (see siderolabs/omni client/pkg/template/
-  # internal/models/patch.go), which resolves relative to the process
-  # CWD — not relative to the template file's directory. The
-  # sync-cluster-template workflow invokes `omnictl cluster template
-  # validate -f tofu/shared/clusters/main.yaml` from the repo root,
-  # so any `../patches/...` path lands outside the os.Root-restricted
-  # area and fails. Keep the underlying patch source (link-alias.yaml)
-  # for its comments + ergonomic editing in isolation; the inline
-  # block here is the single point of truth that Omni reads.
+  # Inlined (rather than `file: ../patches/...`) because Omni's
+  # cluster-template `file:` resolution goes through filepath.Abs(path)
+  # (see siderolabs/omni client/pkg/template/internal/models/patch.go),
+  # which resolves relative to the process CWD — not relative to the
+  # template file's directory. The sync-cluster-template workflow
+  # invokes `omnictl cluster template validate -f tofu/shared/clusters/
+  # main.yaml` from the repo root, so any `../patches/...` path lands
+  # outside the os.Root-restricted area and fails.
+  #
+  # Selector + alias rationale:
+  #   - `link.type == "ether"` rather than `link.driver == "virtio_net"`:
+  #     Talos already restricts LinkAliasConfig to physical links, so
+  #     wireguard / bonds / vlans / sidero are excluded automatically.
+  #     The type filter is universal across providers (Contabo / OCI
+  #     virtio_net, on-prem any driver); the driver filter is not.
+  #   - `wan%d` rather than fixed `wan`: a fixed alias requires the
+  #     selector to match exactly one link, or Talos rejects the doc.
+  #     `wan%d` accepts multiple matches and assigns sequential
+  #     aliases. Single-uplink nodes (every current cluster node) get
+  #     `wan0` deterministically; multi-NIC nodes (future on-prem)
+  #     get non-deterministic enumeration and would need a per-node
+  #     MAC-pinned override in their per-node patch.
   - name: link-alias
     inline:
       apiVersion: v1alpha1
