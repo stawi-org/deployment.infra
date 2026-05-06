@@ -18,14 +18,25 @@
 #      service-cluster-ip-range family (v6 here). Listing the v6
 #      subnet first guarantees the v6 address wins the election even
 #      against any cluster-level cluster-wide ::/0 fallbacks.
-#   3. LinkConfig wan0                              — static v4 + v6
+#   3. LinkConfig ens18                             — static v4 + v6
 #      addresses with explicit default routes (v4 gateway from
 #      Contabo's API; v6 via the always-link-local fe80::1 next-hop
 #      that Contabo's edge router advertises). Mirrors the antinvestor/
-#      deployments Ansible role's working setup. The link is bound to
-#      the cluster-level `wan0` LinkAliasConfig (see main.yaml
-#      link-alias patch) so the same alias resolves across virtio_net
-#      kernels.
+#      deployments Ansible role's working setup.
+#
+#      WHY ens18 (NOT wan0): Talos's AddressConfigController and
+#      RouteConfigController do NOT resolve LinkAliasConfig aliases
+#      when processing v1alpha1 LinkConfig docs — only the
+#      LinkConfigController does. Verified in Talos release-1.13
+#      source (internal/app/machined/pkg/controllers/network/
+#      address_config.go:291-314 and route_config.go:333). With
+#      `name: wan0`, IPv6 addresses were silently dropped from
+#      AddressSpec while IPv4 happened to land via a different layer
+#      — the cluster never reached IPv6-first dual-stack and kube-
+#      apiserver crashlooped on the family-match check. ens18 is
+#      stable across reboots on every current Contabo VPS (single
+#      NIC, virtio_net, Talos's predictable interface naming).
+#      Multi-NIC variants would need per-node selector machinery.
 #   4. HostnameConfig auto: off                     — pin canonical
 #      hostname; without this, Contabo's platform-supplied hostname
 #      is the VPS UUID.
@@ -69,7 +80,7 @@ machine:
 ---
 apiVersion: v1alpha1
 kind: LinkConfig
-name: wan0
+name: ens18
 addresses:
   - address: ${ipv4}/${ipv4_cidr}
   - address: ${ipv6}/${ipv6_cidr}
