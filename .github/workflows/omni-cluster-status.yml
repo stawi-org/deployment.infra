@@ -73,6 +73,17 @@ jobs:
           omnictl get loadbalancerconfig -o yaml 2>&1 | head -30 || true
           omnictl get controlplanestatus -o yaml 2>&1 | head -50 || true
           echo "::endgroup::"
+          echo "::group::Direct kube-apiserver probe (164.68.107.115:6443)"
+          # If the static pod is up, port 6443 returns a TLS cert
+          # (kubelet starts kube-apiserver static pod whose --bind-
+          # address defaults to all interfaces). If it's not running
+          # the port is closed (refused) or times out.
+          timeout 5 curl -sk -o /dev/null -w "http_code=%{http_code} time=%{time_total}\n" \
+            "https://164.68.107.115:6443/healthz" 2>&1 || echo "(probe timed out / refused)"
+          timeout 5 curl -sk -o /dev/null -w "http_code=%{http_code} time=%{time_total}\n" \
+            "https://164.68.107.115:6443/version" 2>&1 || echo "(probe timed out / refused)"
+          timeout 5 nc -zv 164.68.107.115 6443 2>&1 || echo "(nc failed)"
+          echo "::endgroup::"
           echo "::group::Talos read kube-apiserver static pod manifest"
           if [[ -f /tmp/talosconfig ]]; then
             talosctl --talosconfig /tmp/talosconfig \
