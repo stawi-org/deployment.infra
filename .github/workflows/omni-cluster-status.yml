@@ -118,6 +118,22 @@ jobs:
           echo "::group::EtcdAuditResult / Talos service health"
           omnictl get etcdauditresult -o yaml || true
           echo "::endgroup::"
+          echo "::group::Direct kube-apiserver container log via talosctl -k"
+          if [[ -f /tmp/talosconfig ]]; then
+            echo "--- logs for kube-apiserver (k8s container):"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              logs -k kube-system/kube-apiserver-vmi2727782:kube-apiserver 2>&1 | tail -80 || true
+            echo "--- logs for kube-apiserver alt syntax:"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              logs -k kube-apiserver 2>&1 | tail -80 || true
+            echo "--- logs for kube-controller-manager:"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              logs -k kube-controller-manager 2>&1 | tail -50 || true
+          fi
+          echo "::endgroup::"
           echo "::group::Talos events + image cache + kube-apiserver pod stat"
           if [[ -f /tmp/talosconfig ]]; then
             echo "--- talosctl events (tail 80):"
