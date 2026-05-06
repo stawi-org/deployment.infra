@@ -174,13 +174,14 @@ jobs:
           values=$(mktemp --suffix=.yaml)
           trap 'rm -f "$values"' EXIT
           cat > "$values" <<'EOF'
-          # Pin to OCI nodes — kube-flannel doesn't initialise on
-          # Contabo nodes (no SLAAC IPv6 from Contabo's network →
-          # dual-stack v6 init fails → CNI doesn't register on
-          # those nodes → pods stick in ContainerCreating forever).
-          # OCI nodes have v6 from VCN metadata; flannel works.
-          nodeSelector:
-            node.antinvestor.io/provider: oracle
+          # No nodeSelector: every node now has working CNI. The
+          # historical OCI-only pin existed because Contabo nodes
+          # had no IPv6, breaking flannel's dual-stack init — fixed
+          # 2026-05-06 by the per-VPS LinkConfig with static v4+v6
+          # in tofu/shared/patches/node-contabo.tftpl. Keeping the
+          # pin was actively blocking the rollout because the
+          # node.antinvestor.io/provider K8s-Node label hadn't yet
+          # propagated to every node.
           tolerations:
             - key: node-role.kubernetes.io/control-plane
               operator: Exists
