@@ -57,4 +57,14 @@ age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
 #                   Force-reinstall lets the patches apply at first
 #                   boot, picking up canonical hostnames + static
 #                   IPv4/IPv6 + LinkAliasConfig.
-force_reinstall_generation = 15
+#  16 — 2026-05-06: re-introduce per-node LinkConfig with static v4
+#                   + static v6 + dual gateways (v4 from API,
+#                   fe80::1 v6 link-local) — required to satisfy
+#                   kube-apiserver's family-match check for the
+#                   IPv6-first dual-stack service range. Live-
+#                   applying LinkConfig has broken Contabo nodes
+#                   in the past (kernel half-state); the bump
+#                   makes every Contabo VPS boot fresh into the
+#                   new config from first boot. Paired with k8s
+#                   v1.36.0 bump in shared/versions.auto.tfvars.json.
+force_reinstall_generation = 16

@@ -51,7 +51,7 @@ kubernetes:
   # Pinned to match tofu/shared/versions.auto.tfvars.json's
   # `kubernetes_version`. Bumps to the cluster k8s version go in BOTH
   # files in lock-step so tofu and Omni agree.
-  version: v1.35.2
+  version: v1.36.0
 talos:
   # Pinned to match tofu/shared/versions.auto.tfvars.json's
   # `talos_version`. The image inventory in
@@ -176,26 +176,49 @@ patches:
               - "::/0"
               - 0.0.0.0/0
               - "!fdae:41e4:649b:9303::/64"
-  # Contabo IPv6 default route via SLAAC. Without this, kube-flannel
-  # crash-loops on Contabo nodes with "failed to get default v6
-  # interface: unable to find default v6 route" — the dual-stack
-  # patch above tells flannel to set up v6 tunnels, but Contabo
-  # delivers IPv6 only via Router Advertisements, and Linux defaults
-  # to `accept_ra=1` (= accept RAs only when forwarding=0). Cluster
-  # nodes have forwarding=1 (kube-proxy + CNI), so default behaviour
-  # ignores RAs and no v6 default route ever lands. accept_ra=2
-  # forces RA acceptance even with forwarding on.
+  # IPv6 enablement + tuning, cluster-wide. Mirrors the antinvestor/
+  # deployments Ansible roles' common.yaml — that setup runs IPv6-
+  # first dual-stack on Contabo + OCI without issue, and the sysctls
+  # below are the load-bearing portion. Listing them ALL ensures
+  # Contabo nodes can:
+  #   - RFC4861 RA acceptance even when forwarding is on (default
+  #     accept_ra=1 ignores RAs when forwarding=1, which kube-proxy +
+  #     CNI both flip on; without =2 no v6 default route lands and
+  #     kube-flannel crash-loops with "unable to find default v6
+  #     route"). Note: on a node with a fully-static LinkConfig
+  #     (v6 + gateway), accept_ra is moot — the route is already
+  #     there. We keep =2 as a safety net for any future v6 route
+  #     re-derivation.
+  #   - Forwarding turned on for both families so flannel-VXLAN over
+  #     v6 works between nodes (kube-proxy expects forwarding=1).
+  #   - NDP gateway-discovery tuning that the antinvestor/deployments
+  #     roles found necessary on Contabo's `fe80::1` link-local
+  #     gateway — the default neighbor-cache base_reachable_time of
+  #     30s flapped the v6 default route under load.
+  #   - Bridge netfilter for v6 so kube-proxy's iptables-rules
+  #     module on bridged traffic also fires for ip6tables. Without
+  #     this, v6 service-IP DNAT breaks for pods on the same node.
   #
-  # Cluster-wide instead of per-account: harmless on OCI nodes whose
-  # v6 is delivered statically via OCI metadata (no RAs in flight to
-  # accept anyway). Avoids needing a per-machine ConfigPatch + Omni
-  # selector machinery just for one sysctl pair.
-  - name: contabo-ipv6-ra
+  # Cluster-wide instead of per-account: harmless on OCI nodes (their
+  # v6 is delivered statically via OCI metadata; no RAs in flight to
+  # accept anyway, and the NDP tuning matches Linux defaults from the
+  # OCI side). Avoids needing a per-machine ConfigPatch + Omni
+  # selector machinery for what's strictly tuning.
+  - name: ipv6-tuning
     inline:
       machine:
         sysctls:
+          net.ipv6.conf.all.disable_ipv6: "0"
+          net.ipv6.conf.default.disable_ipv6: "0"
+          net.ipv6.conf.all.forwarding: "1"
+          net.ipv6.conf.default.forwarding: "1"
           net.ipv6.conf.all.accept_ra: "2"
           net.ipv6.conf.default.accept_ra: "2"
+          net.ipv6.neigh.default.base_reachable_time_ms: "120000"
+          net.ipv6.neigh.default.gc_stale_time: "240"
+          net.ipv6.neigh.default.delay_first_probe_time: "10"
+          net.ipv6.neigh.default.mcast_solicit: "6"
+          net.bridge.bridge-nf-call-ip6tables: "1"
 # NOTE: KubeSpan + Flux extraManifests patches were removed
 # 2026-05-01 after a 1+ hour cluster bootstrap stall — Talos apid
 # wasn't responding on any of the 5 nodes. Both will be re-introduced
