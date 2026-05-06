@@ -1,0 +1,104 @@
+# Force-remove finalizers from stuck Omni Machine resources so the
+# garbage collector can complete a Machine deletion. Used when the
+# underlying hardware was destroyed before Omni's MachineSetController
+# could issue `talosctl reset` (e.g., OCI VM destroy+create flow
+# leaves the prior Machine resource with finalizers that never fire —
+# the controller retries the reset RPC against an unreachable
+# endpoint forever).
+#
+# Sequence per id × kind:
+#   1. omnictl get <kind> <id> → fetch current spec
+#   2. yq strip metadata.finalizers + server-managed fields
+#   3. omnictl apply -f patched.yaml (Omni now allows GC)
+#   4. omnictl delete <kind> <id> (kicks the GC pass)
+#
+# Security: workflow_dispatch only. machine_ids are allowlist-
+# validated as UUIDs through env-binding before any shell expansion.
+name: omni-strip-finalizers
+on:
+  workflow_dispatch:
+    inputs:
+      machine_ids:
+        description: Whitespace-separated Omni Machine UUIDs to unstick
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  OMNI_VERSION: v1.7.1
+
+jobs:
+  strip:
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+      MACHINE_IDS: ${{ inputs.machine_ids }}
+    steps:
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          for id in $MACHINE_IDS; do
+            if ! [[ "$id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+              echo "::error::machine_id must be a UUID (got: $id)"
+              exit 1
+            fi
+          done
+      - name: Install omnictl
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          cat > /usr/local/bin/omnictl <<'WRAP'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /usr/local/bin/omnictl
+      - name: Strip finalizers from each kind that holds them
+        run: |
+          set -uo pipefail
+          kinds=(
+            "clustermachineconfigstatuses"
+            "clustermachinestatuses"
+            "clustermachineconfigpatches"
+            "clustermachines"
+            "machinestatuses"
+            "machines"
+          )
+          for id in $MACHINE_IDS; do
+            echo "::group::strip finalizers for machine $id"
+            for kind in "${kinds[@]}"; do
+              if ! omnictl get "$kind" "$id" -o yaml > /tmp/r.yaml 2>/dev/null; then
+                echo "  $kind/$id: not present (skipping)"
+                continue
+              fi
+              yq -i '
+                del(.metadata.finalizers) |
+                del(.metadata.version) |
+                del(.metadata.created) |
+                del(.metadata.updated) |
+                del(.metadata.phase) |
+                del(.metadata.owner)
+              ' /tmp/r.yaml
+              if omnictl apply -f /tmp/r.yaml >/dev/null 2>&1; then
+                echo "  $kind/$id: finalizers stripped"
+              else
+                echo "::warning::  $kind/$id: apply rejected"
+              fi
+              omnictl delete "$kind" "$id" >/dev/null 2>&1 \
+                && echo "  $kind/$id: deleted" \
+                || echo "  $kind/$id: delete returned non-zero"
+            done
+            echo "::endgroup::"
+          done
+      - name: Verify residual state
+        run: |
+          set +e
+          for id in $MACHINE_IDS; do
+            echo "::group::$id"
+            omnictl get machinestatus "$id" -o yaml 2>&1 | head -8
+            echo "::endgroup::"
+          done
