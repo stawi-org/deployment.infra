@@ -118,6 +118,18 @@ jobs:
           echo "::group::EtcdAuditResult / Talos service health"
           omnictl get etcdauditresult -o yaml || true
           echo "::endgroup::"
+          echo "::group::Talos kubelet logs + dmesg static-pod render"
+          if [[ -f /tmp/talosconfig ]]; then
+            echo "--- kubelet logs (tail 100):"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              logs kubelet 2>&1 | tail -100 || true
+            echo "--- dmesg | grep static pod (last 40):"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              dmesg 2>&1 | grep -iE "static|kubelet|kube-apiserver|fail|error" | tail -40 || true
+          fi
+          echo "::endgroup::"
           echo "::group::Talos service status on CP"
           if [[ -f /tmp/talosconfig ]]; then
             echo "--- services on CP (61475972):"
