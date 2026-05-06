@@ -41,7 +41,11 @@ module "contabo_nodes_writer" {
               product_id             = node_module.product_id
               region                 = node_module.region
               ipv4                   = node_module.ipv4
+              ipv4_cidr              = node_module.ipv4_cidr
+              ipv4_gateway           = node_module.ipv4_gateway
               ipv6                   = node_module.ipv6
+              ipv6_cidr              = node_module.ipv6_cidr
+              ipv6_gateway           = node_module.ipv6_gateway
               image_apply_generation = node_module.image_apply_generation
               status                 = "running"
               discovered_at          = timestamp()

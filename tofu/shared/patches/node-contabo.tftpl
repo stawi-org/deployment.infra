@@ -8,44 +8,40 @@
 # IDs aren't known at tofu plan time).
 #
 # Documents:
-#   1. machine.nodeLabels / nodeAnnotations  — kubelet propagates
-#      these to the Kubernetes Node object on registration.
-#   2. HostnameConfig auto: off               — pin the canonical
+#   1. machine.nodeLabels / nodeAnnotations         — kubelet
+#      propagates these to the K8s Node object on registration.
+#   2. machine.kubelet.nodeIP.validSubnets          — pin kubelet's
+#      primary nodeIP to this VPS's IPv6 /64 first, then v4. Required
+#      for IPv6-first dual-stack: kube-apiserver derives advertise-
+#      address from POD_IP (kubelet's elected nodeIP) and rejects
+#      startup if the advertise family doesn't match the FIRST
+#      service-cluster-ip-range family (v6 here). Listing the v6
+#      subnet first guarantees the v6 address wins the election even
+#      against any cluster-level cluster-wide ::/0 fallbacks.
+#   3. LinkConfig wan0                              — static v4 + v6
+#      addresses with explicit default routes (v4 gateway from
+#      Contabo's API; v6 via the always-link-local fe80::1 next-hop
+#      that Contabo's edge router advertises). Mirrors the antinvestor/
+#      deployments Ansible role's working setup. The link is bound to
+#      the cluster-level `wan0` LinkAliasConfig (see main.yaml
+#      link-alias patch) so the same alias resolves across virtio_net
+#      kernels.
+#   4. HostnameConfig auto: off                     — pin canonical
 #      hostname; without this, Contabo's platform-supplied hostname
 #      is the VPS UUID.
 #
-# History — LinkConfig dropped 2026-05-05:
-#   The template originally also emitted a LinkConfig that set
-#   static IPv4 + IPv6 + default routes against the cluster-wide
-#   `wan0` alias (see the link-alias inline patch in
-#   tofu/shared/clusters/main.yaml). Live-applying that LinkConfig
-#   to a running Contabo node disrupted kernel networking state
-#   progressively: contabo-bwire-node-1 + contabo-bwire-node-2 went
-#   "Config Apply Failed" then "Not Ready" within hours of the patch
-#   landing, and removing the patch did not auto-revert the static
-#   kernel state — only a Contabo-API hypervisor reboot
-#   (contabo-reboot-vps.yml) cleared it.
+# IMPORTANT — apply-at-boot only:
+#   This patch is SAFE only when the node boots with the LinkConfig
+#   from the start. Live-applying it to a running Contabo node that
+#   was on DHCPv4 disrupts the kernel networking state progressively
+#   (observed 2026-05-05: contabo-bwire-node-{1,2} went "Config
+#   Apply Failed" then "Not Ready" within hours, and removing the
+#   patch did not auto-revert kernel state — only a Contabo-API
+#   hypervisor reboot via contabo-reboot-vps.yml cleared it).
 #
-#   Rendered patches that DO contain a LinkConfig are safe ONLY if
-#   the node boots WITH that config from the start (e.g. after a
-#   reboot). Live-deltas where Talos transitions from DHCPv4 to
-#   static-v4-plus-static-v6 leave the kernel in a half-converged
-#   state.
-#
-#   For now the template emits no LinkConfig. Contabo nodes stay on
-#   DHCPv4 + RA-based v6 (which Contabo doesn't reliably deliver,
-#   so they're effectively v4-only at the link level). Cluster-
-#   level dual-stack (pod/service IPv6 subnets) still works through
-#   Talos's flannel-on-SideroLink-ULA tunnels — see the dual-stack
-#   patch in main.yaml.
-#
-#   Path to re-introducing static IPv6 on Contabo:
-#     1. Bake LinkConfig into the schematic (kernel cmdline or
-#        per-role image-mint), so Talos applies it at boot rather
-#        than as a delta.
-#     2. Or wrap any future LinkConfig re-introduction with an
-#        explicit pre-reboot of the affected node so the apply
-#        happens at boot rather than on a running node.
+#   Apply path: bump force_reinstall_generation in 01-contabo-infra/
+#   terraform.tfvars before applying this patch so each Contabo VPS
+#   reinstalls and boots fresh with the static config.
 
 machine:
   nodeLabels:
@@ -56,6 +52,30 @@ machine:
 %{ for k, v in node_annotations ~}
     ${k}: "${v}"
 %{ endfor ~}
+  kubelet:
+    nodeIP:
+      # IPv6-first per-node validSubnets. The address slash mask is
+      # the host's /64 prefix as Contabo assigns it; the IPv4 entry
+      # is the host's /32 to scope kubelet to exactly the address
+      # carried in the LinkConfig below. Excluding the SideroLink
+      # ULA matches the cluster-level kubelet patch — kept here too
+      # to harden the per-node ordering against future cluster-level
+      # patch reordering.
+      validSubnets:
+        - "${ipv6}/${ipv6_cidr}"
+        - "${ipv4}/32"
+        - "!fdae:41e4:649b:9303::/64"
+
+---
+apiVersion: v1alpha1
+kind: LinkConfig
+name: wan0
+addresses:
+  - address: ${ipv4}/${ipv4_cidr}
+  - address: ${ipv6}/${ipv6_cidr}
+routes:
+  - gateway: ${ipv4_gateway}
+  - gateway: fe80::1
 
 ---
 apiVersion: v1alpha1
