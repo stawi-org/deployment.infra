@@ -61,18 +61,6 @@ jobs:
           curl -fsSL -o /usr/local/bin/talosctl \
             "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64"
           chmod +x /usr/local/bin/talosctl
-      - name: Resolve management address
-        id: resolve
-        run: |
-          set -euo pipefail
-          mgmt_addr=$(omnictl get machinestatus "$MACHINE_ID" -o json \
-            | jq -r '.spec.managementaddress // empty')
-          if [[ -z "$mgmt_addr" ]]; then
-            echo "::error::no managementaddress found for machine $MACHINE_ID"
-            exit 1
-          fi
-          echo "::notice::machine $MACHINE_ID at managementaddress=$mgmt_addr"
-          echo "mgmt=$mgmt_addr" >> "$GITHUB_OUTPUT"
       - name: Fetch talosconfig
         id: tcfg
         run: |
@@ -91,13 +79,22 @@ jobs:
           echo "::notice::talosconfig at $tmpcfg ($(wc -c <"$tmpcfg") bytes)"
       - name: Reboot machine
         env:
-          MGMT: ${{ steps.resolve.outputs.mgmt }}
           TALOSCONFIG: ${{ steps.tcfg.outputs.talosconfig }}
         run: |
           set -euo pipefail
           export TALOSCONFIG
-          echo "::notice::issuing reboot RPC to [$MGMT]:50000"
+          # Route through Omni's gRPC proxy: the talosconfig minted
+          # by `omnictl talosconfig` already has Omni's endpoint set,
+          # and Omni proxies the RPC through to the named machine.
+          # Passing --endpoints with the SideroLink ULA — as the
+          # earlier draft did — forces a direct dial that fails from
+          # GH runners ("network is unreachable" — SideroLink is
+          # internal to Omni's WG mesh). Identify the target by Omni
+          # machine UUID via --nodes only. Same pattern
+          # omni-cluster-status.yml uses for read-only talosctl
+          # commands.
+          echo "::notice::issuing reboot RPC for machine $MACHINE_ID via Omni gRPC proxy"
           talosctl --talosconfig "$TALOSCONFIG" \
-            --endpoints "$MGMT" --nodes "$MGMT" \
+            --nodes "$MACHINE_ID" \
             reboot --wait=false
           echo "::notice::reboot RPC issued; node will come back up in 60-180s"
