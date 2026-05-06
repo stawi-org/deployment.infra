@@ -118,6 +118,25 @@ jobs:
           echo "::group::EtcdAuditResult / Talos service health"
           omnictl get etcdauditresult -o yaml || true
           echo "::endgroup::"
+          echo "::group::Talos events + image cache + kube-apiserver pod stat"
+          if [[ -f /tmp/talosconfig ]]; then
+            echo "--- talosctl events (tail 80):"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              events --tail 80 2>&1 | tail -100 || true
+            echo "--- talosctl image list (kube-apiserver:v1.35.2 must be cached):"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              image list 2>&1 | grep -iE "kube-apiserver|kube-controller|kube-scheduler|^NODE" || \
+              talosctl --talosconfig /tmp/talosconfig \
+                --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+                images 2>&1 | head -20 || true
+            echo "--- containerd k8s.io ns containers (Talos resource):"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              containers -k 2>&1 | head -30 || true
+          fi
+          echo "::endgroup::"
           echo "::group::Talos kubelet logs + dmesg static-pod render"
           if [[ -f /tmp/talosconfig ]]; then
             echo "--- kubelet logs (tail 100):"
