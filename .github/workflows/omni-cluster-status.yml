@@ -84,15 +84,28 @@ jobs:
             "https://164.68.107.115:6443/version" 2>&1 || echo "(probe timed out / refused)"
           timeout 5 nc -zv 164.68.107.115 6443 2>&1 || echo "(nc failed)"
           echo "::endgroup::"
-          echo "::group::Talos read kube-apiserver static pod manifest"
+          echo "::group::Talos static-pod resources (os:reader-friendly)"
           if [[ -f /tmp/talosconfig ]]; then
+            echo "--- get sp (StaticPods):"
             talosctl --talosconfig /tmp/talosconfig \
               --nodes 61475972-831c-420c-a80b-7636843e2dfb \
-              read /etc/kubernetes/manifests/kube-apiserver.yaml 2>&1 | head -80 || true
-            echo "--- kube-apiserver pod logs (last 50):"
+              get staticpods 2>&1 | head -20 || true
+            echo "--- get staticpodstatus:"
             talosctl --talosconfig /tmp/talosconfig \
               --nodes 61475972-831c-420c-a80b-7636843e2dfb \
-              logs kube-apiserver 2>&1 | tail -50 || true
+              get staticpodstatus 2>&1 | head -20 || true
+            echo "--- get sp kube-apiserver -o yaml:"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              get staticpods kube-apiserver -o yaml 2>&1 | head -100 || true
+            echo "--- get nodeaddresses (binding):"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              get nodeaddresses 2>&1 | head -10 || true
+            echo "--- get k8saddressfilter (kube apiserver bind):"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              get configstatus 2>&1 | head -10 || true
           fi
           echo "::endgroup::"
           echo "::group::EtcdAuditResult / Talos service health"
