@@ -158,18 +158,42 @@ echo "[setup-kubectl] toolchain installed:"
 "${install_dir}/omnictl" --version | head -1
 "${install_dir}/kubectl-oidc_login" --version | head -1
 
-# 4. Configure omnictl context. The CLI uses `omnictl config add
-# <name>` to create a context (NOT `add-context`), and `omnictl
-# config url <url>` to (re)set the URL on the current context. We
-# add the context first (idempotent on second run — `add` is a
-# no-op if the context already exists with the same URL); then
-# switch to it; then re-set the URL so a relocated Omni endpoint
-# updates without complaint.
-echo "[setup-kubectl] configuring omnictl context for $OMNI_ENDPOINT"
-"${install_dir}/omnictl" config add "$OMNI_CLUSTER" \
-  --url "$OMNI_ENDPOINT" >/dev/null 2>&1 || true
-"${install_dir}/omnictl" config context "$OMNI_CLUSTER" >/dev/null
-"${install_dir}/omnictl" config url "$OMNI_ENDPOINT" >/dev/null
+# 4. Make sure the current omnictl context points at the requested
+# Omni endpoint AND carries an identity. The downloaded omniconfig
+# from the dashboard's "Download omniconfig" flow lands as the
+# `default` context with both the URL and the identity baked in,
+# so we DO NOT create a separate `stawi` context — that would just
+# strand the user on a context that has the URL but no identity
+# (the failure mode this script existed to prevent).
+#
+# Selection rule:
+#   - If the current context already has URL == $OMNI_ENDPOINT and
+#     a non-empty siderov1 identity, leave it alone.
+#   - Else, scan all contexts in the omniconfig and switch to the
+#     first one that satisfies both.
+#   - Else, fall through to the auth-required block below which
+#     prints download-omniconfig instructions and exits.
+omniconfig_path="${HOME}/.talos/omni/config"
+if [[ -f "$omniconfig_path" ]]; then
+  # mikefarah/yq, not kislyuk/yq — variables come in via strenv()
+  # rather than jq's --arg. Filter contexts whose URL matches and
+  # which already carry a siderov1 identity (i.e. the dashboard's
+  # downloaded omniconfig contributed a usable auth block).
+  matching_ctx=$(URL="$OMNI_ENDPOINT" yq -r '
+    .contexts | to_entries[]
+    | select(.value.url == strenv(URL))
+    | select((.value.auth.siderov1.identity // "") != "")
+    | .key
+  ' "$omniconfig_path" | head -n1)
+  if [[ -n "$matching_ctx" ]]; then
+    current_ctx=$("${install_dir}/omnictl" config info 2>/dev/null \
+                   | awk -F': *' '/^Current context:/{print $2; exit}')
+    if [[ "$current_ctx" != "$matching_ctx" ]]; then
+      echo "[setup-kubectl] switching omnictl context to '$matching_ctx' (URL+identity match)"
+      "${install_dir}/omnictl" config context "$matching_ctx" >/dev/null
+    fi
+  fi
+fi
 
 # 5. Issue + merge OIDC kubeconfig. This script is operator-only —
 # service-account-backed kubeconfigs (used in CI / workflows) are
@@ -202,11 +226,17 @@ EOM
   exit 1
 fi
 echo "[setup-kubectl] omniconfig identity OK — issuing OIDC kubeconfig"
+# `--force-context-name` pins the kubeconfig context to a stable
+# friendly name (the cluster name itself). Without it omnictl uses
+# its `<cluster>-<cluster>` default which is awkward to type
+# (`kubectl --context stawi-stawi`) and inconsistent across
+# omnictl releases.
 "${install_dir}/omnictl" kubeconfig \
-  --cluster "$OMNI_CLUSTER" --merge=true --force
+  --cluster "$OMNI_CLUSTER" \
+  --force-context-name "$OMNI_CLUSTER" \
+  --merge=true --force
 
-# 6. Verify connectivity. The context name from `omnictl kubeconfig`
-# is `<cluster>` for OIDC-issued configs.
+# 6. Verify connectivity.
 echo "[setup-kubectl] verifying connectivity (context=$OMNI_CLUSTER)"
 "${install_dir}/kubectl" --context "$OMNI_CLUSTER" get nodes -o wide
 
