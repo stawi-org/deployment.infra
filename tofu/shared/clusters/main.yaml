@@ -214,21 +214,85 @@ patches:
   # accept anyway, and the NDP tuning matches Linux defaults from the
   # OCI side). Avoids needing a per-machine ConfigPatch + Omni
   # selector machinery for what's strictly tuning.
-  - name: ipv6-tuning
+  - name: machine-tuning
     inline:
       machine:
         sysctls:
+          # File descriptors — chart sidecars + flannel + kube-proxy
+          # collectively open many fds.
+          fs.file-max: "2000000"
+          # Balanced backlogs for moderate ingress.
+          net.core.somaxconn: "262144"
+          net.core.netdev_max_backlog: "131072"
+          net.ipv4.tcp_max_syn_backlog: "131072"
+          # Socket buffers tuned to handle bulk transfers (image pulls,
+          # etcd snapshots, flannel VXLAN payloads).
+          net.core.rmem_default: "8388608"
+          net.core.wmem_default: "8388608"
+          net.core.rmem_max: "67108864"
+          net.core.wmem_max: "67108864"
+          net.ipv4.tcp_rmem: "4096 87380 67108864"
+          net.ipv4.tcp_wmem: "4096 65536 67108864"
+          # Conntrack — Service IP DNAT path.
+          net.netfilter.nf_conntrack_max: "1048576"
+          net.netfilter.nf_conntrack_tcp_timeout_established: "86400"
+          # TCP behaviour.
+          net.ipv4.tcp_fin_timeout: "15"
+          net.ipv4.tcp_tw_reuse: "0"
+          net.ipv4.tcp_slow_start_after_idle: "0"
+          # Keepalive (safe for both v4/v6).
+          net.ipv4.tcp_keepalive_time: "300"
+          net.ipv4.tcp_keepalive_intvl: "30"
+          net.ipv4.tcp_keepalive_probes: "5"
+          # IPv6 — fully enabled and tuned for dual-stack. The block
+          # below mirrors antinvestor/deployments common.yaml exactly.
+          net.bridge.bridge-nf-call-iptables: "1"
+          net.bridge.bridge-nf-call-ip6tables: "1"
           net.ipv6.conf.all.disable_ipv6: "0"
           net.ipv6.conf.default.disable_ipv6: "0"
           net.ipv6.conf.all.forwarding: "1"
           net.ipv6.conf.default.forwarding: "1"
           net.ipv6.conf.all.accept_ra: "2"
           net.ipv6.conf.default.accept_ra: "2"
+          # ICMPv6 ratelimit + DAD enabled for proper RFC4861 NDP.
+          net.ipv6.icmp.ratelimit: "1000"
+          net.ipv6.conf.all.accept_dad: "1"
+          net.ipv6.conf.default.accept_dad: "1"
+          # NDP cache tuning for Contabo's `fe80::1` link-local
+          # gateway — Ansible's roles found these necessary or the v6
+          # default route flapped under load.
           net.ipv6.neigh.default.base_reachable_time_ms: "120000"
           net.ipv6.neigh.default.gc_stale_time: "240"
           net.ipv6.neigh.default.delay_first_probe_time: "10"
           net.ipv6.neigh.default.mcast_solicit: "6"
-          net.bridge.bridge-nf-call-ip6tables: "1"
+  # DNS resolvers. Mirrors antinvestor/deployments resolvers.yaml —
+  # IPv6-first list to align with the IPv6-first podSubnet/serviceSubnet
+  # ordering. Talos v1.13 requires each entry to be a `{address: ...}`
+  # object (bare strings were dropped in v1.13).
+  - name: dns
+    inline:
+      apiVersion: v1alpha1
+      kind: ResolverConfig
+      nameservers:
+        - address: "2a02:c207::1:53"        # Contabo IPv6
+        - address: "2606:4700:4700::1111"   # Cloudflare IPv6
+        - address: "2606:4700:4700::1001"   # Cloudflare IPv6
+        - address: "2001:4860:4860::8888"   # Google IPv6
+        - address: "213.136.95.10"          # Contabo IPv4
+        - address: "213.136.95.11"          # Contabo IPv4
+        - address: "1.1.1.1"                # Cloudflare IPv4 fallback
+        - address: "8.8.8.8"                # Google IPv4 fallback
+  # NTP servers — mirrors antinvestor/deployments timesync.yaml. Talos's
+  # default is time.cloudflare.com only; widening to pool.ntp.org adds
+  # redundancy.
+  - name: time
+    inline:
+      apiVersion: v1alpha1
+      kind: TimeSyncConfig
+      ntp:
+        servers:
+          - pool.ntp.org
+          - time.cloudflare.com
   # KubeSpan: Talos's full-mesh WireGuard between every cluster
   # member. Each node runs an outbound-initiated WG tunnel to every
   # other node; cross-provider traffic punches through Contabo and
