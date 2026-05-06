@@ -64,6 +64,16 @@ features:
   # access. With the cluster behind CF-proxied DNS, this is the only
   # supported access mode.
   enableWorkloadProxy: true
+  # Use Omni's embedded discovery service for KubeSpan peer
+  # discovery (rather than Sidero's public discovery.talos.dev). The
+  # cluster is behind CF-proxied DNS and outbound connections from
+  # OCI VCNs to public discovery often hit egress filtering on cold
+  # boot — keeping discovery endpoint inside Omni avoids that.
+  # KubeSpan (machine.network.kubespan.enabled below in patches:)
+  # needs cluster.discovery.enabled=true AND a working discovery
+  # registry; the embedded one couples those settings directly to
+  # the Omni-managed cluster identity.
+  useEmbeddedDiscoveryService: true
   # Cluster-etcd backup cadence. Omni takes a point-in-time-consistent
   # raft snapshot every `interval` and uploads it via the destination
   # configured by the global EtcdBackupS3Configs resource (see
@@ -219,22 +229,60 @@ patches:
           net.ipv6.neigh.default.delay_first_probe_time: "10"
           net.ipv6.neigh.default.mcast_solicit: "6"
           net.bridge.bridge-nf-call-ip6tables: "1"
-# NOTE: KubeSpan + Flux extraManifests patches were removed
-# 2026-05-01 after a 1+ hour cluster bootstrap stall — Talos apid
-# wasn't responding on any of the 5 nodes. Both will be re-introduced
-# as separate, independently-tested patches once the base cluster is
-# proven to bootstrap with the current Talos / Omni versions:
-#   1. KubeSpan needs `cluster.discovery.enabled: true` AND likely
-#      additional Talos config that Omni's `useEmbeddedDiscovery
-#      Service` feature might not auto-set. Reproduce on a small
-#      test cluster first.
-#   2. Flux extraManifests fetches https://github.com/fluxcd/flux2/
-#      releases/download/v2.4.0/install.yaml at bootstrap. URL is
-#      reachable but a 656KB manifest in cluster.extraManifests has
-#      caused timing issues on slow OCI ARM nodes.
-# For now we cross-route etcd via the SideroLink WG ULA (proven to
-# work in the 2026-04-30 cluster), trading optimal architecture for
-# bootstrap reliability.
+  # KubeSpan: Talos's full-mesh WireGuard between every cluster
+  # member. Each node runs an outbound-initiated WG tunnel to every
+  # other node; cross-provider traffic punches through Contabo and
+  # OCI VCN firewalls because both ends are dialing OUT (provider
+  # security lists block inbound v6 service ports cross-provider but
+  # not inbound replies to outbound flows).
+  #
+  # Why we need this: kube-apiserver → OCI worker kubelet:10250 over
+  # public v6 was timing out, and pods on OCI couldn't reach the
+  # kubernetes Service ClusterIP fd00:10:96::1 (DNATs to the CP's
+  # public v6) — both because cross-provider v6 isn't permitted in
+  # the OCI VCN's default security lists. KubeSpan transparently
+  # handles ALL inter-node traffic via its WG mesh, so flannel
+  # VXLAN, kube-proxy DNAT, and apiserver→kubelet all just work
+  # regardless of the underlying provider firewalls.
+  #
+  # Discovery: KubeSpan needs nodes to find each other's WG public
+  # keys + endpoint candidates. cluster.discovery.enabled=true
+  # turns that on; the registry choice lives at the discovery
+  # registries level. We enable the SERVICE registry (Omni's
+  # embedded discovery via features.useEmbeddedDiscoveryService=
+  # true above) and disable the KUBERNETES registry — the latter
+  # races bootstrap (k8s api isn't up yet during initial peering),
+  # while service is the canonical Talos-native registry.
+  #
+  # Apply path: this is a per-machine config patch. After the
+  # sync-cluster-template push, each node's machined picks up the
+  # new config and the KubeSpan service comes up without a reboot
+  # (verified by `talosctl get kubespanpeerstatuses` which lists
+  # connected peers when the mesh is healthy). A reboot is only
+  # needed if a node's machineconfig was previously rejected and
+  # held in a half-applied state — recover via contabo-reboot-vps
+  # or `omnictl machine reboot`.
+  - name: kubespan
+    inline:
+      machine:
+        network:
+          kubespan:
+            enabled: true
+      cluster:
+        discovery:
+          enabled: true
+          registries:
+            kubernetes:
+              disabled: true
+            service: {}
+# NOTE: Flux extraManifests was removed 2026-05-01 (1+ hour cluster
+# bootstrap stall — a 656KB manifest in cluster.extraManifests caused
+# timing issues on slow OCI ARM nodes). Flux is now installed via
+# the standalone deploy-flux.yml workflow against the running
+# cluster instead — same outcome, no bootstrap-time fetch on every
+# node. KubeSpan, the OTHER previously-deferred patch, is enabled
+# above (re-introduced 2026-05-06 after the IPv6-first dualstack
+# work made cross-provider routing the next blocker).
 
 ---
 # Control-plane machine set.
