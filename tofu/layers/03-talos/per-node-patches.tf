@@ -46,6 +46,17 @@ locals {
           ipv6             = try(v.ipv6, "")
           ipv6_cidr        = try(v.ipv6_cidr, 0)
           ipv6_gateway     = try(v.ipv6_gateway, "")
+          # Network form for kubelet validSubnets — first 4 hextets +
+          # `::/64`. Mirrors antinvestor/deployments' working Jinja
+          # equivalent: `host_v6.split(':')[:4] | join(':') + '::/64'`.
+          # Works for both compressed (`2a02:c207:2272:7782::1`) and
+          # expanded (`2a02:c207:2272:7782:0000:0000:0000:0001`) input
+          # since the first 4 hextets are identical in either form.
+          ipv6_network = try(v.ipv6, "") == "" ? "" : format(
+            "%s::/%d",
+            join(":", slice(split(":", v.ipv6), 0, 4)),
+            try(v.ipv6_cidr, 64),
+          )
         },
         ) : templatefile(
         "${path.module}/../../shared/patches/node-oracle.tftpl",

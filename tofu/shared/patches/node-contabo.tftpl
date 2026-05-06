@@ -65,37 +65,36 @@ machine:
 %{ endfor ~}
   kubelet:
     nodeIP:
-      # IPv6-first per-node validSubnets. The address slash mask is
-      # the host's /64 prefix as Contabo assigns it; the IPv4 entry
-      # is the host's /32 to scope kubelet to exactly the address
-      # carried in the LinkConfig below. Excluding the SideroLink
-      # ULA matches the cluster-level kubelet patch — kept here too
-      # to harden the per-node ordering against future cluster-level
-      # patch reordering.
+      # IPv6-first per-node validSubnets. The v6 entry is the
+      # NETWORK prefix (`<prefix>::/64`), NOT the host address with
+      # /64 — that's the form the antinvestor/deployments Ansible
+      # role uses (`host_v6.split(':')[:4] | join(':') + '::/64'`)
+      # and the form Talos's kubelet nodeIP elector expects when
+      # filtering candidate addresses by subnet membership. The v4
+      # entry is the host's /32. Excluding the SideroLink ULA
+      # matches the cluster-level kubelet patch.
       validSubnets:
-        - "${ipv6}/${ipv6_cidr}"
+        - "${ipv6_network}"
         - "${ipv4}/32"
         - "!fdae:41e4:649b:9303::/64"
 
 ---
-# Quoted address strings so YAML 1.2 unambiguously parses them as
-# strings — the v6 expanded form Contabo's API returns
-# (`2a02:c207:.../...`) survived prior unquoted renders only by
-# luck. Talos's machineconfig parser dropped the v6 silently when
-# the address was unquoted in earlier iterations; quoting forces
-# string type and the v6 lands as expected.
+# LinkConfig — exactly mirrors the antinvestor/deployments Ansible
+# role's controlplane-config.yaml.j2 / worker-config.yaml.j2 (which
+# is the known-good baseline for Contabo IPv6 dual-stack). Plain
+# YAML, no quoting, no `up:`, no `family:` on routes — Talos's
+# release-1.13 machineconfig parser handles these correctly when
+# they're omitted. Adding any of those keys has produced subtly
+# wrong AddressSpec emission in earlier iterations of this template.
 apiVersion: v1alpha1
 kind: LinkConfig
 name: ens18
-up: true
 addresses:
-  - address: "${ipv4}/${ipv4_cidr}"
-  - address: "${ipv6}/${ipv6_cidr}"
+  - address: ${ipv4}/${ipv4_cidr}
+  - address: ${ipv6}/${ipv6_cidr}
 routes:
-  - gateway: "${ipv4_gateway}"
-    family: inet4
-  - gateway: "fe80::1"
-    family: inet6
+  - gateway: ${ipv4_gateway}
+  - gateway: fe80::1
 
 ---
 apiVersion: v1alpha1
