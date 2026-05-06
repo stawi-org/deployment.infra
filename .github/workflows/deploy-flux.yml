@@ -174,14 +174,18 @@ jobs:
           values=$(mktemp --suffix=.yaml)
           trap 'rm -f "$values"' EXIT
           cat > "$values" <<'EOF'
-          # No nodeSelector: every node now has working CNI. The
-          # historical OCI-only pin existed because Contabo nodes
-          # had no IPv6, breaking flannel's dual-stack init — fixed
-          # 2026-05-06 by the per-VPS LinkConfig with static v4+v6
-          # in tofu/shared/patches/node-contabo.tftpl. Keeping the
-          # pin was actively blocking the rollout because the
-          # node.antinvestor.io/provider K8s-Node label hadn't yet
-          # propagated to every node.
+          # Pin the flux-operator (and the Flux controllers it spawns
+          # via FluxInstance) to the control-plane node. Splits Flux
+          # infrastructure from application workloads cleanly: the CP
+          # carries the K8s built-in taint
+          # node-role.kubernetes.io/control-plane:NoSchedule which
+          # repels application pods that don't explicitly tolerate it,
+          # so by default they only land on workers. Flux pods get
+          # both the matching toleration AND a nodeSelector targeting
+          # the CP's built-in control-plane label so they DO schedule
+          # there exclusively.
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: ""
           tolerations:
             - key: node-role.kubernetes.io/control-plane
               operator: Exists
