@@ -68,6 +68,22 @@ jobs:
           echo "::group::ClusterBootstrapStatus (etcd bootstrap progress)"
           omnictl get clusterbootstrapstatus -o yaml || true
           echo "::endgroup::"
+          echo "::group::KubernetesUpgradeStatus / KubernetesStatus / LBHostStatus"
+          omnictl get kubernetesupgradestatus -o yaml 2>&1 | head -30 || true
+          omnictl get loadbalancerconfig -o yaml 2>&1 | head -30 || true
+          omnictl get controlplanestatus -o yaml 2>&1 | head -50 || true
+          echo "::endgroup::"
+          echo "::group::Talos read kube-apiserver static pod manifest"
+          if [[ -f /tmp/talosconfig ]]; then
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              read /etc/kubernetes/manifests/kube-apiserver.yaml 2>&1 | head -80 || true
+            echo "--- kube-apiserver pod logs (last 50):"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              logs kube-apiserver 2>&1 | tail -50 || true
+          fi
+          echo "::endgroup::"
           echo "::group::EtcdAuditResult / Talos service health"
           omnictl get etcdauditresult -o yaml || true
           echo "::endgroup::"
