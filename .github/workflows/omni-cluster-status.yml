@@ -65,6 +65,31 @@ jobs:
           echo "::group::ClusterStatus (top-level reconcile conditions)"
           omnictl get clusterstatus -o yaml || true
           echo "::endgroup::"
+          echo "::group::ClusterBootstrapStatus (etcd bootstrap progress)"
+          omnictl get clusterbootstrapstatus -o yaml || true
+          echo "::endgroup::"
+          echo "::group::EtcdAuditResult / Talos service health"
+          omnictl get etcdauditresult -o yaml || true
+          echo "::endgroup::"
+          echo "::group::Talos service status on CP via omnictl support bundle"
+          # Direct talosctl-style query through Omni: list services on CP machine
+          # Talosctl backed by Omni's grpc proxy uses --nodes <machine-id>
+          omnictl talosconfig --cluster stawi --force /tmp/talosconfig 2>/dev/null || \
+            echo "talosconfig fetch failed (cluster may not be Ready yet)"
+          if [[ -f /tmp/talosconfig ]]; then
+            curl -fsSL -o /usr/local/bin/talosctl \
+              "https://github.com/siderolabs/talos/releases/download/v1.13.0/talosctl-linux-amd64" 2>&1 | tail -2
+            chmod +x /usr/local/bin/talosctl 2>/dev/null
+            echo "--- services on CP (61475972):"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              services 2>&1 | head -40 || true
+            echo "--- etcd member list:"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              etcd members 2>&1 | head -10 || true
+          fi
+          echo "::endgroup::"
           echo "::group::kubectl get nodes (via omnictl-issued kubeconfig)"
           # Correct syntax: `omnictl kubeconfig` is a top-level RPC
           # subcommand (NOT `omnictl --cluster <name> cluster
