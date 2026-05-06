@@ -67,4 +67,16 @@ age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
 #                   makes every Contabo VPS boot fresh into the
 #                   new config from first boot. Paired with k8s
 #                   v1.36.0 bump in shared/versions.auto.tfvars.json.
-force_reinstall_generation = 16
+#  17 — 2026-05-06: vmi2727782 (CP) didn't boot after gen=16
+#                   reinstall — Contabo API returned 200 OK but the
+#                   VPS stayed unreachable on v4 / SideroLink and
+#                   Omni held its old MachineID at BEFORE_DESTROY.
+#                   Two contabo-reboot-vps cycles didn't recover.
+#                   Bumping forces a fresh reinstall PUT against the
+#                   Contabo image API; the in-place reinstall has
+#                   sometimes raced its own tasks under the hood,
+#                   and a follow-up bump has cleared similar stuck
+#                   states before. vmi2727783 booted fine on gen=16,
+#                   so the bump is per-VPS-redundant for it (PUT is
+#                   idempotent on the image API).
+force_reinstall_generation = 17
