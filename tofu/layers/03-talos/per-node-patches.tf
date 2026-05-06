@@ -43,15 +43,24 @@ locals {
           ipv4             = try(v.ipv4, "")
           ipv4_cidr        = try(v.ipv4_cidr, 0)
           ipv4_gateway     = try(v.ipv4_gateway, "")
-          ipv6             = try(v.ipv6, "")
-          ipv6_cidr        = try(v.ipv6_cidr, 0)
-          ipv6_gateway     = try(v.ipv6_gateway, "")
+          # Canonicalize Contabo's expanded IPv6 form to the
+          # compressed RFC 5952 representation. Contabo's API returns
+          # `2a02:c207:2272:7782:0000:0000:0000:0001` which Talos's
+          # multi-doc machineconfig parser silently drops as an
+          # AddressSpec (v4 from the same doc IS emitted; v6 is not).
+          # cidrhost(prefix, 1) round-trips through Go's netip package,
+          # which always emits the compressed `2a02:c207:2272:7782::1`
+          # form — exactly what the Ansible inventory feeds and what
+          # the Talos parser handles cleanly.
+          ipv6 = try(v.ipv6, "") == "" ? "" : cidrhost(
+            format("%s/%d", v.ipv6, try(v.ipv6_cidr, 64)),
+            1,
+          )
+          ipv6_cidr    = try(v.ipv6_cidr, 0)
+          ipv6_gateway = try(v.ipv6_gateway, "")
           # Network form for kubelet validSubnets — first 4 hextets +
           # `::/64`. Mirrors antinvestor/deployments' working Jinja
           # equivalent: `host_v6.split(':')[:4] | join(':') + '::/64'`.
-          # Works for both compressed (`2a02:c207:2272:7782::1`) and
-          # expanded (`2a02:c207:2272:7782:0000:0000:0000:0001`) input
-          # since the first 4 hextets are identical in either form.
           ipv6_network = try(v.ipv6, "") == "" ? "" : format(
             "%s::/%d",
             join(":", slice(split(":", v.ipv6), 0, 4)),
