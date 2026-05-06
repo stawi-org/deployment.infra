@@ -43,4 +43,16 @@ force_image_generation = 12
 #                   and never re-registered. Forcing fleet reinstall
 #                   pulls the fresh-token image baked by the
 #                   regenerate-talos-images PR #176 merge.
-force_reinstall_generation = 13
+#  14 — 2026-05-07: storage volume layout (EPHEMERAL maxSize=20GB +
+#                   topolvm-data UserVolumeConfig grow=true) was
+#                   wired into cluster.yaml on 2026-05-06 but Talos
+#                   only partitions the disk at INSTALL time. Old
+#                   nodes had EPHEMERAL consume the whole disk
+#                   (105GB on a 107GB disk; verified via
+#                   talosctl get volumestatuses), leaving zero free
+#                   space for topolvm-data. Forcing OCI VMs to
+#                   destroy+create gets them onto fresh disks
+#                   partitioned per the new VolumeConfig. Pairs
+#                   with 01-contabo-infra gen=19 PUT-reinstall in
+#                   the same apply.
+force_reinstall_generation = 14
