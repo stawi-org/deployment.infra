@@ -125,28 +125,84 @@ jobs:
             omnictl delete machine "$id" || echo "::warning::failed to delete $id (may already be gone)"
           done
 
-      # Bootstrap-bind unbound machines by UUID. When machines first
-      # register via SideroLink, they have no hostname/IPv4 reported,
-      # so the regular hostname/IPv4-based label sync (layer 03)
-      # can't bind them to MachineClass selectors. Without role
-      # labels, machines stay in "Available" maintenance, never get
-      # cluster config, never report network state — circular dep.
+      # Bootstrap-bind unbound machines by reading the R2 inventory.
       #
-      # This step labels every UNBOUND machine by UUID: most-
-      # recently-created → role=controlplane (likely the new OCI
-      # bwire CP); all others → role=worker. Once labels match
-      # MachineClass selectors, Omni binds machines to the cluster,
-      # pushes config, apid binds, machine reports network state,
-      # and the layer-03 hostname/IPv4-based reconciler can take
-      # over for accurate per-node labelling.
-      - name: Bootstrap-bind unbound machines by UUID
+      # Why this exists: when a machine first registers via SideroLink,
+      # layer-03's `sync-machine-labels.sh` reconciler hasn't run yet
+      # (it runs on tofu-apply). Without a role label the machine
+      # doesn't match any MachineClass selector, doesn't bind to the
+      # cluster, doesn't get config — and never reports its hostname
+      # to Omni so the reconciler couldn't match it anyway. Circular.
+      #
+      # Strategy: read the per-account inventory files at
+      #   s3://cluster-tofu-state/production/<provider>/<account>/nodes.yaml
+      # which are written by every prior tofu-apply. Each entry has
+      # both the operator-declared `role` AND the observed
+      # `provider_data.{ipv4, ipv6, contabo_instance_id}`. We build
+      # a (hostname-or-ipv4) → role map, then look up each unbound
+      # machine's MachineStatus.spec.network.{hostname,addresses} in
+      # the map and apply the right label.
+      #
+      # If a machine can't be resolved (fresh registration whose
+      # IPv4 isn't yet observed in inventory, or a name we don't
+      # know), fall back to role=worker — safer default than
+      # mis-labelling as controlplane and conflicting with the real
+      # CP. The layer-03 reconciler will correct the label on the
+      # next tofu-apply once the machine has phoned home.
+      - name: Bootstrap-bind unbound machines by inventory
         if: env.DRY_RUN != 'true'
+        env:
+          AWS_ACCESS_KEY_ID:        ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY:    ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
+          R2_ACCOUNT_ID:            ${{ secrets.R2_ACCOUNT_ID }}
         run: |
           set -euo pipefail
           tmp=$(mktemp -d)
           trap 'rm -rf "$tmp"' EXIT
+
+          # Pull every nodes.yaml under production/<provider>/<account>/.
+          # Cheaper than listing — we know the path shape from
+          # tofu/modules/node-state/main.tf.
+          R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          aws s3 sync \
+            --endpoint-url "$R2_ENDPOINT" \
+            --region us-east-1 \
+            --exclude "*" \
+            --include "*/nodes.yaml" \
+            --no-progress \
+            "s3://cluster-tofu-state/production/" "$tmp/inventory/" >/dev/null
+
+          # Build a unified map {ipv4|hostname → {name, role}}.
+          # `hostname` matches OCI's auto-set hostname (Talos's OCI
+          # platform driver); `ipv4` matches Contabo's, since Talos's
+          # Contabo bare-metal config doesn't get a friendly hostname
+          # until our HostnameConfig patch lands.
+          map_file="$tmp/lookup.json"
+          : > "$map_file.work"
+          while IFS= read -r f; do
+            yq -o=json . "$f" \
+              | jq -r '
+                  .nodes // {} | to_entries[] |
+                  . as $entry |
+                  ($entry.value.provider_data.ipv4 // "") as $ipv4 |
+                  ($entry.value.provider_data.hostname // $entry.key) as $host |
+                  {
+                    name: $entry.key,
+                    role: ($entry.value.role // "worker"),
+                    ipv4: $ipv4,
+                    host: $host
+                  }
+                ' \
+              >> "$map_file.work"
+          done < <(find "$tmp/inventory" -name nodes.yaml)
+          # Squash to a JSON array.
+          jq -s '.' "$map_file.work" > "$map_file"
+          echo "::notice::built inventory lookup with $(jq 'length' "$map_file") node(s)"
+
+          # Fetch unbound machinestatuses.
           all=$(omnictl get machinestatus -o json 2>/dev/null \
-            | jq -cs '[ .[] | select(.spec.cluster == "" or .spec.cluster == null) | {id: .metadata.id, created: .metadata.created} ]' \
+            | jq -cs '[ .[] | select(.spec.cluster == "" or .spec.cluster == null) ]' \
             || echo '[]')
           count=$(jq -r 'length' <<<"$all")
           if [[ "$count" -eq 0 ]]; then
@@ -154,12 +210,10 @@ jobs:
             exit 0
           fi
           echo "::notice::Found $count unbound machine(s):"
-          jq -r '.[] | "  id=\(.id) created=\(.created)"' <<<"$all"
-          sorted=$(jq -c 'sort_by(.created) | reverse' <<<"$all")
-          cp_id=$(jq -r '.[0].id' <<<"$sorted")
-          worker_ids=$(jq -r '.[1:] | .[].id' <<<"$sorted")
+          jq -r '.[] | "  id=\(.metadata.id) host=\(.spec.network.hostname // "?") addrs=\(.spec.network.addresses // [] | join(","))"' <<<"$all"
+
           apply_label() {
-            local id="$1" role="$2"
+            local id="$1" role="$2" reason="$3"
             cat > "$tmp/${id}.yaml" <<MANIFEST
           metadata:
             namespace: default
@@ -169,13 +223,41 @@ jobs:
               node.antinvestor.io/role: ${role}
           spec: {}
           MANIFEST
-            echo "::notice::labelling machine ${id} as role=${role}"
+            echo "::notice::labelling machine ${id} as role=${role} (${reason})"
             omnictl apply -f "$tmp/${id}.yaml"
           }
-          apply_label "$cp_id" controlplane
-          for w in $worker_ids; do
-            apply_label "$w" worker
-          done
+
+          # For each unbound machine, look up its hostname / any of
+          # its CIDR-stripped addresses in the inventory map. If
+          # found, apply role from inventory; otherwise default
+          # to role=worker (safe — never mis-labels as cp).
+          while IFS= read -r m; do
+            mid=$(jq -r '.metadata.id' <<<"$m")
+            mhost=$(jq -r '.spec.network.hostname // ""' <<<"$m")
+            maddrs=$(jq -r '.spec.network.addresses // [] | map(split("/")[0]) | join(" ")' <<<"$m")
+
+            # Try hostname match first; then any addr match.
+            role=$(jq -r --arg h "$mhost" --arg addrs "$maddrs" '
+              ($addrs | split(" ")) as $alist |
+              [.[] | select(
+                (.host == $h and .host != "")
+                or ([.ipv4] | inside($alist))
+              )] | (.[0].role // "")
+            ' "$map_file")
+            inv_name=$(jq -r --arg h "$mhost" --arg addrs "$maddrs" '
+              ($addrs | split(" ")) as $alist |
+              [.[] | select(
+                (.host == $h and .host != "")
+                or ([.ipv4] | inside($alist))
+              )] | (.[0].name // "")
+            ' "$map_file")
+
+            if [[ -n "$role" ]]; then
+              apply_label "$mid" "$role" "matched inventory: ${inv_name}"
+            else
+              apply_label "$mid" "worker" "no inventory match (host=${mhost:-?} addrs=${maddrs:-?}) — defaulting to worker"
+            fi
+          done < <(jq -c '.[]' <<<"$all")
 
       # Render + apply the EtcdBackupS3Configs resource. Global Omni
       # resource (same kind as MachineClass) — not a Cluster template
