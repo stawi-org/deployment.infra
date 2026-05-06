@@ -125,10 +125,22 @@ jobs:
             talosctl --talosconfig /tmp/talosconfig \
               --nodes 61475972-831c-420c-a80b-7636843e2dfb \
               get linkconfig 2>&1 | head -20 || true
-                        echo "--- get addressstatus (kernel-applied):"
+            echo "--- get addressstatus (kernel-applied) CP vmi2727782:"
             talosctl --talosconfig /tmp/talosconfig \
               --nodes 61475972-831c-420c-a80b-7636843e2dfb \
               get addressstatus 2>&1 | head -20 || true
+            echo "--- get addressstatus on worker vmi2727783 (sanity check):"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 417cdb6b-e9e1-4c12-be17-8abf2b265b62 \
+              get addressstatus 2>&1 | head -20 || true
+            echo "--- get configstatus on CP (look for lastConfigError):"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              get configstatus -o yaml 2>&1 | head -20 || true
+            echo "--- machineconfig effective on CP (network section):"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              get machineconfig -o yaml 2>&1 | grep -B1 -A20 "LinkConfig\|^kind: LinkConfig\|^name: wan" | head -50 || true
             echo "--- get linkconfigspec / sysctlspec:"
             talosctl --talosconfig /tmp/talosconfig \
               --nodes 61475972-831c-420c-a80b-7636843e2dfb \
