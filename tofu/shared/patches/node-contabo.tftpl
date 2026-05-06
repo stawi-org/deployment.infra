@@ -78,15 +78,24 @@ machine:
         - "!fdae:41e4:649b:9303::/64"
 
 ---
+# Quoted address strings so YAML 1.2 unambiguously parses them as
+# strings — the v6 expanded form Contabo's API returns
+# (`2a02:c207:.../...`) survived prior unquoted renders only by
+# luck. Talos's machineconfig parser dropped the v6 silently when
+# the address was unquoted in earlier iterations; quoting forces
+# string type and the v6 lands as expected.
 apiVersion: v1alpha1
 kind: LinkConfig
 name: ens18
+up: true
 addresses:
-  - address: ${ipv4}/${ipv4_cidr}
-  - address: ${ipv6}/${ipv6_cidr}
+  - address: "${ipv4}/${ipv4_cidr}"
+  - address: "${ipv6}/${ipv6_cidr}"
 routes:
-  - gateway: ${ipv4_gateway}
-  - gateway: fe80::1
+  - gateway: "${ipv4_gateway}"
+    family: inet4
+  - gateway: "fe80::1"
+    family: inet6
 
 ---
 apiVersion: v1alpha1
