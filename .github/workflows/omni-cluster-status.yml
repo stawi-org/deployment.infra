@@ -90,8 +90,11 @@ jobs:
           echo "::group::Talos service status on CP via omnictl support bundle"
           # Direct talosctl-style query through Omni: list services on CP machine
           # Talosctl backed by Omni's grpc proxy uses --nodes <machine-id>
-          omnictl talosconfig --cluster stawi --force /tmp/talosconfig 2>/dev/null || \
-            echo "talosconfig fetch failed (cluster may not be Ready yet)"
+          # --admin requests an os:admin-roles Talos config; SA must
+          # have ClusterAdmin role on the cluster. Without --admin
+          # the issued cert only allows os:reader (no logs/read/exec).
+          (omnictl talosconfig --admin --cluster stawi --force /tmp/talosconfig 2>&1 || \
+           omnictl talosconfig --cluster stawi --force /tmp/talosconfig 2>&1) | head -5
           if [[ -f /tmp/talosconfig ]]; then
             curl -fsSL -o /usr/local/bin/talosctl \
               "https://github.com/siderolabs/talos/releases/download/v1.13.0/talosctl-linux-amd64" 2>&1 | tail -2
