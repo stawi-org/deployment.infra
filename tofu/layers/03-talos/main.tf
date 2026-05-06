@@ -99,15 +99,46 @@ locals {
 
 
 locals {
+  # Read each Contabo account's R2 inventory (already synced to
+  # /tmp/inventory/ pre-plan by the workflow) and project the
+  # operator-declarative + tofu-observed `provider_data` per node.
+  # Used as a FALLBACK for the upstream tfstate output: tfstate is
+  # the authoritative source under normal conditions, but if it was
+  # written before the ipv4_cidr/ipv4_gateway/ipv6/ipv6_cidr/
+  # ipv6_gateway fields existed (pre-2026-05-06 schema), or the
+  # operator hand-edited inventory via patch-inventory-node ahead of
+  # the next tofu-apply, the fallback keeps the per-node patch
+  # renderer from failing the precondition. The 01-contabo-infra
+  # layer's nodes-writer.tf is what writes provider_data on every
+  # apply, so steady-state both sources agree.
+  contabo_inventory_provider_data = merge([
+    for acct in yamldecode(file("${path.module}/../../shared/accounts.yaml")).contabo : try(
+      {
+        for node_name, node_decl in try(
+          yamldecode(file("${var.local_inventory_dir}/contabo/${acct}/nodes.yaml")).nodes,
+          {},
+        ) : node_name => try(node_decl.provider_data, {})
+      },
+      {},
+    )
+  ]...)
+
   # Upstream nodes come from each infra layer's tfstate.outputs.nodes —
   # typed in-memory crossing, no R2 state.yaml indirection. Each layer's
   # output already contains provider, role, ipv4, ipv6, image_apply_generation
   # and derived labels/annotations with the cross-layer contract shape.
-  _raw_nodes = merge(
-    local.contabo_outputs_nodes,
-    local.oracle_outputs_nodes,
-    local.onprem_outputs_nodes,
-  )
+  # Per-node, fall back to R2 inventory provider_data so a stale
+  # tfstate doesn't break the per-node-patch render.
+  _raw_nodes = {
+    for k, v in merge(
+      local.contabo_outputs_nodes,
+      local.oracle_outputs_nodes,
+      local.onprem_outputs_nodes,
+      ) : k => merge(
+      try(local.contabo_inventory_provider_data[k], {}),
+      v,
+    )
+  }
 
   # Each layer's tfstate output already carries derived_labels,
   # derived_annotations, image_apply_generation, and

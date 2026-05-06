@@ -492,6 +492,64 @@ jobs:
             fi
           done
 
+      # Block on the cluster reaching Ready so the workflow doesn't
+      # report success while the cluster is still half-converged.
+      # Polls ClusterStatus every 15s; succeeds the moment all four
+      # readiness flags flip true; fails the workflow after the cap
+      # so an operator-triggered sync that wedges the cluster turns
+      # the GitHub Actions check red instead of green-with-issues.
+      #
+      # ClusterStatus.spec readiness fields (siderolabs/omni client/
+      # pkg/omni/resources/omni/cluster_status.go):
+      #   .ready                       — top-level convergence.
+      #   .kubernetesapiready          — kube-apiserver reachable
+      #                                  via the cluster LB.
+      #   .controlplaneready           — every CP MachineSetMember
+      #                                  shows Ready.
+      #   .machines.{healthy,total}    — Omni's per-machine health
+      #                                  rollup; healthy=total = all
+      #                                  Talos services Running OK +
+      #                                  K8s NodeReady.
+      #
+      # 8-min cap: a 5-machine cluster going from RUNNING→Ready
+      # after a force-clear takes 4-6 min in steady state (etcd
+      # bootstrap + kube-apiserver static pod start + flannel CNI
+      # ready + node registration). 8 min absorbs slow Contabo VPS
+      # boots without burying real failures. Bump if your topology
+      # genuinely needs longer.
+      - name: Wait for cluster Ready
+        if: env.DRY_RUN != 'true'
+        timeout-minutes: 9
+        run: |
+          set -uo pipefail
+          deadline=$(( $(date +%s) + 8 * 60 ))
+          attempt=0
+          while (( $(date +%s) < deadline )); do
+            attempt=$((attempt + 1))
+            status_yaml=$(omnictl get clusterstatus stawi -o yaml 2>/dev/null || true)
+            if [[ -z "$status_yaml" ]]; then
+              echo "[$(date +%T)] attempt $attempt: ClusterStatus not yet present, retrying"
+              sleep 15
+              continue
+            fi
+            ready=$(echo "$status_yaml" | yq -r '.spec.ready // false')
+            api=$(echo "$status_yaml" | yq -r '.spec.kubernetesapiready // false')
+            cp=$(echo "$status_yaml" | yq -r '.spec.controlplaneready // false')
+            healthy=$(echo "$status_yaml" | yq -r '.spec.machines.healthy // 0')
+            total=$(echo "$status_yaml" | yq -r '.spec.machines.total // 0')
+            echo "[$(date +%T)] attempt $attempt: ready=$ready apiready=$api cpready=$cp healthy=$healthy/$total"
+            if [[ "$ready" == "true" && "$api" == "true" && "$cp" == "true" \
+                && -n "$healthy" && -n "$total" && "$healthy" == "$total" \
+                && "$total" != "0" ]]; then
+              echo "::notice::Cluster Ready ($healthy/$total machines healthy)"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::Cluster did not reach Ready within 8 minutes."
+          echo "Last ClusterStatus snapshot:"
+          echo "$status_yaml" | head -40
+          exit 1
       # Surface the cluster's reconciliation status so the action
       # log shows whether the cluster has converged. Non-fatal —
       # sync is the source-of-truth, status is observability. The
