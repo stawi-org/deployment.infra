@@ -196,17 +196,9 @@ jobs:
                 ' \
               >> "$map_file.work"
           done < <(find "$tmp/inventory" -name nodes.yaml)
-          # Squash to a JSON array. The inner jq above emits one
-          # object per node entry, separated by newlines; jq -s on
-          # the whole file slurps them into a single array.
+          # Squash to a JSON array.
           jq -s '.' "$map_file.work" > "$map_file"
           echo "::notice::built inventory lookup with $(jq 'length' "$map_file") node(s)"
-          # Debug: dump the lookup so any malformed entry is
-          # visible in the workflow log without needing another
-          # iteration to add prints.
-          echo "::group::inventory lookup contents"
-          cat "$map_file"
-          echo "::endgroup::"
 
           # Fetch unbound machinestatuses.
           all=$(omnictl get machinestatus -o json 2>/dev/null \
@@ -250,6 +242,14 @@ jobs:
           # without provider_data; OCI account inventories never
           # populated by node-state) silently captured every
           # machine's match. Fix: explicit non-empty check + index.
+          #
+          # JQ-trap #2: inside `($alist | index(.ipv4))`, the `.` in
+          # the index argument refers to the *current input of the
+          # pipe* — i.e. `$alist`, not the parent select() context.
+          # That makes `.ipv4` resolve as `$alist.ipv4` and errors
+          # with "Cannot index array with string ipv4". Bind the
+          # entry's ipv4 into a let-variable before piping so the
+          # value survives the pipe boundary.
           while IFS= read -r m; do
             mid=$(jq -r '.metadata.id' <<<"$m")
             mhost=$(jq -r '.spec.network.hostname // ""' <<<"$m")
@@ -259,14 +259,14 @@ jobs:
               ($addrs | split(" ")) as $alist |
               [.[] | select(
                 (.host != "" and .host == $h)
-                or (.ipv4 != "" and ($alist | index(.ipv4)))
+                or (.ipv4 != "" and (.ipv4 as $i | $alist | index($i)))
               )] | (.[0].role // "")
             ' "$map_file")
             inv_name=$(jq -r --arg h "$mhost" --arg addrs "$maddrs" '
               ($addrs | split(" ")) as $alist |
               [.[] | select(
                 (.host != "" and .host == $h)
-                or (.ipv4 != "" and ($alist | index(.ipv4)))
+                or (.ipv4 != "" and (.ipv4 as $i | $alist | index($i)))
               )] | (.[0].name // "")
             ' "$map_file")
 
