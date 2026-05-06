@@ -231,24 +231,34 @@ jobs:
           # its CIDR-stripped addresses in the inventory map. If
           # found, apply role from inventory; otherwise default
           # to role=worker (safe — never mis-labels as cp).
+          #
+          # JQ-trap note: do NOT use `[.ipv4] | inside($alist)`. JQ's
+          # `inside` reduces to `$alist | contains([.ipv4])`, and
+          # `contains` for string array elements uses substring-
+          # contains semantics — so an empty `.ipv4` matches every
+          # machine ([""] is "contained" in any non-empty string).
+          # The earlier inventory entries that happened to lack
+          # `provider_data.ipv4` (Contabo nodes.yaml just-uploaded
+          # without provider_data; OCI account inventories never
+          # populated by node-state) silently captured every
+          # machine's match. Fix: explicit non-empty check + index.
           while IFS= read -r m; do
             mid=$(jq -r '.metadata.id' <<<"$m")
             mhost=$(jq -r '.spec.network.hostname // ""' <<<"$m")
             maddrs=$(jq -r '.spec.network.addresses // [] | map(split("/")[0]) | join(" ")' <<<"$m")
 
-            # Try hostname match first; then any addr match.
             role=$(jq -r --arg h "$mhost" --arg addrs "$maddrs" '
               ($addrs | split(" ")) as $alist |
               [.[] | select(
-                (.host == $h and .host != "")
-                or ([.ipv4] | inside($alist))
+                (.host != "" and .host == $h)
+                or (.ipv4 != "" and ($alist | index(.ipv4)))
               )] | (.[0].role // "")
             ' "$map_file")
             inv_name=$(jq -r --arg h "$mhost" --arg addrs "$maddrs" '
               ($addrs | split(" ")) as $alist |
               [.[] | select(
-                (.host == $h and .host != "")
-                or ([.ipv4] | inside($alist))
+                (.host != "" and .host == $h)
+                or (.ipv4 != "" and ($alist | index(.ipv4)))
               )] | (.[0].name // "")
             ' "$map_file")
 
