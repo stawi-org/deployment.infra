@@ -79,4 +79,11 @@ age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
 #                   states before. vmi2727783 booted fine on gen=16,
 #                   so the bump is per-VPS-redundant for it (PUT is
 #                   idempotent on the image API).
-force_reinstall_generation = 17
+#  18 — 2026-05-06: gen=17 hit Contabo IDP brute-force lockout on
+#                   vmi2727782's parallel ensure_image attempt
+#                   (HTTP 401 invalid_grant), even though
+#                   vmi2727783's parallel attempt succeeded.
+#                   KeyCloak's per-account lockout takes ~10 min
+#                   to clear; this bump retries after the cooldown
+#                   so the locked-out node finally re-reinstalls.
+force_reinstall_generation = 18
