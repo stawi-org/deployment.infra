@@ -479,18 +479,28 @@ jobs:
           ' "$state" | jq -r 'keys[]')
           live_set=$(printf '%s\n' "${live_nodes[@]+"${live_nodes[@]}"}" | sort -u)
           # List all stawi-<node>-link* patches in Omni and delete
-          # those whose <node> isn't in live_set. The trailing `*`
-          # matches both the legacy single-doc id (`stawi-<node>-link`)
-          # and the per-doc ids introduced after the multi-doc fix
-          # (`stawi-<node>-link-NN-<kind>`, e.g.
-          # `stawi-contabo-bwire-node-2-link-01-linkconfig`).
+          # those whose <node> isn't in live_set. The id shapes:
+          #   - legacy single-doc:  stawi-<node>-link
+          #   - per-doc (post 2026-05-06 multi-doc split):
+          #     stawi-<node>-link-NN-<kind>     (NN=01,02,...; kind
+          #                                      one of linkconfig,
+          #                                      hostnameconfig, etc.)
+          #
+          # Use sed regex extraction (NOT shell glob substitution).
+          # `${node%-link*}` shortest-match-from-end matches the
+          # SUBSTRING `-linkconfig` inside `-link-01-linkconfig`,
+          # leaving `<node>-link-01` as the misparsed name — which
+          # the live_set check fails, and the patch we just applied
+          # gets nuked. Caused contabo-bwire-node-2-link-01-linkconfig
+          # to keep getting deleted right after apply.
+          extract_node() {
+            sed -E 's/^stawi-(.+)-link(-[0-9]+-[a-z]+)?$/\1/' <<<"$1"
+          }
           for id in $(omnictl get configpatches -o jsonpath='{.metadata.id}' 2>/dev/null \
                        | tr ' ' '\n' \
-                       | grep -E '^stawi-.+-link($|-)' \
+                       | grep -E '^stawi-.+-link(-[0-9]+-[a-z]+)?$' \
                        || true); do
-            # Strip prefix and any -NN-<kind> suffix to recover node.
-            node="${id#stawi-}"
-            node="${node%-link*}"
+            node=$(extract_node "$id")
             if ! grep -qx "$node" <<<"$live_set"; then
               echo "::notice::orphan per-node patch detected: $id (node $node not in tofu state)"
               omnictl delete configpatches "$id" || echo "::warning::failed to delete $id"
