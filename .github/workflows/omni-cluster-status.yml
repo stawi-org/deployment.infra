@@ -98,9 +98,13 @@ jobs:
           # --cluster"). --merge=false writes the kubeconfig to the
           # path argument directly without merging into ~/.kube.
           KCFG=$(mktemp)
-          # --break-glass issues a direct cert-based kubeconfig that
-          # bypasses Omni's OIDC flow (no oidc-login plugin needed).
-          if omnictl kubeconfig --cluster stawi --break-glass --merge=false --force "$KCFG"; then
+          # Talosctl can issue a direct kube-admin kubeconfig from
+          # the CP machine — no Omni OIDC, no break-glass licensing.
+          # /tmp/talosconfig was set up in the previous step.
+          if [[ -f /tmp/talosconfig ]] && \
+             talosctl --talosconfig /tmp/talosconfig \
+               --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+               kubeconfig --force "$KCFG"; then
             curl -fsSL -o /usr/local/bin/kubectl \
               "https://dl.k8s.io/release/v1.35.2/bin/linux/amd64/kubectl"
             chmod +x /usr/local/bin/kubectl
@@ -113,7 +117,7 @@ jobs:
             kubectl --kubeconfig "$KCFG" --insecure-skip-tls-verify \
               get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\t"}{.status.conditions[?(@.type=="Ready")].reason}{"\n"}{end}' 2>&1 || true
           else
-            echo "kubeconfig fetch failed (--break-glass requires Omni Enterprise or Pro)"
+            echo "kubeconfig fetch via talosctl failed"
           fi
           rm -f "$KCFG"
           echo "::endgroup::"
