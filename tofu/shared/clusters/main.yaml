@@ -275,6 +275,56 @@ patches:
             kubernetes:
               disabled: true
             service: {}
+  # Volume layout — every cluster node carves three volumes from its
+  # system disk. Mirror of tofu/shared/patches/storage.yaml split into
+  # individual single-doc inline patches because Omni's cluster-template
+  # `inline:` field accepts ONE v1alpha1 document per patch.
+  #
+  #   1. EPHEMERAL — resizes the default Talos ephemeral volume to a
+  #      bounded 15-20GB so it doesn't crowd out the other volumes on
+  #      smaller VPSes.
+  #   2. swap-vol  — 3-4GiB swap volume on every node. Talos doesn't
+  #      use swap by default; this lets memory-pressured pods survive
+  #      brief spikes without OOM-killing.
+  #   3. topolvm-data — the rest of the disk as an xfs partition at
+  #      /var/mnt/topolvm-data. The TopoLVM vg-bootstrap DaemonSet
+  #      creates a loopback file inside it that becomes the LVM PV for
+  #      `vg-data`. WITHOUT this carved partition, vg-bootstrap stays
+  #      in ContainerCreating ("hostPath type check failed: /var/mnt/
+  #      topolvm-data is not a directory") and topolvm-lvmd crashloops
+  #      on "volume group not found".
+  - name: storage-ephemeral
+    inline:
+      apiVersion: v1alpha1
+      kind: VolumeConfig
+      name: EPHEMERAL
+      provisioning:
+        diskSelector:
+          match: system_disk
+        minSize: 15GB
+        maxSize: 20GB
+  - name: storage-swap
+    inline:
+      apiVersion: v1alpha1
+      kind: SwapVolumeConfig
+      name: swap-vol
+      provisioning:
+        diskSelector:
+          match: system_disk
+        minSize: 3GiB
+        maxSize: 4GiB
+  - name: storage-topolvm-data
+    inline:
+      apiVersion: v1alpha1
+      kind: UserVolumeConfig
+      name: topolvm-data
+      provisioning:
+        diskSelector:
+          match: system_disk
+        minSize: 30GB
+        grow: true
+      filesystem:
+        type: xfs
 # NOTE: Flux extraManifests was removed 2026-05-01 (1+ hour cluster
 # bootstrap stall — a 656KB manifest in cluster.extraManifests caused
 # timing issues on slow OCI ARM nodes). Flux is now installed via
