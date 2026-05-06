@@ -98,16 +98,22 @@ jobs:
           # --cluster"). --merge=false writes the kubeconfig to the
           # path argument directly without merging into ~/.kube.
           KCFG=$(mktemp)
-          if omnictl kubeconfig --cluster stawi --merge=false --force "$KCFG"; then
+          # --break-glass issues a direct cert-based kubeconfig that
+          # bypasses Omni's OIDC flow (no oidc-login plugin needed).
+          if omnictl kubeconfig --cluster stawi --break-glass --merge=false --force "$KCFG"; then
             curl -fsSL -o /usr/local/bin/kubectl \
               "https://dl.k8s.io/release/v1.35.2/bin/linux/amd64/kubectl"
             chmod +x /usr/local/bin/kubectl
             kubectl --kubeconfig "$KCFG" --insecure-skip-tls-verify \
-              get nodes -o wide || true
+              get nodes -o wide 2>&1 | head -20 || true
+            echo "--- kube-system pods:"
             kubectl --kubeconfig "$KCFG" --insecure-skip-tls-verify \
-              describe node | grep -A2 -E "^Name:|Conditions|Ready " | head -120 || true
+              get pods -n kube-system -o wide 2>&1 | head -30 || true
+            echo "--- node conditions (truncated):"
+            kubectl --kubeconfig "$KCFG" --insecure-skip-tls-verify \
+              get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="Ready")].status}{"\t"}{.status.conditions[?(@.type=="Ready")].reason}{"\n"}{end}' 2>&1 || true
           else
-            echo "kubeconfig fetch failed"
+            echo "kubeconfig fetch failed (--break-glass requires Omni Enterprise or Pro)"
           fi
           rm -f "$KCFG"
           echo "::endgroup::"
