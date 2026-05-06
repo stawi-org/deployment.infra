@@ -1,44 +1,58 @@
+---
 # tofu/shared/patches/node-contabo.tftpl
 #
-# Per-Contabo-node Talos patch — SINGLE-document YAML applied to a
+# Per-Contabo-node Talos patch — multi-document YAML applied to a
 # single Machine via Omni ConfigPatch. Rendered by layer 03 from
 # `tofu/modules/node-contabo` outputs; the Omni envelope wrap is
 # done at apply time by scripts/apply-per-node-patches.sh (machine
 # IDs aren't known at tofu plan time).
 #
-# WHY single-doc with everything under `machine:` (NOT multi-doc with
-# v1alpha1 LinkConfig / HostnameConfig kinds):
-#   Omni's per-machine ConfigPatch flow (target_label_selectors +
-#   spec.data) merges spec.data into the existing v1alpha1 Config
-#   tree as a strategic-merge under the top-level `machine:` /
-#   `cluster:` keys. Standalone v1alpha1 documents (LinkConfig,
-#   HostnameConfig, ResolverConfig) ARE supported by `talosctl gen
-#   config --config-patch ...` (which is what antinvestor/deployments
-#   uses), but NOT by Omni's MachineConfig merge — they're silently
-#   no-ops because they don't match a top-level key in the target
-#   schema. Verified empirically 2026-05-06: multi-doc per-node
-#   patches and even per-doc-split ConfigPatches both left
-#   HostnameStatus at Contabo's `vmi2727782` and ens18 with no v6
-#   address despite the patches being present in Omni.
+# Documents:
+#   1. machine.nodeLabels / nodeAnnotations         — kubelet
+#      propagates these to the K8s Node object on registration.
+#   2. machine.kubelet.nodeIP.validSubnets          — pin kubelet's
+#      primary nodeIP to this VPS's IPv6 /64 first, then v4. Required
+#      for IPv6-first dual-stack: kube-apiserver derives advertise-
+#      address from POD_IP (kubelet's elected nodeIP) and rejects
+#      startup if the advertise family doesn't match the FIRST
+#      service-cluster-ip-range family (v6 here). Listing the v6
+#      subnet first guarantees the v6 address wins the election even
+#      against any cluster-level cluster-wide ::/0 fallbacks.
+#   3. LinkConfig ens18                             — static v4 + v6
+#      addresses with explicit default routes (v4 gateway from
+#      Contabo's API; v6 via the always-link-local fe80::1 next-hop
+#      that Contabo's edge router advertises). Mirrors the antinvestor/
+#      deployments Ansible role's working setup.
 #
-#   The legacy `machine.network` form (interfaces[], hostname,
-#   nameservers) is a true sub-tree of v1alpha1 Config and merges
-#   correctly through Omni. It's the same set of facts as the
-#   standalone docs would carry — just expressed in the structural
-#   form Omni's patcher honors.
+#      WHY ens18 (NOT wan0): Talos's AddressConfigController and
+#      RouteConfigController do NOT resolve LinkAliasConfig aliases
+#      when processing v1alpha1 LinkConfig docs — only the
+#      LinkConfigController does. Verified in Talos release-1.13
+#      source (internal/app/machined/pkg/controllers/network/
+#      address_config.go:291-314 and route_config.go:333). With
+#      `name: wan0`, IPv6 addresses were silently dropped from
+#      AddressSpec while IPv4 happened to land via a different layer
+#      — the cluster never reached IPv6-first dual-stack and kube-
+#      apiserver crashlooped on the family-match check. ens18 is
+#      stable across reboots on every current Contabo VPS (single
+#      NIC, virtio_net, Talos's predictable interface naming).
+#      Multi-NIC variants would need per-node selector machinery.
+#   4. HostnameConfig auto: off                     — pin canonical
+#      hostname; without this, Contabo's platform-supplied hostname
+#      is the VPS UUID.
 #
 # IMPORTANT — apply-at-boot only:
-#   This patch is SAFE only when the node boots with the network
-#   config from the start. Live-applying it to a running Contabo
-#   node that was on DHCPv4 disrupts the kernel networking state
-#   progressively (observed 2026-05-05: contabo-bwire-node-{1,2}
-#   went "Config Apply Failed" then "Not Ready" within hours, and
-#   removing the patch did not auto-revert kernel state — only a
-#   Contabo-API hypervisor reboot via contabo-reboot-vps.yml cleared
-#   it). Apply path: bump force_reinstall_generation in
-#   01-contabo-infra/terraform.tfvars before applying this patch so
-#   each Contabo VPS reinstalls and boots fresh with the static
-#   config.
+#   This patch is SAFE only when the node boots with the LinkConfig
+#   from the start. Live-applying it to a running Contabo node that
+#   was on DHCPv4 disrupts the kernel networking state progressively
+#   (observed 2026-05-05: contabo-bwire-node-{1,2} went "Config
+#   Apply Failed" then "Not Ready" within hours, and removing the
+#   patch did not auto-revert kernel state — only a Contabo-API
+#   hypervisor reboot via contabo-reboot-vps.yml cleared it).
+#
+#   Apply path: bump force_reinstall_generation in 01-contabo-infra/
+#   terraform.tfvars before applying this patch so each Contabo VPS
+#   reinstalls and boots fresh with the static config.
 
 machine:
   nodeLabels:
@@ -63,32 +77,27 @@ machine:
         - "${ipv6_network}"
         - "${ipv4}/32"
         - "!fdae:41e4:649b:9303::/64"
-  network:
-    # Pin the canonical hostname. Without this, Contabo's platform-
-    # supplied hostname is the VPS UUID (e.g. vmi2727782).
-    hostname: ${hostname}
-    # Static v4 + v6 addresses with explicit default routes — v4
-    # gateway from Contabo's API; v6 via the always-link-local
-    # `fe80::1` next-hop that Contabo's edge router advertises.
-    # Mirrors the antinvestor/deployments Ansible role's working
-    # setup, expressed as legacy `machine.network.interfaces[]`
-    # because Omni's per-machine ConfigPatch merge does not pick up
-    # standalone v1alpha1 LinkConfig docs (see file header).
-    #
-    # WHY interface: ens18 (NOT wan0): the cluster-level
-    # LinkAliasConfig wan%d alias is not visible to the legacy
-    # machine.network.interfaces[].interface field — that field
-    # binds by kernel link name. ens18 is stable across reboots on
-    # every current Contabo VPS (single NIC, virtio_net, Talos's
-    # predictable interface naming). Multi-NIC variants would need
-    # per-node selector machinery.
-    interfaces:
-      - interface: ens18
-        addresses:
-          - ${ipv4}/${ipv4_cidr}
-          - ${ipv6}/${ipv6_cidr}
-        routes:
-          - network: 0.0.0.0/0
-            gateway: ${ipv4_gateway}
-          - network: ::/0
-            gateway: fe80::1
+
+---
+# LinkConfig — exactly mirrors the antinvestor/deployments Ansible
+# role's controlplane-config.yaml.j2 / worker-config.yaml.j2 (which
+# is the known-good baseline for Contabo IPv6 dual-stack). Plain
+# YAML, no quoting, no `up:`, no `family:` on routes — Talos's
+# release-1.13 machineconfig parser handles these correctly when
+# they're omitted. Adding any of those keys has produced subtly
+# wrong AddressSpec emission in earlier iterations of this template.
+apiVersion: v1alpha1
+kind: LinkConfig
+name: ens18
+addresses:
+  - address: ${ipv4}/${ipv4_cidr}
+  - address: ${ipv6}/${ipv6_cidr}
+routes:
+  - gateway: ${ipv4_gateway}
+  - gateway: fe80::1
+
+---
+apiVersion: v1alpha1
+kind: HostnameConfig
+hostname: ${hostname}
+auto: off
