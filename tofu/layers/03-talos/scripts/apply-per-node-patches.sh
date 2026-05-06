@@ -118,7 +118,26 @@ while IFS= read -r entry; do
     continue
   fi
 
-  # Wrap the Talos patch in an Omni ConfigPatches envelope.
+  # Split multi-doc rendered YAML into individual documents and
+  # apply each as its own ConfigPatches resource. Omni's ConfigPatch
+  # spec.data is treated as a SINGLE machineconfig patch — Talos's
+  # config-merge layer only consumes the first doc and silently
+  # discards subsequent v1alpha1 standalone documents (LinkConfig,
+  # HostnameConfig, ResolverConfig). Verified empirically 2026-05-06:
+  # multi-doc per-node patches had their LinkConfig + HostnameConfig
+  # dropped by Talos's effective machineconfig (HostnameStatus stayed
+  # at Contabo's platform default `vmi2727782` rather than the
+  # canonical `contabo-bwire-node-2`; ens18 only carried the v4
+  # address — never the v6 — even though the multi-doc ConfigPatch in
+  # Omni had both). Splitting per doc into separate ConfigPatch
+  # resources is the only way Omni reliably layers each into Talos's
+  # final machineconfig.
+  #
+  # Naming: first doc keeps the historical `stawi-<node>-link` id
+  # (so re-applies are idempotent vs older single-patch state);
+  # subsequent docs get a `-NN-<kind>` suffix (e.g. `-01-linkconfig`).
+  # The orphan-sweep step still matches on the
+  # stawi.local/per-node-link=true label, regardless of doc index.
   #
   # CRITICAL design constraints (history: see git show 6f4dccb and
   # git show 490ae67^:tofu/shared/clusters/per-node-patches.yaml.tmpl):
@@ -127,26 +146,27 @@ while IFS= read -r entry; do
   #      That label triggers `omnictl cluster template sync` to claim
   #      ownership of this resource and prune it on the next sync —
   #      a regression that broke Contabo networking on 2026-05-04
-  #      until 6f4dccb dropped the label. The marker
-  #      stawi.local/per-node-link: "true" is enough for the orphan
-  #      sweep step to identify our patches without inviting the
-  #      template prune.
+  #      until 6f4dccb dropped the label.
   #
   #   2. Binding to a Machine goes through spec.target_label_selectors,
-  #      NOT via a metadata.labels.omni.sidero.dev/machine field
-  #      (which doesn't exist in the schema). Each selector entry is
-  #      a label-equality predicate; Omni binds the patch to whichever
-  #      Machine carries ALL listed labels. cluster=stawi (set
-  #      automatically by Omni on cluster-member Machines) plus
+  #      NOT via metadata.labels. cluster=stawi (auto by Omni) plus
   #      node.antinvestor.io/name=<node> (synced by cluster.tf's
   #      machine-label reconciler) ensures exactly one match.
-  patch_yaml=$(<"$patch_file")
-  envelope_file=$(mktemp -t "stawi-${node_name}-link.XXXXXX.yaml")
-  cat > "$envelope_file" <<MANIFEST
+
+  apply_per_doc() {
+    local doc_yaml="$1"
+    local id_suffix="$2"
+    # Skip blank-or-comments-only docs (yaml-multidoc artifacts).
+    if [[ -z "$(printf '%s' "$doc_yaml" | sed -E '/^[[:space:]]*(#.*)?$/d')" ]]; then
+      return 0
+    fi
+    local envelope
+    envelope=$(mktemp -t "stawi-${node_name}-link${id_suffix}.XXXXXX.yaml")
+    cat > "$envelope" <<MANIFEST
 metadata:
   namespace: default
   type: ConfigPatches.omni.sidero.dev
-  id: stawi-${node_name}-link
+  id: stawi-${node_name}-link${id_suffix}
   labels:
     stawi.local/per-node-link: "true"
 spec:
@@ -154,17 +174,42 @@ spec:
     - omni.sidero.dev/cluster=${OMNI_CLUSTER:-stawi}
     - node.antinvestor.io/name=${node_name}
   data: |
-$(printf '%s\n' "$patch_yaml" | sed 's/^/    /')
+$(printf '%s\n' "$doc_yaml" | sed 's/^/    /')
 MANIFEST
+    echo "[apply-per-node-patches] $node_name (machine=$machine_id) doc=${id_suffix:-<base>}: applying"
+    if omnictl apply -f "$envelope" 2>&1 | sed 's/^/  /'; then
+      applied=$((applied + 1))
+    else
+      echo "[apply-per-node-patches] ERROR $node_name doc=${id_suffix}: omnictl apply ConfigPatches failed"
+      errored=$((errored + 1))
+    fi
+    rm -f "$envelope"
+  }
 
-  echo "[apply-per-node-patches] $node_name (machine=$machine_id): applying patch"
-  if omnictl apply -f "$envelope_file" 2>&1 | sed 's/^/  /'; then
-    applied=$((applied + 1))
-  else
-    echo "[apply-per-node-patches] ERROR $node_name: omnictl apply ConfigPatches failed"
-    errored=$((errored + 1))
-  fi
-  rm -f "$envelope_file"
+  # awk splits the patch on top-level YAML doc boundary (`^---$`)
+  # into numbered files in a per-node temp dir.
+  doc_dir=$(mktemp -d -p "$workdir" "split-${node_name}.XXXXXX")
+  awk -v dir="$doc_dir" '
+    BEGIN { i = 0; out = sprintf("%s/doc-00.yaml", dir); }
+    /^---[[:space:]]*$/ { close(out); i++; out = sprintf("%s/doc-" "%02d" ".yaml", dir, i); next; }
+    { print > out; }
+  ' "$patch_file"
+
+  doc_index=0
+  for doc in "$doc_dir"/doc-*.yaml; do
+    [[ -s "$doc" ]] || continue
+    doc_yaml=$(<"$doc")
+    if [[ -z "$(printf '%s' "$doc_yaml" | sed -E '/^[[:space:]]*(#.*)?$/d')" ]]; then
+      continue
+    fi
+    if (( doc_index == 0 )); then
+      apply_per_doc "$doc_yaml" ""
+    else
+      kind=$(printf '%s' "$doc_yaml" | grep -m1 -E '^kind:[[:space:]]+' | awk '{print tolower($2)}')
+      apply_per_doc "$doc_yaml" "-$(printf '%02d' "$doc_index")-${kind:-doc}"
+    fi
+    doc_index=$((doc_index + 1))
+  done
 done < <(jq -c 'to_entries[]' "$NODES_JSON")
 
 echo "[apply-per-node-patches] done: applied=$applied skipped=$skipped errored=$errored"

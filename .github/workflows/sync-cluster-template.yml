@@ -478,14 +478,19 @@ jobs:
             | .instances[0].attributes.content
           ' "$state" | jq -r 'keys[]')
           live_set=$(printf '%s\n' "${live_nodes[@]+"${live_nodes[@]}"}" | sort -u)
-          # List all stawi-<node>-link patches in Omni and delete
-          # those whose <node> isn't in live_set.
+          # List all stawi-<node>-link* patches in Omni and delete
+          # those whose <node> isn't in live_set. The trailing `*`
+          # matches both the legacy single-doc id (`stawi-<node>-link`)
+          # and the per-doc ids introduced after the multi-doc fix
+          # (`stawi-<node>-link-NN-<kind>`, e.g.
+          # `stawi-contabo-bwire-node-2-link-01-linkconfig`).
           for id in $(omnictl get configpatches -o jsonpath='{.metadata.id}' 2>/dev/null \
                        | tr ' ' '\n' \
-                       | grep -E '^stawi-.+-link$' \
+                       | grep -E '^stawi-.+-link($|-)' \
                        || true); do
+            # Strip prefix and any -NN-<kind> suffix to recover node.
             node="${id#stawi-}"
-            node="${node%-link}"
+            node="${node%-link*}"
             if ! grep -qx "$node" <<<"$live_set"; then
               echo "::notice::orphan per-node patch detected: $id (node $node not in tofu state)"
               omnictl delete configpatches "$id" || echo "::warning::failed to delete $id"
