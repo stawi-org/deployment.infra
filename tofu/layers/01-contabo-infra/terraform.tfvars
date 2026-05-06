@@ -86,4 +86,20 @@ age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
 #                   KeyCloak's per-account lockout takes ~10 min
 #                   to clear; this bump retries after the cooldown
 #                   so the locked-out node finally re-reinstalls.
-force_reinstall_generation = 18
+#  19 — 2026-05-07: storage volume layout (EPHEMERAL maxSize=20GB +
+#                   topolvm-data UserVolumeConfig grow=true) wired
+#                   into cluster.yaml on 2026-05-06, but Talos
+#                   partitions the disk only at INSTALL time. The
+#                   running fleet had EPHEMERAL consume the whole
+#                   disk (105GB on a 107GB disk; verified via
+#                   talosctl get volumestatuses), leaving zero free
+#                   space for topolvm-data → vg-bootstrap
+#                   FailedMount → topolvm-lvmd vg-data not found →
+#                   infrastructure-storage Kustomization stuck →
+#                   entire vault/external-secrets/cloudnative-nats/
+#                   lakehouse/notifications/telemetry cascade
+#                   blocked. PUT-reinstalls every Contabo VPS so
+#                   Talos partitions per the new VolumeConfig from
+#                   first boot. Pairs with 02-oracle-infra gen=14
+#                   destroy+create in the same apply.
+force_reinstall_generation = 19
