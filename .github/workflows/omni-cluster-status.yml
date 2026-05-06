@@ -125,6 +125,14 @@ jobs:
             talosctl --talosconfig /tmp/talosconfig \
               --nodes 61475972-831c-420c-a80b-7636843e2dfb \
               get linkconfig 2>&1 | head -20 || true
+                        echo "--- get addressstatus (kernel-applied):"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              get addressstatus 2>&1 | head -20 || true
+            echo "--- get linkconfigspec / sysctlspec:"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              get sysctlspec 2>&1 | head -30 || true
             echo "--- get addressspec:"
             talosctl --talosconfig /tmp/talosconfig \
               --nodes 61475972-831c-420c-a80b-7636843e2dfb \
