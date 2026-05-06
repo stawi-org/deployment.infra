@@ -196,9 +196,17 @@ jobs:
                 ' \
               >> "$map_file.work"
           done < <(find "$tmp/inventory" -name nodes.yaml)
-          # Squash to a JSON array.
+          # Squash to a JSON array. The inner jq above emits one
+          # object per node entry, separated by newlines; jq -s on
+          # the whole file slurps them into a single array.
           jq -s '.' "$map_file.work" > "$map_file"
           echo "::notice::built inventory lookup with $(jq 'length' "$map_file") node(s)"
+          # Debug: dump the lookup so any malformed entry is
+          # visible in the workflow log without needing another
+          # iteration to add prints.
+          echo "::group::inventory lookup contents"
+          cat "$map_file"
+          echo "::endgroup::"
 
           # Fetch unbound machinestatuses.
           all=$(omnictl get machinestatus -o json 2>/dev/null \
