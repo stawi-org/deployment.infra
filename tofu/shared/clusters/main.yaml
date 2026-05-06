@@ -158,16 +158,23 @@ patches:
       # this, kubelet auto-detects only the primary v4 address and
       # the cluster effectively stays single-stack for node IPs.
       #
-      # validSubnets accepts the global routable space for each
-      # family, then explicitly EXCLUDES the SideroLink ULA so
-      # kubelet doesn't accidentally pick that as a node IP (it's a
-      # WG management ULA, not a routable cluster-internal address).
+      # validSubnets order matches the IPv6-FIRST family ordering
+      # above. The first matching family becomes kubelet's primary
+      # nodeIP, which kube-apiserver derives its advertise-address
+      # from via POD_IP. K8s requires the primary service-cluster-ip-
+      # range family to match this advertise-address family — listing
+      # ::/0 first ensures v6 wins on every node that has a routable
+      # v6, satisfying the apiserver's family-match check.
+      #
+      # Explicit EXCLUDE of the SideroLink ULA so kubelet doesn't
+      # pick the WG management address as nodeIP (it's a hub-spoke
+      # tunnel address, not a routable cluster-internal address).
       machine:
         kubelet:
           nodeIP:
             validSubnets:
+              - "::/0"
               - 0.0.0.0/0
-              - ::/0
               - "!fdae:41e4:649b:9303::/64"
   # Contabo IPv6 default route via SLAAC. Without this, kube-flannel
   # crash-loops on Contabo nodes with "failed to get default v6
