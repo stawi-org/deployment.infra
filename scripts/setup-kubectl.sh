@@ -158,23 +158,56 @@ echo "[setup-kubectl] toolchain installed:"
 "${install_dir}/omnictl" --version | head -1
 "${install_dir}/kubectl-oidc_login" --version | head -1
 
-# 4. Configure omnictl context. Idempotent: `omnictl config add-
-# context` updates the existing context if it already exists.
+# 4. Configure omnictl context. The CLI uses `omnictl config add
+# <name>` to create a context (NOT `add-context`), and `omnictl
+# config url <url>` to (re)set the URL on the current context. We
+# add the context first (idempotent on second run — `add` is a
+# no-op if the context already exists with the same URL); then
+# switch to it; then re-set the URL so a relocated Omni endpoint
+# updates without complaint.
 echo "[setup-kubectl] configuring omnictl context for $OMNI_ENDPOINT"
-"${install_dir}/omnictl" config add-context "$OMNI_CLUSTER" \
-  --url "$OMNI_ENDPOINT" >/dev/null
-"${install_dir}/omnictl" config use-context "$OMNI_CLUSTER" >/dev/null
+"${install_dir}/omnictl" config add "$OMNI_CLUSTER" \
+  --url "$OMNI_ENDPOINT" >/dev/null 2>&1 || true
+"${install_dir}/omnictl" config context "$OMNI_CLUSTER" >/dev/null
+"${install_dir}/omnictl" config url "$OMNI_ENDPOINT" >/dev/null
 
-# 5. Issue + merge kubeconfig. The first run opens a browser for
-# OIDC login; subsequent runs reuse the cached token in
-# ~/.kube/cache/oidc-login/. `--merge=true` is the default — we
-# pass it explicitly for clarity. The kubeconfig context name comes
-# from Omni and is `<cluster>` by default.
-echo "[setup-kubectl] fetching kubeconfig (browser may open for OIDC login)"
-"${install_dir}/omnictl" kubeconfig --cluster "$OMNI_CLUSTER" --merge=true
+# 5. Issue + merge OIDC kubeconfig. This script is operator-only —
+# service-account-backed kubeconfigs (used in CI / workflows) are
+# deliberately NOT supported here. SA keys are bound to identities
+# with broad cluster privileges and shouldn't proliferate to
+# workstations; per-operator OIDC keeps the audit trail tied to a
+# real user.
+#
+# Pre-flight: probe `omnictl get user`. If it errors, the omniconfig
+# at ~/.talos/omni/config doesn't yet have a working identity (no
+# entry, expired key, or never went through the dashboard's first-
+# run identity registration). Print clear setup steps and exit so
+# the operator can complete identity registration before re-running.
+if ! "${install_dir}/omnictl" get user >/dev/null 2>&1; then
+  cat <<EOM
+[setup-kubectl] omnictl is not yet authenticated against $OMNI_ENDPOINT.
 
-# 6. Verify connectivity.
-echo "[setup-kubectl] verifying connectivity"
+First-time setup (do this once, then re-run this script):
+
+  1. Open $OMNI_ENDPOINT in a browser and log in.
+  2. Top-right user menu → "Download omniconfig". Save the file.
+  3. Replace ~/.talos/omni/config with the downloaded file:
+       mkdir -p ~/.talos/omni
+       mv ~/Downloads/omniconfig ~/.talos/omni/config
+  4. Re-run: scripts/setup-kubectl.sh
+
+The downloaded omniconfig embeds a SideroV1 PGP key tied to YOUR
+Omni identity — every kubectl call audits back to your account.
+EOM
+  exit 1
+fi
+echo "[setup-kubectl] omniconfig identity OK — issuing OIDC kubeconfig"
+"${install_dir}/omnictl" kubeconfig \
+  --cluster "$OMNI_CLUSTER" --merge=true --force
+
+# 6. Verify connectivity. The context name from `omnictl kubeconfig`
+# is `<cluster>` for OIDC-issued configs.
+echo "[setup-kubectl] verifying connectivity (context=$OMNI_CLUSTER)"
 "${install_dir}/kubectl" --context "$OMNI_CLUSTER" get nodes -o wide
 
 echo ""
