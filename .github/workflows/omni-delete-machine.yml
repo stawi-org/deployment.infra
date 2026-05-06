@@ -1,0 +1,58 @@
+# Delete a Machine resource from Omni state (removes its MachineStatus
+# + frees any MachineSet slot it occupied). Use when reinstall cycles
+# left stale machine entries in Omni inventory.
+#
+# Security: workflow_dispatch only. machine_id input is allowlist-
+# validated as a UUID via env binding before passing to omnictl. No
+# untrusted github.event-derived strings reach any shell command.
+name: omni-delete-machine
+on:
+  workflow_dispatch:
+    inputs:
+      machine_id:
+        description: Omni Machine UUID (e.g. 29ccdbef-f36a-4efd-850f-c88a67c5fedc)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  OMNI_VERSION: v1.7.1
+
+jobs:
+  delete:
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+      MACHINE_ID: ${{ inputs.machine_id }}
+    steps:
+      - name: Validate input
+        run: |
+          set -euo pipefail
+          if ! [[ "$MACHINE_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            echo "::error::machine_id must be a UUID (got: $MACHINE_ID)"
+            exit 1
+          fi
+      - name: Install omnictl
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          cat > /usr/local/bin/omnictl <<'WRAP'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /usr/local/bin/omnictl
+      - name: Delete machine
+        run: |
+          set -euo pipefail
+          omnictl get machinestatus "$MACHINE_ID" -o yaml || echo "(machine not found)"
+          omnictl delete machine "$MACHINE_ID" || echo "::warning::delete returned non-zero — may already be gone"
+          if omnictl get machinestatus "$MACHINE_ID" -o yaml 2>/dev/null; then
+            echo "::warning::machine still present after delete"
+          else
+            echo "::notice::machine $MACHINE_ID is gone"
+          fi
