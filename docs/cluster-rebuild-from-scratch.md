@@ -205,6 +205,23 @@ gh workflow run sync-cluster-template.yml
 End-to-end wall-clock: ~20-25 minutes if no IDP lockout, no Contabo
 boot retries, and OCI image imports complete first try.
 
+## Local kubectl access (after rebuild)
+
+For day-to-day kubectl access from a workstation:
+
+```
+scripts/setup-kubectl.sh
+```
+
+The script is idempotent — installs `kubectl`, `kubelogin` (renamed
+to `kubectl-oidc_login` because that's the executable name kubectl
+looks for when handling OIDC plugin invocations), and `omnictl`,
+points omnictl at `https://cp.stawi.org`, fetches an OIDC kubeconfig
+into `~/.kube/config`, and runs `kubectl get nodes` to verify. First
+run opens a browser for OIDC login; subsequent runs reuse the cached
+token. Override versions / install dir via env vars at the top of
+the script.
+
 ## Smoke test after rebuild
 
 ```
