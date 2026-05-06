@@ -137,10 +137,14 @@ jobs:
             talosctl --talosconfig /tmp/talosconfig \
               --nodes 61475972-831c-420c-a80b-7636843e2dfb \
               get configstatus -o yaml 2>&1 | head -20 || true
-            echo "--- machineconfig effective on CP (network section):"
+            echo "--- machineconfig effective on CP (full network section):"
             talosctl --talosconfig /tmp/talosconfig \
               --nodes 61475972-831c-420c-a80b-7636843e2dfb \
-              get machineconfig -o yaml 2>&1 | grep -B1 -A20 "LinkConfig\|^kind: LinkConfig\|^name: wan" | head -50 || true
+              get machineconfig -o yaml 2>&1 | head -200 || true
+            echo "--- get hostnamestatus (proves HostnameConfig made it through):"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              get hostnamestatus 2>&1 | head -10 || true
             echo "--- get linkconfigspec / sysctlspec:"
             talosctl --talosconfig /tmp/talosconfig \
               --nodes 61475972-831c-420c-a80b-7636843e2dfb \
