@@ -109,6 +109,30 @@ jobs:
             talosctl --talosconfig /tmp/talosconfig \
               --nodes 61475972-831c-420c-a80b-7636843e2dfb \
               get nodeaddresses 2>&1 | head -10 || true
+            echo "--- get linkaliasspec (alias resolution):"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              get linkaliasspec 2>&1 | head -10 || true
+            echo "--- get linkstatus (actual link state, including aliases):"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              get linkstatus 2>&1 | head -20 || true
+            echo "--- get linkspec (configured link spec from LinkConfig):"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              get linkspec 2>&1 | head -20 || true
+            echo "--- get linkconfig:"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              get linkconfig 2>&1 | head -20 || true
+            echo "--- get addressspec:"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              get addressspec 2>&1 | head -20 || true
+            echo "--- get routespec:"
+            talosctl --talosconfig /tmp/talosconfig \
+              --nodes 61475972-831c-420c-a80b-7636843e2dfb \
+              get routespec 2>&1 | head -20 || true
             echo "--- get k8saddressfilter (kube apiserver bind):"
             talosctl --talosconfig /tmp/talosconfig \
               --nodes 61475972-831c-420c-a80b-7636843e2dfb \
