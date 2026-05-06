@@ -59,6 +59,12 @@ jobs:
           echo "::group::ConfigPatches (per-node binding state)"
           omnictl get configpatches -o yaml || true
           echo "::endgroup::"
+          echo "::group::ClusterMachineStatus (Talos boot stage + service health)"
+          omnictl get clustermachinestatus -o yaml || true
+          echo "::endgroup::"
+          echo "::group::ClusterStatus (top-level reconcile conditions)"
+          omnictl get clusterstatus -o yaml || true
+          echo "::endgroup::"
           echo "::group::kubectl get nodes (via omnictl-issued kubeconfig)"
           # Correct syntax: `omnictl kubeconfig` is a top-level RPC
           # subcommand (NOT `omnictl --cluster <name> cluster
