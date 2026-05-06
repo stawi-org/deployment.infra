@@ -27,6 +27,12 @@ spec:
     networkPolicy: true
     domain: "cluster.local"
   kustomize:
+    # Pin every Flux controller Deployment (source-controller,
+    # kustomize-controller, helm-controller, notification-controller,
+    # image-reflector-controller, image-automation-controller,
+    # source-watcher) to the control-plane node. Keeps Flux
+    # infrastructure isolated on the CP; application workloads
+    # without an explicit CP toleration land only on workers.
     patches:
       - target:
           kind: Deployment
@@ -35,6 +41,7 @@ spec:
             path: /spec/template/spec/nodeSelector
             value:
               kubernetes.io/os: linux
+              node-role.kubernetes.io/control-plane: ""
           - op: add
             path: /spec/template/spec/tolerations
             value:
