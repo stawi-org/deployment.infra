@@ -433,6 +433,79 @@ jobs:
             fi
           fi
 
+          # ----- Prune older schematic_id prefixes (keep current + 1) -----
+          # Each rebuild writes images under a fresh schematic_id top-
+          # level prefix. Without pruning, every regen leaves the old
+          # qcow2 + .oci archive sitting in R2 forever (each set is
+          # ~500MB-1GB across formats). Keep the current schematic_id
+          # and the SINGLE most-recently-modified prior — enough to
+          # roll back if a new image breaks boot, without unbounded
+          # accumulation. Per-account OCI talos-images-<account>
+          # buckets are pruned in the oci-import job where they're
+          # written.
+          prune_image_bucket() {
+            local bucket="$1"
+            local endpoint="$2"
+            local region="${3:-us-east-1}"
+            local current="${4:-$schematic_id}"
+
+            # CommonPrefixes with delimiter=/ enumerates the top-level
+            # schematic_id "directories" without paginating their
+            # contents.
+            local prefixes
+            mapfile -t prefixes < <(
+              aws s3api list-objects-v2 \
+                --bucket "$bucket" --delimiter / \
+                --endpoint-url "$endpoint" --region "$region" \
+                --query 'CommonPrefixes[].Prefix' --output text 2>/dev/null \
+                | tr '\t' '\n' | sed 's:/$::' | grep -v '^$' | sort -u
+            )
+            [[ ${#prefixes[@]} -eq 0 ]] && return 0
+
+            # Annotate each prefix with the LastModified of its newest
+            # object so we prune the OLDEST prior, not arbitrary.
+            local annotated=()
+            for p in "${prefixes[@]}"; do
+              local lm
+              lm=$(aws s3api list-objects-v2 \
+                --bucket "$bucket" --prefix "${p}/" \
+                --endpoint-url "$endpoint" --region "$region" \
+                --query 'sort_by(Contents,&LastModified)[-1].LastModified' \
+                --output text 2>/dev/null)
+              [[ -z "$lm" || "$lm" == "None" ]] && continue
+              annotated+=("${lm}|${p}")
+            done
+
+            # Sort newest-first; keep the current schematic_id always
+            # plus the single newest prior. Delete everything else.
+            local kept=("$current")
+            local sorted
+            sorted=$(printf '%s\n' "${annotated[@]}" | sort -r)
+            while IFS= read -r line; do
+              [[ -z "$line" ]] && continue
+              local prefix="${line#*|}"
+              [[ "$prefix" == "$current" ]] && continue
+              if [[ ${#kept[@]} -lt 2 ]]; then
+                kept+=("$prefix")
+                continue
+              fi
+              echo "::notice::pruning s3://${bucket}/${prefix}/"
+              aws s3 rm "s3://${bucket}/${prefix}/" \
+                --recursive \
+                --endpoint-url "$endpoint" --region "$region" >/dev/null 2>&1 || \
+                echo "::warning::prune failed for ${prefix}"
+            done <<<"$sorted"
+            echo "::notice::${bucket}: kept schematic_ids ${kept[*]}"
+          }
+
+          prune_image_bucket "${R2_IMAGE_BUCKET}" "${R2_ENDPOINT}"
+          if [[ -n "${oci_endpoint:-}" ]]; then
+            AWS_ACCESS_KEY_ID="$oci_access_key_id" \
+            AWS_SECRET_ACCESS_KEY="$oci_secret_access_key" \
+            AWS_EC2_METADATA_DISABLED=true \
+              prune_image_bucket "cluster-image-registry" "$oci_endpoint" "$oci_region"
+          fi
+
           # ----- Compute SHA-256s and emit job outputs -----
           # Pass basenames + sha256s only — assemble-and-pr stitches
           # the URLs from R2_ACCOUNT_ID. GitHub filters any output
