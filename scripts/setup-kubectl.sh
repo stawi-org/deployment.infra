@@ -87,16 +87,32 @@ echo "[setup-kubectl] installing into $install_dir${use_sudo:+ (with sudo)}"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-# Generic install helper: download to a temp file, chmod, then
-# `install -m 0755` into install_dir. Skips when target already
-# carries the requested version (idempotent re-runs).
+# Returns 0 if the binary at $1 reports a version string containing
+# the literal $2. Captures both stdout AND stderr because some tools
+# (notably kubelogin) historically printed --version to stderr; merging
+# 2>&1 makes us robust across releases. The remaining args are the
+# subcommand to invoke (e.g. "version --client").
+binary_at_version() {
+  local bin="$1" want="$2"
+  shift 2
+  [[ -x "$bin" ]] || return 1
+  "$bin" "$@" 2>&1 | grep -qF "$want"
+}
+
+# Install one binary from a direct URL, idempotently. Skips the
+# download entirely when the target already reports the requested
+# version. Args:
+#   $1 friendly name (also the on-disk filename)
+#   $2 URL to fetch
+#   $3 want-version string (e.g. "1.36.0", no leading 'v')
+#   $4..N argv to pass to the binary for version detection
 install_bin() {
-  local name="$1" url="$2" version_check="$3" want_version="$4"
+  local name="$1" url="$2" want="$3"
+  shift 3
   local target="${install_dir}/${name}"
 
-  if [[ -x "$target" ]] && bash -c "$version_check" 2>/dev/null \
-      | grep -qF "$want_version"; then
-    echo "[setup-kubectl] $name already at $want_version — skipping"
+  if binary_at_version "$target" "$want" "$@"; then
+    echo "[setup-kubectl] $name already at $want — skipping download"
     return 0
   fi
   echo "[setup-kubectl] $name → $url"
@@ -105,37 +121,37 @@ install_bin() {
   $use_sudo install -m 0755 "$tmp/${name}" "$target"
 }
 
-# 1. kubectl. Direct binary download from dl.k8s.io. The version
-# check is tolerant of upstream output churn — both `kubectl
-# version --client --output=yaml` and the legacy `--short` form work.
+# 1. kubectl. `kubectl version --client` writes "Client Version:
+# v1.36.0" to stdout — substring match on "1.36.0" is reliable
+# across 1.28+ (which removed --short).
 install_bin kubectl \
   "https://dl.k8s.io/release/${K8S_VERSION}/bin/${OS}/${ARCH}/kubectl" \
-  "${install_dir}/kubectl version --client --output=yaml 2>/dev/null" \
-  "${K8S_VERSION#v}"
+  "${K8S_VERSION#v}" \
+  version --client
 
 # 2. kubelogin. Released as a zip with the bare `kubelogin` binary
-# inside. We rename to `kubectl-oidc_login` because that's the
-# filename kubectl uses to discover the OIDC plugin (kubectl exec-
-# plugin lookup: `kubectl-<name with _ instead of - and . instead of
-# space>` is found in PATH). Omni's kubeconfig exec.command is
+# inside, so we can't use install_bin directly — we have to extract
+# first. We rename the binary to `kubectl-oidc_login` because that's
+# the filename kubectl's exec-plugin lookup uses (kubectl-<name with
+# `_` for `-` and `.` for space>); Omni's kubeconfig exec.command is
 # literally `kubectl-oidc_login`.
-zip_url="https://github.com/int128/kubelogin/releases/download/${KUBELOGIN_VERSION}/kubelogin_${OS}_${ARCH}.zip"
 target_kl="${install_dir}/kubectl-oidc_login"
-if [[ -x "$target_kl" ]] \
-    && "$target_kl" --version 2>/dev/null | grep -qF "${KUBELOGIN_VERSION#v}"; then
-  echo "[setup-kubectl] kubectl-oidc_login already at $KUBELOGIN_VERSION — skipping"
+if binary_at_version "$target_kl" "${KUBELOGIN_VERSION#v}" --version; then
+  echo "[setup-kubectl] kubectl-oidc_login already at $KUBELOGIN_VERSION — skipping download"
 else
+  zip_url="https://github.com/int128/kubelogin/releases/download/${KUBELOGIN_VERSION}/kubelogin_${OS}_${ARCH}.zip"
   echo "[setup-kubectl] kubelogin → $zip_url"
   curl -fsSL -o "$tmp/kl.zip" "$zip_url"
   unzip -qq -o "$tmp/kl.zip" -d "$tmp/kl"
   $use_sudo install -m 0755 "$tmp/kl/kubelogin" "$target_kl"
 fi
 
-# 3. omnictl. Direct binary, same pattern as kubectl.
+# 3. omnictl. `omnictl --version` writes "Client: Tag: v1.7.1" — the
+# substring "1.7.1" is unambiguous.
 install_bin omnictl \
   "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-${OS}-${ARCH}" \
-  "${install_dir}/omnictl --version 2>/dev/null" \
-  "${OMNI_VERSION#v}"
+  "${OMNI_VERSION#v}" \
+  --version
 
 echo "[setup-kubectl] toolchain installed:"
 "${install_dir}/kubectl" version --client --output=yaml | head -3
