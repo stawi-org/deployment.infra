@@ -24,7 +24,7 @@
 #
 # Usage:
 #   scripts/setup-kubectl.sh
-#   K8S_VERSION=v1.37.0 scripts/setup-kubectl.sh   # override
+#   K8S_VERSION=v1.36.0 scripts/setup-kubectl.sh   # override
 #   INSTALL_DIR=$HOME/.local/bin scripts/setup-kubectl.sh
 #
 # Env knobs:
