@@ -79,34 +79,26 @@ output "omni_backup_writer_credentials" {
 }
 
 # OpenObserve writes log/metric/trace blocks to telemetry-storage.
-# The bucket lives in alimbacho67 (NOT bwire) and uses a separate
-# CSK on alimbacho67's operator user — observability storage cost
-# stays isolated from the bwire operator account that already
-# holds image registry / state / vault / omni-backup.
-#
-# Lifecycle policy on the bucket DELETEs every object after 7
-# days so the footprint stays bounded near the 8 GB target the
-# operator set; OpenObserve's ZO_DATA_RETENTION_DAYS=7 actively
-# trims at the same cadence as a redundancy.
-#
+# Reuses the same CSK (operator user, shared by every bwire S3-
+# compat consumer); the bucket is the only differentiating field.
 # After apply the workflow extracts this output and runs
 #   bao kv put -mount=secret antinvestor/telemetry/openobserve/oci-credentials \
 #     access_key=$ACCESS secret_key=$SECRET \
 #     bucket=$BUCKET endpoint=$ENDPOINT region=$REGION
-# so the openobserve-oci-credentials ExternalSecret can mint the
+# so the openobserve-r2-credentials ExternalSecret can mint the
 # kube Secret OpenObserve consumes.
 output "telemetry_storage_credentials" {
-  description = "S3-compat credentials for OpenObserve's telemetry-storage bucket (alimbacho67). Pushed to OpenBao at antinvestor/telemetry/openobserve/oci-credentials by the post-apply workflow step."
+  description = "S3-compat credentials for OpenObserve's telemetry-storage bucket (bwire). Pushed to OpenBao at antinvestor/telemetry/openobserve/oci-credentials by the post-apply workflow step."
   sensitive   = true
   value = {
-    access_key_id     = oci_identity_customer_secret_key.alimbacho_operator.id
-    secret_access_key = oci_identity_customer_secret_key.alimbacho_operator.key
+    access_key_id     = oci_identity_customer_secret_key.bwire_operator.id
+    secret_access_key = oci_identity_customer_secret_key.bwire_operator.key
     bucket            = oci_objectstorage_bucket.telemetry_storage.name
-    region            = local.alimbacho_region
+    region            = local.bwire_region
     endpoint = format(
       "https://%s.compat.objectstorage.%s.oraclecloud.com",
-      data.oci_objectstorage_namespace.alimbacho.namespace,
-      local.alimbacho_region,
+      data.oci_objectstorage_namespace.this.namespace,
+      local.bwire_region,
     )
   }
 }

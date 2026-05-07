@@ -61,38 +61,3 @@ locals {
   bwire_tenancy_ocid     = try(local.bwire_auth.tenancy_ocid, "")
   bwire_region           = try(local.bwire_auth.region, "")
 }
-
-# ---- alimbacho67: telemetry-storage bucket --------------------
-#
-# The OpenObserve telemetry bucket lives in alimbacho67 (not bwire)
-# to keep observability storage costs out of the bwire compartment
-# that already holds image registry + state + vault + omni-backup.
-# alimbacho67 is one of the four oracle accounts in shared/
-# accounts.yaml; node-state finds its auth under the same R2
-# inventory layout the per-node layers consume.
-locals {
-  alimbacho_account_key = "alimbacho67"
-}
-
-module "alimbacho_account_state" {
-  source              = "../../modules/node-state"
-  provider_name       = "oracle"
-  account             = local.alimbacho_account_key
-  age_recipients      = split(",", var.age_recipients)
-  local_inventory_dir = var.local_inventory_dir
-}
-
-locals {
-  alimbacho_auth             = try(module.alimbacho_account_state.auth.auth, null)
-  alimbacho_compartment_ocid = try(local.alimbacho_auth.compartment_ocid, "")
-  alimbacho_tenancy_ocid     = try(local.alimbacho_auth.tenancy_ocid, "")
-  alimbacho_region           = try(local.alimbacho_auth.region, "")
-}
-
-provider "oci" {
-  alias               = "alimbacho"
-  tenancy_ocid        = try(local.alimbacho_auth.tenancy_ocid, null)
-  region              = try(local.alimbacho_auth.region, null)
-  config_file_profile = local.alimbacho_account_key
-  auth                = try(local.alimbacho_auth.auth_method, "SecurityToken")
-}
