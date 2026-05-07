@@ -108,25 +108,54 @@ resource "oci_objectstorage_bucket" "omni_backup_storage" {
   versioning   = "Disabled"
 }
 
-# ---- bwire: telemetry-storage (private) --------------------------
+# ---- alimbacho67: telemetry-storage (private) -------------------
 #
 # Backing store for OpenObserve's flushed log/metric/trace blocks.
-# Colocates with the rest of the bwire object-storage estate so
-# OpenObserve writes don't cross cloud boundaries (the cluster's
-# OCI workers already reach this bucket over the OCI internal
-# network), and removes the dependency on the (stale) R2
-# `telemetry` bucket the previous OpenObserve install referenced.
+# Lives in alimbacho67 — separate tenancy from the bwire estate
+# (image registry / state / vault / omni-backup) so observability
+# storage cost is isolated from the operator-owned bwire account.
 #
 # Versioning OFF: OpenObserve treats blocks as immutable once
 # flushed; never writes the same key twice. Versioning would
 # double the storage cost for no operational benefit.
+#
+# Size cap: ~8 GB. OCI Object Storage doesn't enforce hard
+# bucket-level quotas, so we layer:
+#   1. The lifecycle policy below — DELETE objects older than 7
+#      days. At 1 GB/day average ingest the bucket caps near 7 GB.
+#   2. OpenObserve retention is set in the HelmRelease values
+#      (ZO_DATA_RETENTION_DAYS=7) so the app actively deletes
+#      blocks at the same cadence; the lifecycle policy is the
+#      backstop if a delete is missed.
+data "oci_objectstorage_namespace" "alimbacho" {
+  provider = oci.alimbacho
+}
+
 resource "oci_objectstorage_bucket" "telemetry_storage" {
-  provider       = oci.bwire
-  compartment_id = local.bwire_compartment_ocid
-  namespace      = data.oci_objectstorage_namespace.this.namespace
+  provider       = oci.alimbacho
+  compartment_id = local.alimbacho_compartment_ocid
+  namespace      = data.oci_objectstorage_namespace.alimbacho.namespace
   name           = "telemetry-storage"
 
   access_type  = "NoPublicAccess"
   storage_tier = "Standard"
   versioning   = "Disabled"
+}
+
+resource "oci_objectstorage_object_lifecycle_policy" "telemetry_storage" {
+  provider  = oci.alimbacho
+  namespace = data.oci_objectstorage_namespace.alimbacho.namespace
+  bucket    = oci_objectstorage_bucket.telemetry_storage.name
+
+  # Delete every object after 7 days. Bucket footprint stays
+  # bounded by ingest rate * 7 days. With OpenObserve's typical
+  # ~500 MB-1 GB/day for a small cluster, this caps near the
+  # 8 GB target.
+  rules {
+    name        = "delete-after-7d"
+    action      = "DELETE"
+    is_enabled  = true
+    time_amount = 7
+    time_unit   = "DAYS"
+  }
 }

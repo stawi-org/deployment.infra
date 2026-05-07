@@ -60,3 +60,37 @@ resource "oci_identity_customer_secret_key" "bwire_operator" {
   user_id      = local.bwire_operator_users[0].id
   display_name = "stawi-cluster-s3-compat"
 }
+
+# alimbacho67 mirror — separate user lookup + CSK for the
+# telemetry-storage bucket living in that tenancy.
+data "oci_identity_users" "alimbacho_all" {
+  provider       = oci.alimbacho
+  compartment_id = local.alimbacho_tenancy_ocid
+}
+
+locals {
+  alimbacho_operator_users = [
+    for u in data.oci_identity_users.alimbacho_all.users :
+    u
+    if u.name == var.alimbacho_operator_user_name
+    || endswith(u.name, "/${var.alimbacho_operator_user_name}")
+  ]
+}
+
+check "alimbacho_operator_user_found" {
+  assert {
+    condition = length(local.alimbacho_operator_users) > 0
+    error_message = format(
+      "No user matching '%s' (or '<idp>/%s') in alimbacho67 tenancy. Available users: %s",
+      var.alimbacho_operator_user_name,
+      var.alimbacho_operator_user_name,
+      jsonencode([for u in data.oci_identity_users.alimbacho_all.users : u.name]),
+    )
+  }
+}
+
+resource "oci_identity_customer_secret_key" "alimbacho_operator" {
+  provider     = oci.alimbacho
+  user_id      = local.alimbacho_operator_users[0].id
+  display_name = "stawi-telemetry-s3-compat"
+}

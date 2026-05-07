@@ -24,3 +24,12 @@ variable "oci_operator_user_name" {
     error_message = "oci_operator_user_name must be set (the existing operator user that owns the shared S3-compat CSK)."
   }
 }
+
+variable "alimbacho_operator_user_name" {
+  type        = string
+  description = "Name of the existing OCI operator user in the alimbacho67 tenancy. CSK minted against this user for the telemetry-storage bucket."
+  validation {
+    condition     = var.alimbacho_operator_user_name != ""
+    error_message = "alimbacho_operator_user_name must be set (the existing operator user that owns the alimbacho67 telemetry CSK)."
+  }
+}
