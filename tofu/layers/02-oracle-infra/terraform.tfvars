@@ -55,4 +55,13 @@ force_image_generation = 12
 #                   partitioned per the new VolumeConfig. Pairs
 #                   with 01-contabo-infra gen=19 PUT-reinstall in
 #                   the same apply.
-force_reinstall_generation = 14
+#  15 — 2026-05-07: rename UserVolumeConfig topolvm-data → local-
+#                   path-provisioner to match Sidero's documented
+#                   layout (mount path becomes
+#                   /var/mnt/local-path-provisioner). Existing
+#                   partitions still claim the disk under the old
+#                   name; force destroy+create gets every OCI node
+#                   onto a fresh disk repartitioned under the new
+#                   name. Pairs with 01-contabo-infra gen=20
+#                   PUT-reinstall.
+force_reinstall_generation = 15

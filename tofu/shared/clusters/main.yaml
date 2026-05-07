@@ -350,13 +350,13 @@ patches:
   #   2. swap-vol  — 3-4GiB swap volume on every node. Talos doesn't
   #      use swap by default; this lets memory-pressured pods survive
   #      brief spikes without OOM-killing.
-  #   3. topolvm-data — the rest of the disk as an xfs partition at
-  #      /var/mnt/topolvm-data. The TopoLVM vg-bootstrap DaemonSet
-  #      creates a loopback file inside it that becomes the LVM PV for
-  #      `vg-data`. WITHOUT this carved partition, vg-bootstrap stays
-  #      in ContainerCreating ("hostPath type check failed: /var/mnt/
-  #      topolvm-data is not a directory") and topolvm-lvmd crashloops
-  #      on "volume group not found".
+  #   3. local-path-provisioner — the rest of the disk as an xfs
+  #      partition auto-mounted at /var/mnt/local-path-provisioner
+  #      (Talos derives the mount path from the UserVolumeConfig
+  #      name). Rancher's local-path-provisioner ConfigMap points
+  #      its nodePathMap at this directory; it then carves a per-PV
+  #      subdirectory for every PVC. Name follows Sidero's docs at
+  #      https://docs.siderolabs.com/kubernetes-guides/csi/local-storage.
   - name: storage-ephemeral
     inline:
       apiVersion: v1alpha1
@@ -377,11 +377,11 @@ patches:
           match: system_disk
         minSize: 3GiB
         maxSize: 4GiB
-  - name: storage-topolvm-data
+  - name: storage-local-path-provisioner
     inline:
       apiVersion: v1alpha1
       kind: UserVolumeConfig
-      name: topolvm-data
+      name: local-path-provisioner
       provisioning:
         diskSelector:
           match: system_disk

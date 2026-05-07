@@ -102,4 +102,17 @@ age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
 #                   Talos partitions per the new VolumeConfig from
 #                   first boot. Pairs with 02-oracle-infra gen=14
 #                   destroy+create in the same apply.
-force_reinstall_generation = 19
+#  20 — 2026-05-07: rename UserVolumeConfig topolvm-data → local-
+#                   path-provisioner to align mount path with
+#                   Sidero's documented setup
+#                   (https://docs.siderolabs.com/kubernetes-guides/
+#                    csi/local-storage). Talos auto-mounts user
+#                   volumes at /var/mnt/<name>, and renaming creates
+#                   a new partition entry — existing nodes already
+#                   have the disk fully claimed by the old name, so
+#                   the new partition has no free space to land in
+#                   without a fresh install. PUT-reinstalls every
+#                   Contabo VPS so the disk gets repartitioned with
+#                   the new name from first boot. Pairs with
+#                   02-oracle-infra gen=15 destroy+create.
+force_reinstall_generation = 20

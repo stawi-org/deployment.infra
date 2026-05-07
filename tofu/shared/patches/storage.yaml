@@ -23,13 +23,17 @@ provisioning:
   maxSize: 4GiB
 
 ---
-# TopoLVM PV partition: consumes ALL remaining disk on every node.
-# Mounted at /var/mnt/topolvm-data; the topolvm-vg-bootstrap DaemonSet
-# creates a loopback file inside it that becomes the LVM PV for vg-data.
-# This is the ONLY user volume — local-path-provisioner is retired.
+# local-path-provisioner data partition: consumes ALL remaining disk
+# on every node. Talos auto-mounts a UserVolumeConfig at
+# /var/mnt/<name>, so naming this `local-path-provisioner` pins the
+# mount at /var/mnt/local-path-provisioner — the path Rancher's
+# local-path-provisioner ConfigMap carves PV subdirectories under,
+# per Sidero's documented setup
+# (https://docs.siderolabs.com/kubernetes-guides/csi/local-storage).
+# This is the ONLY user volume.
 apiVersion: v1alpha1
 kind: UserVolumeConfig
-name: topolvm-data
+name: local-path-provisioner
 provisioning:
   diskSelector:
     match: system_disk
