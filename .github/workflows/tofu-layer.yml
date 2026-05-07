@@ -537,6 +537,12 @@ jobs:
       # cell uploads its plan; suffix the artifact name with the account
       # when present so cells don't collide. tofu-plan-regression.yml
       # downloads with a glob so account-suffixed names still match.
+      # Plans are only useful for the matching apply step downstream
+      # (and tofu-plan-regression.yml, which runs in the same workflow
+      # graph minutes later). 1-day retention keeps Actions storage
+      # well under the free-tier 0.5 GB cap — at ~5 MB per plan times
+      # ~7 layers/accounts times runs/day, the previous 30-day
+      # retention buried us at 730+ MB by week 4 of the billing cycle.
       - uses: actions/upload-artifact@v6
         if: inputs.mode == 'plan' || inputs.mode == 'apply'
         with:
@@ -544,7 +550,7 @@ jobs:
           path: |
             tofu/layers/${{ inputs.layer }}/tfplan
             tofu/layers/${{ inputs.layer }}/plan.json
-          retention-days: 30
+          retention-days: 1
 
       - name: Apply
         if: inputs.mode == 'apply'
