@@ -107,3 +107,26 @@ resource "oci_objectstorage_bucket" "omni_backup_storage" {
   storage_tier = "Standard"
   versioning   = "Disabled"
 }
+
+# ---- bwire: telemetry-storage (private) --------------------------
+#
+# Backing store for OpenObserve's flushed log/metric/trace blocks.
+# Colocates with the rest of the bwire object-storage estate so
+# OpenObserve writes don't cross cloud boundaries (the cluster's
+# OCI workers already reach this bucket over the OCI internal
+# network), and removes the dependency on the (stale) R2
+# `telemetry` bucket the previous OpenObserve install referenced.
+#
+# Versioning OFF: OpenObserve treats blocks as immutable once
+# flushed; never writes the same key twice. Versioning would
+# double the storage cost for no operational benefit.
+resource "oci_objectstorage_bucket" "telemetry_storage" {
+  provider       = oci.bwire
+  compartment_id = local.bwire_compartment_ocid
+  namespace      = data.oci_objectstorage_namespace.this.namespace
+  name           = "telemetry-storage"
+
+  access_type  = "NoPublicAccess"
+  storage_tier = "Standard"
+  versioning   = "Disabled"
+}
