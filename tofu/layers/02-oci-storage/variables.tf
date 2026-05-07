@@ -27,9 +27,18 @@ variable "oci_operator_user_name" {
 
 variable "alimbacho_operator_user_name" {
   type        = string
-  description = "Name of the existing OCI operator user in the alimbacho67 tenancy. CSK minted against this user for the telemetry-storage bucket."
+  description = "Name of the existing OCI operator user in the alimbacho67 tenancy. CSK minted against this user for the telemetry-metrics-storage bucket."
   validation {
     condition     = var.alimbacho_operator_user_name != ""
     error_message = "alimbacho_operator_user_name must be set (the existing operator user that owns the alimbacho67 telemetry CSK)."
+  }
+}
+
+variable "brianelvis_operator_user_name" {
+  type        = string
+  description = "Name of the existing OCI operator user in the brianelvis33 tenancy. CSK minted against this user for the telemetry-traces-storage bucket."
+  validation {
+    condition     = var.brianelvis_operator_user_name != ""
+    error_message = "brianelvis_operator_user_name must be set (the existing operator user that owns the brianelvis33 telemetry CSK)."
   }
 }

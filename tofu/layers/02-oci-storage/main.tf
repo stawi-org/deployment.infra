@@ -62,14 +62,25 @@ locals {
   bwire_region           = try(local.bwire_auth.region, "")
 }
 
-# ---- alimbacho67: telemetry-storage bucket --------------------
+# ---- Per-signal telemetry buckets across three OCI accounts ---
 #
-# The OpenObserve telemetry bucket lives in alimbacho67 (not bwire)
-# to keep observability storage costs out of the bwire compartment
-# that already holds image registry + state + vault + omni-backup.
-# alimbacho67 is one of the four oracle accounts in shared/
-# accounts.yaml; node-state finds its auth under the same R2
-# inventory layout the per-node layers consume.
+# OpenObserve runs as three standalone instances (one per signal:
+# logs / traces / metrics), each writing to its own bucket on a
+# dedicated tenancy. Splitting across three accounts keeps the
+# storage-cost blast radius small per account, lets per-signal
+# retention drift independently, and uses the existing per-account
+# auth pattern from 02-oracle-infra without funnelling everything
+# through bwire.
+#
+# Mapping:
+#   logs     → bwire        (existing tenancy with bwire-tier S3-compat key)
+#   traces   → brianelvis33
+#   metrics  → alimbacho67
+#
+# All three accounts are in shared/accounts.yaml; node-state finds
+# their auth under the standard R2 inventory layout.
+
+# alimbacho67 — metrics bucket
 locals {
   alimbacho_account_key = "alimbacho67"
 }
@@ -95,4 +106,32 @@ provider "oci" {
   region              = try(local.alimbacho_auth.region, null)
   config_file_profile = local.alimbacho_account_key
   auth                = try(local.alimbacho_auth.auth_method, "SecurityToken")
+}
+
+# brianelvis33 — traces bucket
+locals {
+  brianelvis_account_key = "brianelvis33"
+}
+
+module "brianelvis_account_state" {
+  source              = "../../modules/node-state"
+  provider_name       = "oracle"
+  account             = local.brianelvis_account_key
+  age_recipients      = split(",", var.age_recipients)
+  local_inventory_dir = var.local_inventory_dir
+}
+
+locals {
+  brianelvis_auth             = try(module.brianelvis_account_state.auth.auth, null)
+  brianelvis_compartment_ocid = try(local.brianelvis_auth.compartment_ocid, "")
+  brianelvis_tenancy_ocid     = try(local.brianelvis_auth.tenancy_ocid, "")
+  brianelvis_region           = try(local.brianelvis_auth.region, "")
+}
+
+provider "oci" {
+  alias               = "brianelvis"
+  tenancy_ocid        = try(local.brianelvis_auth.tenancy_ocid, null)
+  region              = try(local.brianelvis_auth.region, null)
+  config_file_profile = local.brianelvis_account_key
+  auth                = try(local.brianelvis_auth.auth_method, "SecurityToken")
 }

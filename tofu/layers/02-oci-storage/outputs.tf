@@ -78,35 +78,66 @@ output "omni_backup_writer_credentials" {
   }
 }
 
-# OpenObserve writes log/metric/trace blocks to telemetry-storage.
-# The bucket lives in alimbacho67 (NOT bwire) and uses a separate
-# CSK on alimbacho67's operator user — observability storage cost
-# stays isolated from the bwire operator account that already
-# holds image registry / state / vault / omni-backup.
+# Three OpenObserve standalones write to three buckets — one per
+# signal type (logs / traces / metrics). All three share the
+# alimbacho_operator CSK; only the bucket name differs.
 #
-# Lifecycle policy on the bucket DELETEs every object after 7
-# days so the footprint stays bounded near the 8 GB target the
-# operator set; OpenObserve's ZO_DATA_RETENTION_DAYS=7 actively
-# trims at the same cadence as a redundancy.
+# The buckets live in alimbacho67 (NOT bwire) so observability
+# storage cost stays isolated from the bwire operator account
+# that already holds image registry / state / vault / omni-
+# backup.
 #
-# After apply the workflow extracts this output and runs
-#   bao kv put -mount=secret antinvestor/telemetry/openobserve/oci-credentials \
+# Per-signal lifecycle:
+#   logs    : DELETE after 7 days
+#   traces  : DELETE after 7 days
+#   metrics : DELETE after 30 days
+# OpenObserve's matching ZO_DATA_RETENTION_DAYS in each
+# HelmRelease trims at the same cadence; the OCI lifecycle
+# policy is the floor.
+#
+# After apply the workflow extracts each entry and runs
+#   bao kv put -mount=secret \
+#     antinvestor/telemetry/openobserve/oci-credentials-${signal} \
 #     access_key=$ACCESS secret_key=$SECRET \
 #     bucket=$BUCKET endpoint=$ENDPOINT region=$REGION
-# so the openobserve-oci-credentials ExternalSecret can mint the
-# kube Secret OpenObserve consumes.
+# so the per-signal openobserve-oci-${signal}-credentials
+# ExternalSecrets can mint the kube Secrets OpenObserve consumes.
 output "telemetry_storage_credentials" {
-  description = "S3-compat credentials for OpenObserve's telemetry-storage bucket (alimbacho67). Pushed to OpenBao at antinvestor/telemetry/openobserve/oci-credentials by the post-apply workflow step."
+  description = "S3-compat credentials for OpenObserve's three telemetry buckets — keyed by signal (logs/traces/metrics). Each value points at its own tenancy + CSK. Pushed to OpenBao at antinvestor/telemetry/openobserve/oci-credentials-{signal} by the post-apply workflow step."
   sensitive   = true
   value = {
-    access_key_id     = oci_identity_customer_secret_key.alimbacho_operator.id
-    secret_access_key = oci_identity_customer_secret_key.alimbacho_operator.key
-    bucket            = oci_objectstorage_bucket.telemetry_storage.name
-    region            = local.alimbacho_region
-    endpoint = format(
-      "https://%s.compat.objectstorage.%s.oraclecloud.com",
-      data.oci_objectstorage_namespace.alimbacho.namespace,
-      local.alimbacho_region,
-    )
+    logs = {
+      access_key_id     = oci_identity_customer_secret_key.bwire_operator.id
+      secret_access_key = oci_identity_customer_secret_key.bwire_operator.key
+      bucket            = oci_objectstorage_bucket.telemetry_logs_storage.name
+      region            = local.bwire_region
+      endpoint = format(
+        "https://%s.compat.objectstorage.%s.oraclecloud.com",
+        data.oci_objectstorage_namespace.this.namespace,
+        local.bwire_region,
+      )
+    }
+    traces = {
+      access_key_id     = oci_identity_customer_secret_key.brianelvis_operator.id
+      secret_access_key = oci_identity_customer_secret_key.brianelvis_operator.key
+      bucket            = oci_objectstorage_bucket.telemetry_traces_storage.name
+      region            = local.brianelvis_region
+      endpoint = format(
+        "https://%s.compat.objectstorage.%s.oraclecloud.com",
+        data.oci_objectstorage_namespace.brianelvis.namespace,
+        local.brianelvis_region,
+      )
+    }
+    metrics = {
+      access_key_id     = oci_identity_customer_secret_key.alimbacho_operator.id
+      secret_access_key = oci_identity_customer_secret_key.alimbacho_operator.key
+      bucket            = oci_objectstorage_bucket.telemetry_metrics_storage.name
+      region            = local.alimbacho_region
+      endpoint = format(
+        "https://%s.compat.objectstorage.%s.oraclecloud.com",
+        data.oci_objectstorage_namespace.alimbacho.namespace,
+        local.alimbacho_region,
+      )
+    }
   }
 }
