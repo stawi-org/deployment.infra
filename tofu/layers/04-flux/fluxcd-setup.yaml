@@ -27,13 +27,13 @@ spec:
     networkPolicy: true
     domain: "cluster.local"
   kustomize:
-    # Pin every Flux controller Deployment (source-controller,
-    # kustomize-controller, helm-controller, notification-controller,
-    # image-reflector-controller, image-automation-controller,
-    # source-watcher) to the control-plane node. Keeps Flux
-    # infrastructure isolated on the CP; application workloads
-    # without an explicit CP toleration land only on workers.
     patches:
+      # Pin every Flux controller Deployment (source-controller,
+      # kustomize-controller, helm-controller, notification-controller,
+      # image-reflector-controller, image-automation-controller,
+      # source-watcher) to the control-plane node. Keeps Flux
+      # infrastructure isolated on the CP; application workloads
+      # without an explicit CP toleration land only on workers.
       - target:
           kind: Deployment
         patch: |
@@ -50,6 +50,35 @@ spec:
               - key: "node-role.kubernetes.io/control-plane"
                 operator: "Exists"
                 effect: "NoSchedule"
+
+      # Bump per-controller reconcile concurrency from the medium-
+      # profile default (10 for kustomize/helm, lower for source) up
+      # to 20. With ~80 HelmReleases and ~40 Kustomizations across
+      # the deployment.manifests tree, default concurrency serialises
+      # cold-start. pflag takes the last `--concurrent` value, so
+      # appending overrides the profile default cleanly.
+      - target:
+          kind: Deployment
+          name: "(kustomize-controller|helm-controller|source-controller)"
+        patch: |
+          - op: add
+            path: /spec/template/spec/containers/0/args/-
+            value: --concurrent=20
+
+      # Reduce the dependency-requeue interval from 30s default to
+      # 10s. Only kustomize-controller and helm-controller have a
+      # `dependsOn` graph; everything else ignores this flag. With
+      # the deep cross-namespace dependsOn chain in
+      # deployment.manifests, 10s shaves minutes off cold-start
+      # because blocked Kustomizations re-check predecessors 3× more
+      # often.
+      - target:
+          kind: Deployment
+          name: "(kustomize-controller|helm-controller)"
+        patch: |
+          - op: add
+            path: /spec/template/spec/containers/0/args/-
+            value: --requeue-dependency=10s
   sync:
     kind: GitRepository
     provider: github
