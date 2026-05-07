@@ -108,111 +108,54 @@ resource "oci_objectstorage_bucket" "omni_backup_storage" {
   versioning   = "Disabled"
 }
 
-# ---- Per-signal telemetry buckets (alimbacho67/bwire/brianelvis33)
+# ---- alimbacho67: telemetry-storage (private) -------------------
 #
-# OpenObserve runs as three standalone instances (one per signal:
-# logs / traces / metrics), each writing to its own bucket on a
-# dedicated tenancy. Storage cost stays isolated per signal +
-# per account; per-signal lifecycle drifts independently. The
-# 8 GB ceiling per bucket comes from layering an OCI lifecycle
-# policy (the floor) with the matching ZO_DATA_RETENTION_DAYS
-# in each HelmRelease (active trim).
+# Backing store for OpenObserve's flushed log/metric/trace blocks.
+# Lives in alimbacho67 — separate tenancy from the bwire estate
+# (image registry / state / vault / omni-backup) so observability
+# storage cost is isolated from the operator-owned bwire account.
 #
-# Mapping (matches main.tf provider aliases):
-#   logs    → bwire        (7 days)
-#   traces  → brianelvis33 (7 days)
-#   metrics → alimbacho67  (30 days, lower per-day volume)
+# Versioning OFF: OpenObserve treats blocks as immutable once
+# flushed; never writes the same key twice. Versioning would
+# double the storage cost for no operational benefit.
+#
+# Size cap: ~8 GB. OCI Object Storage doesn't enforce hard
+# bucket-level quotas, so we layer:
+#   1. The lifecycle policy below — DELETE objects older than 7
+#      days. At 1 GB/day average ingest the bucket caps near 7 GB.
+#   2. OpenObserve retention is set in the HelmRelease values
+#      (ZO_DATA_RETENTION_DAYS=7) so the app actively deletes
+#      blocks at the same cadence; the lifecycle policy is the
+#      backstop if a delete is missed.
 data "oci_objectstorage_namespace" "alimbacho" {
   provider = oci.alimbacho
 }
 
-# Three buckets, one per signal type, one per OCI tenancy. Each
-# bucket caps near 8 GB via the lifecycle policy below + the
-# matching ZO_DATA_RETENTION_DAYS in the per-signal OpenObserve
-# HelmRelease — the lifecycle policy is the floor regardless of
-# application behaviour. Provider must be static per resource in
-# Terraform, so each bucket is its own block.
-#
-# logs → bwire (7 days, ~1 GB/day → ~7 GB)
-data "oci_objectstorage_namespace" "brianelvis" {
-  provider = oci.brianelvis
-}
-
-resource "oci_objectstorage_bucket" "telemetry_logs_storage" {
-  provider       = oci.bwire
-  compartment_id = local.bwire_compartment_ocid
-  namespace      = data.oci_objectstorage_namespace.this.namespace
-  name           = "telemetry-logs-storage"
-
-  access_type  = "NoPublicAccess"
-  storage_tier = "Standard"
-  versioning   = "Disabled"
-}
-
-resource "oci_objectstorage_object_lifecycle_policy" "telemetry_logs_storage" {
-  provider  = oci.bwire
-  namespace = data.oci_objectstorage_namespace.this.namespace
-  bucket    = oci_objectstorage_bucket.telemetry_logs_storage.name
-
-  rules {
-    name        = "delete-after-7d"
-    action      = "DELETE"
-    is_enabled  = true
-    time_amount = 7
-    time_unit   = "DAYS"
-  }
-}
-
-# traces → brianelvis33 (7 days, ~500 MB/day → ~3.5 GB)
-resource "oci_objectstorage_bucket" "telemetry_traces_storage" {
-  provider       = oci.brianelvis
-  compartment_id = local.brianelvis_compartment_ocid
-  namespace      = data.oci_objectstorage_namespace.brianelvis.namespace
-  name           = "telemetry-traces-storage"
-
-  access_type  = "NoPublicAccess"
-  storage_tier = "Standard"
-  versioning   = "Disabled"
-}
-
-resource "oci_objectstorage_object_lifecycle_policy" "telemetry_traces_storage" {
-  provider  = oci.brianelvis
-  namespace = data.oci_objectstorage_namespace.brianelvis.namespace
-  bucket    = oci_objectstorage_bucket.telemetry_traces_storage.name
-
-  rules {
-    name        = "delete-after-7d"
-    action      = "DELETE"
-    is_enabled  = true
-    time_amount = 7
-    time_unit   = "DAYS"
-  }
-}
-
-# metrics → alimbacho67 (30 days, ~250 MB/day → ~7.5 GB; metrics
-# compress well so we keep the trend window long while staying
-# under the 8 GB cap)
-resource "oci_objectstorage_bucket" "telemetry_metrics_storage" {
+resource "oci_objectstorage_bucket" "telemetry_storage" {
   provider       = oci.alimbacho
   compartment_id = local.alimbacho_compartment_ocid
   namespace      = data.oci_objectstorage_namespace.alimbacho.namespace
-  name           = "telemetry-metrics-storage"
+  name           = "telemetry-storage"
 
   access_type  = "NoPublicAccess"
   storage_tier = "Standard"
   versioning   = "Disabled"
 }
 
-resource "oci_objectstorage_object_lifecycle_policy" "telemetry_metrics_storage" {
+resource "oci_objectstorage_object_lifecycle_policy" "telemetry_storage" {
   provider  = oci.alimbacho
   namespace = data.oci_objectstorage_namespace.alimbacho.namespace
-  bucket    = oci_objectstorage_bucket.telemetry_metrics_storage.name
+  bucket    = oci_objectstorage_bucket.telemetry_storage.name
 
+  # Delete every object after 7 days. Bucket footprint stays
+  # bounded by ingest rate * 7 days. With OpenObserve's typical
+  # ~500 MB-1 GB/day for a small cluster, this caps near the
+  # 8 GB target.
   rules {
-    name        = "delete-after-30d"
+    name        = "delete-after-7d"
     action      = "DELETE"
     is_enabled  = true
-    time_amount = 30
+    time_amount = 7
     time_unit   = "DAYS"
   }
 }

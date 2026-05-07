@@ -14,10 +14,3 @@ oci_operator_user_name = "bwire@stawi.org"
 # operator email — cluster-provisioner is the WIF-bound one used by
 # tofu apply and shouldn't carry long-lived CSKs.
 alimbacho_operator_user_name = "alimbacho67@gmail.com"
-
-# brianelvis33 operator user name — owns the CSK that writes
-# OpenObserve traces to telemetry-traces-storage. First-pass guess
-# follows alimbacho67's gmail pattern; the check block in
-# oci-operator-csk.tf surfaces the tenancy's actual user list if
-# this needs adjusting on first apply.
-brianelvis_operator_user_name = "brianelvis33@gmail.com"
