@@ -77,28 +77,3 @@ output "omni_backup_writer_credentials" {
     )
   }
 }
-
-# OpenObserve writes log/metric/trace blocks to telemetry-storage.
-# Reuses the same CSK (operator user, shared by every bwire S3-
-# compat consumer); the bucket is the only differentiating field.
-# After apply the workflow extracts this output and runs
-#   bao kv put -mount=secret antinvestor/telemetry/openobserve/oci-credentials \
-#     access_key=$ACCESS secret_key=$SECRET \
-#     bucket=$BUCKET endpoint=$ENDPOINT region=$REGION
-# so the openobserve-r2-credentials ExternalSecret can mint the
-# kube Secret OpenObserve consumes.
-output "telemetry_storage_credentials" {
-  description = "S3-compat credentials for OpenObserve's telemetry-storage bucket (bwire). Pushed to OpenBao at antinvestor/telemetry/openobserve/oci-credentials by the post-apply workflow step."
-  sensitive   = true
-  value = {
-    access_key_id     = oci_identity_customer_secret_key.bwire_operator.id
-    secret_access_key = oci_identity_customer_secret_key.bwire_operator.key
-    bucket            = oci_objectstorage_bucket.telemetry_storage.name
-    region            = local.bwire_region
-    endpoint = format(
-      "https://%s.compat.objectstorage.%s.oraclecloud.com",
-      data.oci_objectstorage_namespace.this.namespace,
-      local.bwire_region,
-    )
-  }
-}
