@@ -115,4 +115,19 @@ age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
 #                   Contabo VPS so the disk gets repartitioned with
 #                   the new name from first boot. Pairs with
 #                   02-oracle-infra gen=15 destroy+create.
-force_reinstall_generation = 20
+#  21 — 2026-05-07: pin Flannel's inter-node interface to KubeSpan
+#                   (cluster.network.cni.flannel.extraArgs:
+#                    [--iface=kubespan]) so pod MTU drops from
+#                   8950 (host eth0 jumbo - 50 vxlan) to 1370
+#                   (kubespan WG 1420 - 50 vxlan). Verified the
+#                   underlying bug: cross-node TCP/TLS handshake
+#                   blackholed because the cert-chain reply
+#                   exceeded the WG path MTU and got dropped
+#                   without ICMPv6 PTB feedback (vault-openbao
+#                   bootstrap pod could ping pod-0 but every TLS
+#                   handshake timed out at 5s on the server-hello).
+#                   The Flannel CNI manifest is bootstrap-only on
+#                   Talos, so applying the new --iface arg requires
+#                   a reinstall rather than a config edit. Pairs
+#                   with 02-oracle-infra gen=16 destroy+create.
+force_reinstall_generation = 21

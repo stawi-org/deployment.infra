@@ -64,4 +64,13 @@ force_image_generation = 12
 #                   onto a fresh disk repartitioned under the new
 #                   name. Pairs with 01-contabo-infra gen=20
 #                   PUT-reinstall.
-force_reinstall_generation = 15
+#  16 — 2026-05-07: pin Flannel inter-node iface to KubeSpan
+#                   (cluster.network.cni.flannel.extraArgs:
+#                    [--iface=kubespan]) so pod MTU = 1370
+#                   instead of the host's 8950 jumbo-derived
+#                   value. Cross-node TCP/TLS handshakes were
+#                   blackholing on cert-chain reply because the
+#                   8950-byte VXLAN packets didn't fit through
+#                   the 1420-byte WG path. Pairs with
+#                   01-contabo-infra gen=21 PUT-reinstall.
+force_reinstall_generation = 16
