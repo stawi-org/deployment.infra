@@ -163,23 +163,21 @@ patches:
           serviceSubnets:
             - fd00:10:96::/108
             - 10.96.0.0/12
-          # Pin Flannel's inter-node interface to KubeSpan so the VXLAN
-          # device's MTU is computed from the WireGuard link (1420)
-          # rather than the host interface (Contabo + OCI both ship
-          # jumbo-frame eth0 at 9000 MTU). Without this, pods get
-          # eth0 = 9000 - 50 (vxlan) = 8950 MTU; cross-node TCP/TLS
-          # handshakes blackhole because the server-hello cert chain
-          # exceeds the WG path MTU and gets dropped without ICMPv6
-          # PTB feedback. With --iface=kubespan, Flannel's flannel.1
-          # device is sized 1420 - 50 = 1370, every pod gets that, and
-          # cross-node traffic fits through KubeSpan cleanly.
-          # Verified: same-node TLS handshake worked (1ms) while
-          # cross-node TLS timed out at 5s on the cert-chain reply.
-          cni:
-            name: flannel
-            flannel:
-              extraArgs:
-                - --iface=kubespan
+          # MTU note: pod traffic crosses KubeSpan WireGuard tunnels
+          # cluster-wide. WG MTU is 1420; Flannel's VXLAN backend
+          # adds 50 bytes, so pod MTU must be ≤ 1370 to avoid
+          # cross-node TCP/TLS handshake blackhole on cert-chain
+          # replies. Tried `cni.flannel.extraArgs: [--iface=kubespan]`
+          # to make Flannel auto-detect MTU from WG, but the
+          # KubeSpan iface is IPv6-only and Flannel's --iface
+          # mandates an IPv4 address ("Could not find valid
+          # interface matching kubespan: failed to find IPv4 address
+          # for interface kubespan"). Instead, we patch kube-flannel-
+          # cfg's net-conf.json with `Backend.MTU: 1370` via Flux
+          # (deployment.manifests/providers/network/), which Flannel
+          # honors and propagates as FLANNEL_MTU=1320 to every pod
+          # veth pair. Verified: pod eth0 MTU drops 8950 → 1320,
+          # cross-node TLS handshake succeeds.
       # Kubelet needs `--node-ip` to include both v4 and v6 so each
       # node reports both InternalIPs and gets a v6 podCIDR. Without
       # this, kubelet auto-detects only the primary v4 address and
