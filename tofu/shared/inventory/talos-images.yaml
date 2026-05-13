@@ -3,7 +3,7 @@
 # or bump tofu/shared/schematics/cluster.yaml and merge.
 schematic_id: "19b209f4aa9ca8f710f3d96149f152860eb7ccdd3ddf1f05af100d78741b76bc-v1.13.0"
 talos_version: "v1.13.0"
-generated_at: "2026-05-06T09:25:54Z"
+generated_at: "2026-05-13T07:23:42Z"
 formats:
   contabo:
     url: "https://pkgs.stawi.org/19b209f4aa9ca8f710f3d96149f152860eb7ccdd3ddf1f05af100d78741b76bc-v1.13.0/metal-amd64-omni-stawi-v1.13.0-955511.iso"
@@ -15,28 +15,34 @@ formats:
     qcow2_url: "https://pkgs.stawi.org/19b209f4aa9ca8f710f3d96149f152860eb7ccdd3ddf1f05af100d78741b76bc-v1.13.0/oracle-arm64-omni-stawi-v1.13.0-955511.qcow2"
     qcow2_sha256: "c50c0b3e825eb9dd3a0631cbc87cdf67b09e6b5070d4ffd62061e2d6e073368b"
     archive_url: "https://pkgs.stawi.org/19b209f4aa9ca8f710f3d96149f152860eb7ccdd3ddf1f05af100d78741b76bc-v1.13.0/talos-v1.13.0-19b209f4aa9ca8f710f3d96149f152860eb7ccdd3ddf1f05af100d78741b76bc-v1.13.0-oracle-arm64.oci"
-    archive_sha256: "a4be0d1de300839135bf6b67a8671a079034e8c1734a9b63fc883301f3a781c2"
+    archive_sha256: "f11a6f22e76311924591d1d77478859d5d8e1b3a4e3b17b8d71e62766154e214"
     accounts:
       alimbacho67:
-        ocid: "ocid1.image.oc1.eu-frankfurt-1.aaaaaaaamns4herdb6connxn2mlklclovlhmdimowyypiymioqavlpeq76ya"
+        ocid: "ocid1.image.oc1.eu-frankfurt-1.aaaaaaaax7trpvlhryjicixwpdd3xxdk2y2u6b5smyaltgmdvmxgeerrxopq"
         region: "eu-frankfurt-1"
         namespace: "frkcct5ousx4"
         bucket: "talos-images-alimbacho67"
         object: "talos-v1.13.0-19b209f4aa9ca8f710f3d96149f152860eb7ccdd3ddf1f05af100d78741b76bc-v1.13.0-oracle-arm64.oci"
       ambetera:
-        ocid: "ocid1.image.oc1.uk-london-1.aaaaaaaaqs4wi7oz3tvy7z562qnjslsvwe64webapiqjtjrdaniyh5mmjuha"
+        ocid: "ocid1.image.oc1.uk-london-1.aaaaaaaa3emf2jalsoboq4lo5d2fw2pawp26mx2vdxr6j2ghlp5raf6p32aq"
         region: "uk-london-1"
         namespace: "lrxjfm8ftnia"
         bucket: "talos-images-ambetera"
         object: "talos-v1.13.0-19b209f4aa9ca8f710f3d96149f152860eb7ccdd3ddf1f05af100d78741b76bc-v1.13.0-oracle-arm64.oci"
+      anto:
+        ocid: "ocid1.image.oc1.eu-marseille-1.aaaaaaaan6torvmjq6ppmtehq4naimblyexjxpnp46rvrv4cbxsxss5nzakq"
+        region: "eu-marseille-1"
+        namespace: "axrtwreos356"
+        bucket: "talos-images-anto"
+        object: "talos-v1.13.0-19b209f4aa9ca8f710f3d96149f152860eb7ccdd3ddf1f05af100d78741b76bc-v1.13.0-oracle-arm64.oci"
       brianelvis33:
-        ocid: "ocid1.image.oc1.eu-frankfurt-1.aaaaaaaadxcumheq56aar534alpbllnyxjz77o5r563vbwshhkcfbqhaea6a"
+        ocid: "ocid1.image.oc1.eu-frankfurt-1.aaaaaaaagswhmuhbpzqsyh73ie3bn253uupusiruyvpyw4ruypjwg7sbihrq"
         region: "eu-frankfurt-1"
         namespace: "frbrxjzxjaq1"
         bucket: "talos-images-brianelvis33"
         object: "talos-v1.13.0-19b209f4aa9ca8f710f3d96149f152860eb7ccdd3ddf1f05af100d78741b76bc-v1.13.0-oracle-arm64.oci"
       bwire:
-        ocid: "ocid1.image.oc1.eu-frankfurt-1.aaaaaaaapppedzir65kbb2csvujcc4z3jtfpupiw2qtvbdulsockmof7mfqq"
+        ocid: "ocid1.image.oc1.eu-frankfurt-1.aaaaaaaavpfhfkbksxfjnhjzeqbuw5tnep6arqbfosmjtzczoxc2h6ciykdq"
         region: "eu-frankfurt-1"
         namespace: "frosk7nwicev"
         bucket: "talos-images-bwire"
