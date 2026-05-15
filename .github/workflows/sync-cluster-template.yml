@@ -30,6 +30,15 @@ on:
         description: Validate + diff only; do not apply
         type: boolean
         default: false
+  # Re-render the cluster template whenever tofu-apply completes —
+  # that's the moment R2 inventory's provider_data.status flips to
+  # "running" for newly provisioned nodes. MachineSet sizes are
+  # rendered from that field, so each apply should pull a fresh
+  # render. The job-level `if:` further filters this to main-branch
+  # tofu-apply runs that actually succeeded.
+  workflow_run:
+    workflows: [tofu-apply]
+    types: [completed]
 
 permissions:
   contents: read
@@ -46,6 +55,14 @@ env:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    # When dispatched via workflow_run, only react to main-branch
+    # tofu-apply runs that actually succeeded — otherwise a failed
+    # tofu-apply (or a PR-stage one) would still re-sync. Push and
+    # workflow_dispatch firings always run.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
     env:
       # cpd.<zone> is gray-cloud direct (no CF in front). cp.<zone>
       # is orange-cloud — CF's free plan downgrades HTTP/2 to HTTP/1.1
@@ -348,13 +365,80 @@ jobs:
           envsubst < tofu/shared/clusters/etcd-backup-s3-configs.yaml.tmpl > "$rendered"
           omnictl apply -f "$rendered"
 
+      # Render ControlPlane / Workers `size:` from R2 inventory so
+      # MachineSet sizes track the provisioned-and-running node count
+      # without an operator template bump. Counts only nodes whose
+      # provider_data.status is "running" — declared-but-not-yet-
+      # provisioned entries (e.g. an OCI cell stuck in
+      # Out-of-Capacity, or onprem placeholders) are excluded so the
+      # MachineSet never sits ScalingUp waiting for a VM that doesn't
+      # exist. The placeholder integers in main.yaml stay as
+      # validation-only stand-ins; this step overwrites them on every
+      # run. Downstream Validate/Diff/Sync steps use the rendered
+      # tempfile, not the on-disk template.
+      - name: Render machine-set sizes from inventory
+        env:
+          AWS_ACCESS_KEY_ID:        ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY:    ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
+          R2_ACCOUNT_ID:            ${{ secrets.R2_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          inv="${RUNNER_TEMP}/inventory-render"
+          aws s3 sync \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --region us-east-1 \
+            --exclude "*" \
+            --include "*/nodes.yaml" \
+            --no-progress \
+            "s3://cluster-tofu-state/production/inventory/" "$inv/" >/dev/null
+
+          # Count nodes per role where provider_data.status == "running".
+          # yq+jq pipeline: emit JSON of .nodes, filter by role + status,
+          # take the length. Empty file / missing .nodes → 0.
+          count_role () {
+            local role="$1" total=0 n
+            while IFS= read -r f; do
+              n=$(yq -o=json '.nodes // {}' "$f" \
+                | jq --arg role "$role" '
+                    [ to_entries[]
+                      | select(.value.role == $role
+                                and (.value.provider_data.status // "") == "running") ]
+                    | length')
+              total=$(( total + n ))
+            done < <(find "$inv" -name nodes.yaml)
+            echo "$total"
+          }
+          CP_COUNT=$(count_role controlplane)
+          WORKER_COUNT=$(count_role worker)
+
+          # Guard against rendering cp=0 — that would orphan every
+          # workload and is almost certainly a transient inventory
+          # glitch rather than an intended state.
+          if (( CP_COUNT < 1 )); then
+            echo "::error::Refusing to render with controlplane size=0 — inventory currently shows no role=controlplane node with provider_data.status=running. Aborting sync to avoid orphaning the cluster."
+            exit 1
+          fi
+
+          rendered="${RUNNER_TEMP}/main.rendered.yaml"
+          cp tofu/shared/clusters/main.yaml "$rendered"
+          # `select(...)` on a multi-doc stream returns the matching
+          # document; assignment then rewrites only that document.
+          yq -i "(select(.kind == \"ControlPlane\").machineClass.size) = $CP_COUNT" "$rendered"
+          yq -i "(select(.kind == \"Workers\").machineClass.size) = $WORKER_COUNT" "$rendered"
+
+          echo "::notice::rendered sizes — cp=$CP_COUNT workers=$WORKER_COUNT"
+          echo "--- diff against on-disk template ---"
+          diff -u tofu/shared/clusters/main.yaml "$rendered" || true
+          echo "RENDERED_TEMPLATE=$rendered" >> "$GITHUB_ENV"
+
       # Validate before sync — catches schema typos that would
       # otherwise fail mid-apply with partial state changes.
       - name: Validate template
         run: |
           set -euo pipefail
           omnictl cluster template validate \
-            -f tofu/shared/clusters/main.yaml
+            -f "$RENDERED_TEMPLATE"
 
       # Show the diff before applying. Useful in CI logs even on
       # auto-apply runs — gives operators a quick "what changed" view.
@@ -362,14 +446,14 @@ jobs:
         run: |
           set -euo pipefail
           omnictl cluster template diff \
-            -f tofu/shared/clusters/main.yaml || true
+            -f "$RENDERED_TEMPLATE" || true
 
       - name: Sync template
         if: env.DRY_RUN != 'true'
         run: |
           set -euo pipefail
           omnictl cluster template sync \
-            -f tofu/shared/clusters/main.yaml \
+            -f "$RENDERED_TEMPLATE" \
             --verbose
 
       # Per-node Talos patches (LinkConfig + HostnameConfig +
