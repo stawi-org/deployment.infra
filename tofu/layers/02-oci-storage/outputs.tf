@@ -1,7 +1,7 @@
 # tofu/layers/02-oci-storage/outputs.tf
 
 output "cluster_image_registry" {
-  description = "Public OCI Object Storage bucket holding the schematic-keyed Talos image staging area (bwire only). Read by regenerate-talos-images.yml + node-oracle for OCI image-import URLs."
+  description = "Public OCI Object Storage bucket holding the schematic-keyed Talos image staging area (bwire only). Read by sync-talos-images.yml + node-oracle for OCI image-import URLs."
   value = {
     namespace = data.oci_objectstorage_namespace.this.namespace
     bucket    = oci_objectstorage_bucket.cluster_image_registry.name
@@ -58,12 +58,12 @@ output "omni_backup_storage" {
 }
 
 # Credentials shared by all bwire S3-compat consumers (omni-host
-# etcd-backup, regenerate-talos-images uploads, sync-cluster-template's
+# etcd-backup, sync-talos-images uploads, sync-cluster-template's
 # EtcdBackupS3Configs render). Single CSK on the operator user; field
 # shape preserved verbatim from the prior 02-oracle-infra output so
 # consumers don't churn.
 output "omni_backup_writer_credentials" {
-  description = "S3-compat credentials (single CSK) for OCI bwire object storage. Used by omni-host etcd-backup, regenerate-talos-images uploads, and sync-cluster-template's EtcdBackupS3Configs render."
+  description = "S3-compat credentials (single CSK) for OCI bwire object storage. Used by omni-host etcd-backup, sync-talos-images uploads, and sync-cluster-template's EtcdBackupS3Configs render."
   sensitive   = true
   value = {
     access_key_id     = oci_identity_customer_secret_key.bwire_operator.id

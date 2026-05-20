@@ -15,7 +15,7 @@ directory — no manual dashboard step required.
 ## Machine assignment
 
 Until per-role kernel cmdline initial-labels are baked into the image
-build pipeline (see `.github/workflows/regenerate-talos-images.yml`),
+build pipeline (see `.github/workflows/sync-talos-images.yml`),
 the operator labels each registered machine in Omni:
 
 ```sh

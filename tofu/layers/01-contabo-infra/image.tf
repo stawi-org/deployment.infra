@@ -1,7 +1,7 @@
 # tofu/layers/01-contabo-infra/image.tf
 #
 # Reads the Talos image inventory rendered by the
-# regenerate-talos-images workflow and registers each account's
+# sync-talos-images workflow and registers each account's
 # contabo_image with the URL. Contabo issues an image UUID per
 # registration; node-contabo's null_resource.ensure_image picks up
 # UUID drift via the trigger and PUTs reinstalls.

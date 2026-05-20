@@ -8,7 +8,7 @@
 #   - push to main touching tofu/shared/clusters/** (or this workflow)
 #   - manual workflow_dispatch
 #
-# Auth: same OMNI_SERVICE_ACCOUNT_KEY used by regenerate-talos-images.
+# Auth: same OMNI_SERVICE_ACCOUNT_KEY used by sync-talos-images.
 #
 # Security: this workflow does NOT consume untrusted GitHub-event
 # inputs (no PR titles, issue bodies, or commit messages). The only
@@ -50,7 +50,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  OMNI_VERSION: v1.7.1 # Pinned to match the omnictl used in regenerate-talos-images.
+  OMNI_VERSION: v1.7.1 # Pinned to match the omnictl used in sync-talos-images.
 
 jobs:
   sync:

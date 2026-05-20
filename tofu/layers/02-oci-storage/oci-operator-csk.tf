@@ -4,7 +4,7 @@
 # the bwire OCI tenancy. Single CSK shared by all OCI S3-compat
 # consumers:
 #   - omni-host's --etcd-backup-s3 flag (writes to omni-backup-storage)
-#   - regenerate-talos-images workflow (writes Talos images to
+#   - sync-talos-images workflow (writes Talos images to
 #     cluster-image-registry)
 #   - sync-cluster-template's EtcdBackupS3Configs render
 #

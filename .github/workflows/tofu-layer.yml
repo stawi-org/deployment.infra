@@ -107,7 +107,7 @@ jobs:
 
       # Layer 03 drives Omni via omnictl shell-outs from null_resources.
       # Pinned to the same omnictl release used by sync-cluster-template /
-      # regenerate-talos-images so the resource shapes match what's running
+      # sync-talos-images so the resource shapes match what's running
       # on the omni-host.
       - name: Install omnictl
         if: inputs.layer == '03-talos'

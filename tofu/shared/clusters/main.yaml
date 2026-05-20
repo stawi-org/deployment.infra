@@ -39,7 +39,7 @@
 #     2. Talos's `talos.machine.label.<key>=<value>` kernel args
 #        (if supported in the version we're on) — same per-role
 #        schematic requirement.
-#   Either way needs the regenerate-talos-images workflow to mint
+#   Either way needs the sync-talos-images workflow to mint
 #   N schematics and the talos-images.yaml schema to grow per-role
 #   entries; node modules then pick the right schematic_id based
 #   on `var.role`. Substantial pipeline rework; do as a focused PR
