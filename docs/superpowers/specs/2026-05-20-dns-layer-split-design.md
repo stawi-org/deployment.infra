@@ -64,19 +64,19 @@ The body of today's `03-talos/dns.tf` (lines 23–182), lifted verbatim. Logic u
 - `data "cloudflare_dns_records" "existing_per_zone"` + `import` block — drift adoption. IPv6 canonicalisation via `cidrhost("${ip}/128", 0)` preserved.
 - `_debug_dns_intended_canonical_keys` / `_debug_dns_existing_canonical_keys` / `_debug_dns_to_import` outputs preserved.
 
-### `tofu/layers/04-dns/destroy.tf` (new)
+### Stale-record cleanup — deferred to follow-up
 
-Stale-record cleanup. For each zone, identify CF records that match **both** filters:
-- `name` is in the managed-name whitelist `["prod"]`, AND
-- `type` is in the managed-type whitelist `["A", "AAAA"]`.
+Original design called for an in-layer `destroy.tf` that reaped CF records belonging to demoted LB workers. On closer inspection of tofu semantics, the obvious patterns each have material drawbacks:
 
-…and whose `(name, type, content)` tuple is not in `cluster_dns_intended_records`. Adopt each match into tofu state via an `import` block keyed on the existing record ID, then mark for destroy via a `removed { from = ... }` block (or, equivalently, by not declaring a matching `cloudflare_dns_record` resource — tofu plans a destroy for the imported-but-unmodeled record).
+- **`import` + no resource declaration** — tofu rejects `import` blocks whose target resource isn't declared in config.
+- **`import` + `removed` block on the same address** — same-PR coexistence is disallowed; requires a 2-PR sequence (PR1 adopts, PR2 declares removed).
+- **`null_resource` + `local-exec curl DELETE`** — works in one PR but the destroy command is hidden in a triggers map, far less reviewable than a native plan diff.
 
-The type filter exists because `prod.<zone>` may legitimately carry non-A/AAAA records over time (e.g. an ACME `_acme-challenge.prod` TXT issued by cert-manager, a CNAME alias, an MX record). This layer owns only the LB round-robin (A + AAAA); any other record type at the same name is owned by a different controller and must not be touched.
+Doing this right is a separate plan (likely the 2-PR adopt-then-remove sequence, or a small custom provider). Deferred so this PR stays focused on the layer split + failure isolation, which is the load-bearing improvement.
 
-Mandatory: implementation uses tofu-native primitives (`import` + resource model), not `null_resource` `local-exec curl`. The native path is visible in `tofu plan` output so the PR reviewer can see exactly which records will be destroyed before apply. A `local-exec` approach is invisible to plan and unreviewable, which is unacceptable for code that deletes DNS records.
+**Interim workaround:** operators delete demoted records from the Cloudflare dashboard when a worker is demoted. Low frequency in practice (LB-tag changes are deliberate operator actions).
 
-Whitelist scoping is mandatory: a regex or wildcard on either name or type could nuke `cp.<zone>` (owned by `00-omni-server`) or any other record. Both filters are hard-coded lists, code-reviewed in the PR.
+**Tracked as:** follow-up issue / plan to be created after this PR merges.
 
 ### `tofu/layers/04-dns/variables.tf`
 
@@ -146,14 +146,14 @@ The migration leans on two tofu-native primitives: `removed { destroy = false }`
 | CF record drift (today's bug) | unaffected | fails first apply, self-heals on retry | unaffected | as above |
 | Talos apid unreachable | fails | unaffected | unaffected | DNS still updates correctly |
 | Omni proxy down | `omnictl_machine_labels` step fails | unaffected | unaffected | DNS still updates |
-| Stale records pile up after demotion | unaffected | new destroy clause removes them | unaffected | DNS clean |
+| Stale records pile up after demotion | unaffected | unaffected (cleanup deferred to follow-up) | unaffected | DNS carries demoted IPs until operator deletes via CF dashboard |
 
 ## Robustness additions
 
-1. **Stale-record cleanup** — `destroy.tf`, whitelist-scoped to `name in ["prod"]`. Without this, a worker demoted from LB leaves its IP in CF until manual cleanup.
-2. **Pre-apply drift surfacing in CI** — `tofu-plan.yml`'s `04-dns` job adds a step that runs `tofu show -json plan.tfplan | jq '.resource_changes[] | select(.change.actions[] != "no-op")'` and emits the change list as a GitHub annotation. Operators see "will create 3, import 2, destroy 0" on the PR before merging.
-3. **`create_before_destroy`** on `cloudflare_dns_record.this` — IP changes don't briefly NXDOMAIN.
-4. **Per-record granularity preserved** — `for_each` keying means a CF rate-limit or 5xx on record X fails only X's resource, not the whole layer.
+1. **Pre-apply drift surfacing in CI** — `tofu-plan.yml`'s `04-dns` job adds a step that runs `tofu show -json plan.tfplan | jq '.resource_changes[] | select(.change.actions[] != "no-op")'` and emits the change list as a GitHub annotation. Operators see "will create 3, import 2, destroy 0" on the PR before merging.
+2. **`create_before_destroy`** on `cloudflare_dns_record.this` — IP changes don't briefly NXDOMAIN.
+3. **Per-record granularity preserved** — `for_each` keying means a CF rate-limit or 5xx on record X fails only X's resource, not the whole layer.
+4. **Stale-record cleanup** — see deferred section above; tracked as follow-up.
 
 ## Testing
 
@@ -171,7 +171,6 @@ The migration leans on two tofu-native primitives: `removed { destroy = false }`
 |---|---|
 | First 04-dns apply fails because import-block lookup misses a record | `_debug_dns_*` outputs make the diff visible. Operator hand-imports the missing record and re-applies. |
 | 03-talos's tfstate or CF would lose records during migration | `removed { from = module.cluster_dns lifecycle { destroy = false } }` in a transitional 03-talos `removed.tf` drops state without touching CF; 04-dns's import-block adopts on its first apply. |
-| Stale-record destroy clause deletes something it shouldn't | Scoped to fixed `name in ["prod"]` AND `type in ["A", "AAAA"]` whitelists. Other record types at the same name (TXT, CNAME, MX) are untouched. Code-reviewed in PR. |
 | Cloudflare API token scope insufficient | Same token already used by `03-talos` for the same zone. No scope change. |
 | Concurrent CF write between plan and apply | Standard tofu race. Worst case: apply fails, drift handler picks it up next run. |
 | Plan-time-known constraints break (e.g. data source returns empty) | Existing `try()` coercions in the lifted dns.tf already handle this — `to_import` becomes `{}` and the import block is a no-op. |
@@ -191,4 +190,3 @@ The migration leans on two tofu-native primitives: `removed { destroy = false }`
 | Adding a non-LB node produces no-op `04-dns` plan | Onboard a sandbox account; `tofu plan` shows 0 changes in 04-dns |
 | CF drift on `prod.<zone>` self-heals via 04-dns | Delete a managed record manually; next 04-dns apply re-imports it |
 | A `04-dns` failure does not block `04-flux` | Inject CF 401 via env override; confirm `04-flux` job still runs |
-| Stale `prod.<zone>` records get cleaned up | Demote an LB worker, re-apply, confirm `dig` no longer returns the demoted IP |
