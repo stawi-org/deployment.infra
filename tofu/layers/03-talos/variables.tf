@@ -28,6 +28,12 @@ variable "local_inventory_dir" {
   description = "Local directory where the workflow syncs R2 production/inventory/ before plan."
 }
 
+variable "cloudflare_api_token" {
+  type        = string
+  sensitive   = true
+  description = "Cloudflare API token with Zone:DNS:Edit on every zone. Transitional — needed only while module.cluster_dns lingers in this layer's tfstate (refresh requires auth). Deleted by Task 8 of dns-layer-split."
+}
+
 variable "omni_endpoint" {
   type        = string
   default     = "https://cp.stawi.org"

@@ -9,9 +9,13 @@
 # adopts them on its first apply.
 #
 # `lifecycle.destroy = false` means tofu plans a state-only removal
-# (no provider API call). After this commit's 03-talos apply
-# completes, the cluster_dns module is no longer in 03-talos's
-# tfstate, and this file can be deleted in a follow-up commit.
+# (no provider API call) — but refresh BEFORE the planned removal
+# still needs an authenticated cloudflare provider to read each
+# resource's current state. That's why the cloudflare provider +
+# cloudflare_api_token variable are retained in versions.tf /
+# variables.tf for now. Task 8 of the dns-layer-split plan deletes
+# this file AND the provider config together, once the first apply
+# has cleared module.cluster_dns from state.
 removed {
   from = module.cluster_dns
   lifecycle {

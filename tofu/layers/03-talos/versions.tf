@@ -25,7 +25,22 @@ terraform {
       source  = "hashicorp/local"
       version = "~> 2.5"
     }
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 5.0"
+    }
   }
+}
+
+# Cloudflare provider retained transitionally while module.cluster_dns
+# is still in this layer's tfstate. The `removed { destroy = false }`
+# block in removed.tf will drop those resources from state on the next
+# apply; until then, refresh needs an authenticated CF provider to
+# read the live records. Task 8 of the dns-layer-split plan deletes
+# this block + the cloudflare_api_token variable + the cloudflare
+# entry in required_providers after the first apply.
+provider "cloudflare" {
+  api_token = var.cloudflare_api_token
 }
 
 # AWS provider points at Cloudflare R2 — required because the
