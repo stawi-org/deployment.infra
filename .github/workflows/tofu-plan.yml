@@ -141,6 +141,19 @@ jobs:
     with: { layer: 03-talos, mode: plan }
     secrets: inherit
     needs: [contabo-infra, oracle-infra, onprem-infra]
+  dns:
+    needs: talos
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    # DNS apply is independent of talos config apply success — a talos
+    # failure does not block DNS reconciliation. Same != 'cancelled'
+    # gate as talos to keep the plan running through transient failures.
+    if: always() && needs.talos.result != 'cancelled'
+    uses: ./.github/workflows/tofu-layer.yml
+    with: { layer: 04-dns, mode: plan }
+    secrets: inherit
   # 04-flux disabled until Task 8 part 2 re-introduces Flux as an
   # Omni cluster extension. Layer 04 currently consumes 03-talos's
   # retired kubeconfig / talosconfig outputs.

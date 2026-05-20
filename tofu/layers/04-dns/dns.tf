@@ -1,4 +1,4 @@
-# tofu/layers/03-talos/dns.tf
+# tofu/layers/04-dns/dns.tf
 #
 # Cross-provider cluster DNS — publishes the public-load-balancer
 # round-robin only.
@@ -9,16 +9,15 @@
 #                    LB itself terminates TLS via cert-manager inside
 #                    the cluster, so this record is plain DNS-only.
 #
-# Per-CP `cp-<N>.<zone>` records used to live here for talosctl-by-
-# node mTLS dialing. They were dropped in 2026-04 along with the rest
-# of the talosctl-bootstrap path — the cluster's k8s API is now
-# reached via Omni's k8s-proxy at `cp.<zone>` (owned by the
-# 00-omni-server layer, orange-cloud), and Talos node access is via
-# Omni's machine-api passthrough. Tofu has no per-CP record need.
+# Per-CP `cp-<N>.<zone>` records were dropped in 2026-04 along with
+# the rest of the talosctl-bootstrap path — the cluster's k8s API
+# is reached via Omni's k8s-proxy at `cp.<zone>` (owned by the
+# 00-omni-server layer, orange-cloud).
 #
-# Runs in layer 03 because that's the first layer with a global view
-# of every node (layer 01 sees only Contabo; layer 02 sees only one
-# cloud at a time). LB nodes can come from any provider.
+# Runs in 04-dns (carved out of 03-talos in 2026-05) so a Cloudflare
+# API failure no longer blocks Talos config apply. LB nodes can come
+# from any provider; this layer reads contabo/oracle/onprem remote
+# states directly (see main.tf).
 
 locals {
   # Filter by the external-load-balancer label regardless of role. A

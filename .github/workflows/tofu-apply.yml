@@ -219,6 +219,24 @@ jobs:
       environment: production
     secrets: inherit
 
+  dns:
+    # DNS apply is independent of talos config apply success — a talos
+    # failure does not block DNS reconciliation. The 04-dns layer reads
+    # infra remote states directly, not 03-talos's state, so a stale
+    # 03-talos state has no effect.
+    needs: talos
+    if: always() && needs.talos.result != 'cancelled'
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    uses: ./.github/workflows/tofu-layer.yml
+    with:
+      layer: 04-dns
+      mode: apply
+      environment: production
+    secrets: inherit
+
   # 04-flux is gated off. The 03-talos kubeconfig / talosconfig
   # outputs that this layer consumed are gone now that Omni owns
   # cluster lifecycle. Task 8 part 2 of the Omni-takeover plan re-
