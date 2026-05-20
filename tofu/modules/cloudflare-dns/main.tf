@@ -28,6 +28,14 @@ resource "cloudflare_dns_record" "this" {
   content = each.value.content
   ttl     = var.ttl
   proxied = var.proxied
+
+  # An IP change to a managed name (e.g. LB worker re-IP) becomes
+  # (create new) → (delete old) instead of (delete) → (create). The
+  # old record stays resolvable until the new one is created, so a
+  # public client never sees NXDOMAIN during the swap.
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # NOTE: drift adoption (data "cloudflare_dns_records" + import block)
