@@ -145,7 +145,7 @@ jobs:
       # Bootstrap-bind unbound machines by reading the R2 inventory.
       #
       # Why this exists: when a machine first registers via SideroLink,
-      # layer-03's `sync-machine-labels.sh` reconciler hasn't run yet
+      # layer-03's `sync-machine-label.sh` reconciler hasn't run yet
       # (it runs on tofu-apply). Without a role label the machine
       # doesn't match any MachineClass selector, doesn't bind to the
       # cluster, doesn't get config — and never reports its hostname
@@ -505,7 +505,7 @@ jobs:
           # Extract node-name → ipv4 from the layer-03 tfstate's
           # local_sensitive_file.node_labels_json content. That
           # resource carries the per-node envelope used by
-          # sync-machine-labels.sh; we only need the ipv4 sub-field.
+          # sync-machine-label.sh; we only need the ipv4 sub-field.
           jq -r '
             .resources[]
             | select(.type == "local_sensitive_file" and .name == "node_labels_json")

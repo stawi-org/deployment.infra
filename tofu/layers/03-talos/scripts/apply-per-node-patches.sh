@@ -8,7 +8,7 @@
 # applies via omnictl. Idempotent — re-running with no change is a
 # no-op apply per Omni's resource semantics.
 #
-# Sibling to sync-machine-labels.sh; reuses the same hostname-then-
+# Sibling to sync-machine-label.sh; reuses the same hostname-then-
 # ipv4 matching logic to map node names to Omni machine IDs.
 #
 # Inputs:
@@ -57,7 +57,7 @@ aws s3 sync "s3://cluster-tofu-state/${R2_PREFIX}/" "$workdir/" \
   >/dev/null
 
 # Fetch Omni machine inventory once. Same NDJSON-then-flatten dance
-# as sync-machine-labels.sh — omnictl can transiently emit non-JSON
+# as sync-machine-label.sh — omnictl can transiently emit non-JSON
 # (e.g. partial output during the hourly omni-backup snapshot), so
 # guard with a JSON-validity fallback to '[]'.
 fetch_machines() {
@@ -101,7 +101,7 @@ while IFS= read -r entry; do
   fi
 
   # Match by hostname first, then by any-address-matches-ipv4.
-  # Identical logic to sync-machine-labels.sh.
+  # Identical logic to sync-machine-label.sh.
   machine_id=$(jq -r --arg n "$node_name" --arg ip "$ipv4" '
     (.[] | select((.spec.network.hostname // "") == $n) | .metadata.id),
     (.[] | select(

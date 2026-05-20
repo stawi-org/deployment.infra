@@ -36,7 +36,7 @@ age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
 #                   + bulk `omni-machine-delete` cleared the stawi
 #                   cluster and all zombie Machine UUIDs. Pairs with
 #                   the wait-for-registration fix in layer 03's
-#                   sync-machine-labels.sh so post-reinstall labelling
+#                   sync-machine-label.sh so post-reinstall labelling
 #                   doesn't race the SideroLink phone-home.
 #   6 — 2026-05-01: fleet-wide reinstall paired with the omni-host
 #                   IPv6-forwarding fix landing on layer 00. Clean
