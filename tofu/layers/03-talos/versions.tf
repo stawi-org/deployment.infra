@@ -25,15 +25,7 @@ terraform {
       source  = "hashicorp/local"
       version = "~> 2.5"
     }
-    cloudflare = {
-      source  = "cloudflare/cloudflare"
-      version = "~> 5.0"
-    }
   }
-}
-
-provider "cloudflare" {
-  api_token = var.cloudflare_api_token
 }
 
 # AWS provider points at Cloudflare R2 — required because the
