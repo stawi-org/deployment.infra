@@ -75,7 +75,7 @@ import {
 }
 
 # Object Storage bucket and image imports were removed in Task 5 of
-# the Omni-takeover migration — the regenerate-talos-images workflow
+# the Omni-takeover migration — the sync-talos-images workflow
 # now owns those resources end-to-end. The module's removed{} blocks
 # drop the prior tofu-managed counterparts from state without
 # destroying the live OCI artifacts.

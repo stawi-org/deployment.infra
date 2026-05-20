@@ -2,7 +2,7 @@
 #
 # Per Task 5 of the Omni-takeover (docs/superpowers/plans/2026-04-30-
 # omni-takeover.md): OCI image upload + import moves entirely into
-# the regenerate-talos-images workflow's per-account matrix. This
+# the sync-talos-images workflow's per-account matrix. This
 # module just looks up the workflow-emitted OCID from the inventory
 # and registers shape compat for it.
 #
@@ -25,7 +25,7 @@
 
 locals {
   # Source of truth for image bytes + OCIDs. Populated by the
-  # regenerate-talos-images workflow's auto-PR. Per-account OCIDs
+  # sync-talos-images workflow's auto-PR. Per-account OCIDs
   # land under .formats.oracle.accounts.<profile>.ocid.
   talos_images = yamldecode(file("${path.module}/../../shared/inventory/talos-images.yaml"))
 

@@ -29,7 +29,7 @@ distributed across the cluster.
 
 ```
    ┌─────────────────────────┐
-   │ 1. regenerate-talos-images
+   │ 1. sync-talos-images
    │    → mints Omni-aware Talos image
    │    → uploads to R2 + per-account OCI buckets
    │    → opens bot/talos-images-bump PR
@@ -184,7 +184,7 @@ infra side is healthy.
 # 1. mint a fresh image schematic (regen-token bump in
 #    tofu/shared/schematics/cluster.yaml is OPTIONAL — the workflow
 #    detects schematic content changes and skips on no-op).
-gh workflow run regenerate-talos-images.yml -f talos_version=v1.13.0
+gh workflow run sync-talos-images.yml -f talos_version=v1.13.0
 
 # 2. merge bot/talos-images-bump PR (auto-opened by step 1).
 
