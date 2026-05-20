@@ -532,6 +532,36 @@ jobs:
           TF_VAR_account_key:    ${{ inputs.account }}
         run: tofu show -json tfplan > plan.json
 
+      - name: Summarise non-no-op changes (04-dns only)
+        # Only surface for layers where DNS surprises are highest-impact.
+        # Other layers already emit their own structured plan logs.
+        if: |
+          (inputs.mode == 'plan' || inputs.mode == 'apply')
+          && inputs.layer == '04-dns'
+        working-directory: tofu/layers/${{ inputs.layer }}
+        env:
+          LAYER: ${{ inputs.layer }}
+        run: |
+          set -euo pipefail
+          if [[ ! -f plan.json ]]; then
+            echo "::warning::plan.json missing for $LAYER — skipping change summary"
+            exit 0
+          fi
+          changes=$(jq '[.resource_changes[]
+                          | select(.change.actions[] != "no-op")
+                          | {address, actions: .change.actions, type}]' plan.json)
+          count=$(jq 'length' <<<"$changes")
+          if [[ "$count" == "0" ]]; then
+            echo "::notice::${LAYER} plan: no DNS changes"
+            exit 0
+          fi
+          created=$(jq '[.[] | select(.actions[] == "create")] | length' <<<"$changes")
+          updated=$(jq '[.[] | select(.actions[] == "update")] | length' <<<"$changes")
+          destroyed=$(jq '[.[] | select(.actions[] == "delete")] | length' <<<"$changes")
+          replaced=$(jq '[.[] | select((.actions[] == "delete") and (.actions[] == "create"))] | length' <<<"$changes")
+          echo "::notice::${LAYER} plan: create=$created update=$updated destroy=$destroyed replace=$replaced"
+          jq -r '.[] | "  • \(.address): \(.actions | join(","))"' <<<"$changes" | head -50
+
       # actions/upload-artifact@v4+ refuses duplicate names in a single
       # workflow run. With the per-account oracle matrix, every matrix
       # cell uploads its plan; suffix the artifact name with the account
