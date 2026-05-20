@@ -120,12 +120,11 @@ Add `lifecycle { create_before_destroy = true }` on `cloudflare_dns_record.this`
 
 ### One-time migration (first apply after merge)
 
-1. `03-talos` apply runs without `dns.tf`. Talos config apply succeeds. The `module.cluster_dns[...]` resources are orphaned in `03-talos`'s tfstate. Follow-up cleanup either:
-   - Operator runs `tofu state rm 'module.cluster_dns'` against `03-talos` (one-shot), or
-   - Leaves orphan to be reaped by next `apply -refresh-only`.
+1. `03-talos` apply runs. `dns.tf` has been deleted, but a transitional `removed.tf` declares `removed { from = module.cluster_dns lifecycle { destroy = false } }`. Tofu drops `module.cluster_dns` from `03-talos`'s tfstate without making any Cloudflare API calls — the records remain live in CF.
 2. `04-dns` apply runs for the first time. Plan shows N record creates. CF returns `400 81058 "identical record already exists"` on each. The `import` block fires from `data "cloudflare_dns_records"` lookup. Records adopt into `04-dns`'s tfstate. Subsequent applies are no-op.
+3. Follow-up commit (after the first successful apply cycle): delete `03-talos/removed.tf`. The `removed` block has done its job; leaving it in place is harmless but cluttered.
 
-The migration leans on the existing self-heal — exactly what it was built for. No `tofu state mv` operator surgery required.
+The migration leans on two tofu-native primitives: `removed { destroy = false }` for the departure from `03-talos`, and the existing `import` self-heal for the arrival at `04-dns`. No `tofu state mv` / `tofu state rm` operator surgery required.
 
 ### Steady state
 
@@ -171,7 +170,7 @@ The migration leans on the existing self-heal — exactly what it was built for.
 | Risk | Mitigation |
 |---|---|
 | First 04-dns apply fails because import-block lookup misses a record | `_debug_dns_*` outputs make the diff visible. Operator hand-imports the missing record and re-applies. |
-| 03-talos's tfstate still contains orphaned `module.cluster_dns` after `dns.tf` is removed | Follow-up `tofu state rm` against 03-talos, OR `apply -refresh-only` next run. Cosmetic. |
+| 03-talos's tfstate or CF would lose records during migration | `removed { from = module.cluster_dns lifecycle { destroy = false } }` in a transitional 03-talos `removed.tf` drops state without touching CF; 04-dns's import-block adopts on its first apply. |
 | Stale-record destroy clause deletes something it shouldn't | Scoped to fixed `name in ["prod"]` AND `type in ["A", "AAAA"]` whitelists. Other record types at the same name (TXT, CNAME, MX) are untouched. Code-reviewed in PR. |
 | Cloudflare API token scope insufficient | Same token already used by `03-talos` for the same zone. No scope change. |
 | Concurrent CF write between plan and apply | Standard tofu race. Worst case: apply fails, drift handler picks it up next run. |
