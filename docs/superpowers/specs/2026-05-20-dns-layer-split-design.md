@@ -66,11 +66,17 @@ The body of today's `03-talos/dns.tf` (lines 23–182), lifted verbatim. Logic u
 
 ### `tofu/layers/04-dns/destroy.tf` (new)
 
-Stale-record cleanup. For each zone, identify CF records whose name is in the managed whitelist `["prod"]` and whose `(name, type, content)` tuple is not in `cluster_dns_intended_records`. Adopt each into tofu state via an `import` block keyed on the existing record ID, then mark for destroy via a `removed { from = ... }` block (or, equivalently, by not declaring a matching `cloudflare_dns_record` resource — tofu plans a destroy for the imported-but-unmodeled record).
+Stale-record cleanup. For each zone, identify CF records that match **both** filters:
+- `name` is in the managed-name whitelist `["prod"]`, AND
+- `type` is in the managed-type whitelist `["A", "AAAA"]`.
+
+…and whose `(name, type, content)` tuple is not in `cluster_dns_intended_records`. Adopt each match into tofu state via an `import` block keyed on the existing record ID, then mark for destroy via a `removed { from = ... }` block (or, equivalently, by not declaring a matching `cloudflare_dns_record` resource — tofu plans a destroy for the imported-but-unmodeled record).
+
+The type filter exists because `prod.<zone>` may legitimately carry non-A/AAAA records over time (e.g. an ACME `_acme-challenge.prod` TXT issued by cert-manager, a CNAME alias, an MX record). This layer owns only the LB round-robin (A + AAAA); any other record type at the same name is owned by a different controller and must not be touched.
 
 Mandatory: implementation uses tofu-native primitives (`import` + resource model), not `null_resource` `local-exec curl`. The native path is visible in `tofu plan` output so the PR reviewer can see exactly which records will be destroyed before apply. A `local-exec` approach is invisible to plan and unreviewable, which is unacceptable for code that deletes DNS records.
 
-Whitelist scoping is mandatory: a regex or wildcard here could nuke `cp.<zone>` (owned by `00-omni-server`) or any other record. Reviewed explicitly in the PR.
+Whitelist scoping is mandatory: a regex or wildcard on either name or type could nuke `cp.<zone>` (owned by `00-omni-server`) or any other record. Both filters are hard-coded lists, code-reviewed in the PR.
 
 ### `tofu/layers/04-dns/variables.tf`
 
@@ -166,7 +172,7 @@ The migration leans on the existing self-heal — exactly what it was built for.
 |---|---|
 | First 04-dns apply fails because import-block lookup misses a record | `_debug_dns_*` outputs make the diff visible. Operator hand-imports the missing record and re-applies. |
 | 03-talos's tfstate still contains orphaned `module.cluster_dns` after `dns.tf` is removed | Follow-up `tofu state rm` against 03-talos, OR `apply -refresh-only` next run. Cosmetic. |
-| Stale-record destroy clause deletes something it shouldn't | Scoped to a fixed `name in ["prod"]` whitelist. Code-reviewed in PR. |
+| Stale-record destroy clause deletes something it shouldn't | Scoped to fixed `name in ["prod"]` AND `type in ["A", "AAAA"]` whitelists. Other record types at the same name (TXT, CNAME, MX) are untouched. Code-reviewed in PR. |
 | Cloudflare API token scope insufficient | Same token already used by `03-talos` for the same zone. No scope change. |
 | Concurrent CF write between plan and apply | Standard tofu race. Worst case: apply fails, drift handler picks it up next run. |
 | Plan-time-known constraints break (e.g. data source returns empty) | Existing `try()` coercions in the lifted dns.tf already handle this — `to_import` becomes `{}` and the import block is a no-op. |
