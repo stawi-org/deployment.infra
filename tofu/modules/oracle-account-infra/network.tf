@@ -152,6 +152,53 @@ resource "oci_core_security_list" "public" {
       max = 2380
     }
   }
+  # HTTP 80 and HTTPS 443 from anywhere. OCI workers tagged with the
+  # cluster's external-load-balancer label run an Envoy DaemonSet pod
+  # in hostNetwork mode that binds these ports directly on the node's
+  # public IPs. Without these rules the pod binds successfully but
+  # external clients TCP-timeout at the seclist; the prod.<zone>
+  # round-robin then silently blackholes one-fourth of CF's origin
+  # picks (per the 2026-05-21 LB-pool diagnosis).
+  ingress_security_rules {
+    protocol = "6"
+    source   = "0.0.0.0/0"
+    tcp_options {
+      min = 80
+      max = 80
+    }
+  }
+  ingress_security_rules {
+    protocol = "6"
+    source   = "0.0.0.0/0"
+    tcp_options {
+      min = 443
+      max = 443
+    }
+  }
+  dynamic "ingress_security_rules" {
+    for_each = var.enable_ipv6 ? [1] : []
+    content {
+      protocol    = "6"
+      source      = "::/0"
+      source_type = "CIDR_BLOCK"
+      tcp_options {
+        min = 80
+        max = 80
+      }
+    }
+  }
+  dynamic "ingress_security_rules" {
+    for_each = var.enable_ipv6 ? [1] : []
+    content {
+      protocol    = "6"
+      source      = "::/0"
+      source_type = "CIDR_BLOCK"
+      tcp_options {
+        min = 443
+        max = 443
+      }
+    }
+  }
 }
 
 resource "oci_core_subnet" "public" {
