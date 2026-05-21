@@ -545,27 +545,40 @@ jobs:
         run: |
           set -euo pipefail
           ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          STATE_KEY="production/03-talos.tfstate"
-          if ! aws s3api head-object \
-              --bucket cluster-tofu-state \
-              --key "$STATE_KEY" \
-              --endpoint-url "$ENDPOINT" \
-              --region us-east-1 >/dev/null 2>&1; then
-            echo "::notice::03-talos tfstate missing — skipping orphan sweep"
-            exit 0
-          fi
-          state=$(mktemp)
-          trap 'rm -f "$state"' EXIT
-          aws s3 cp "s3://cluster-tofu-state/$STATE_KEY" "$state" \
+
+          # Build the live node set directly from R2 inventory — same
+          # source the Apply step uses (see its block above for the
+          # full rationale). Reading 03-talos tfstate's
+          # `local_sensitive_file.node_labels_json` (the pre-#254
+          # resource) now returns nothing, which made the sweep see
+          # `live_set` as empty and unconditionally delete EVERY
+          # stawi-*-link patch — the 2026-05-21 incident that wiped
+          # the per-node HostnameConfig/LinkConfig pins and dropped
+          # Contabo back to platform-default `vmi<id>` hostnames.
+          inv_dir=$(mktemp -d)
+          trap 'rm -rf "$inv_dir"' EXIT
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/" "$inv_dir/" \
             --endpoint-url "$ENDPOINT" \
-            --region us-east-1 >/dev/null
-          # Build the set of node names currently in tofu state.
-          mapfile -t live_nodes < <(jq -r '
-            .resources[]
-            | select(.type == "local_sensitive_file" and .name == "node_labels_json")
-            | .instances[0].attributes.content
-          ' "$state" | jq -r 'keys[]')
+            --region us-east-1 \
+            --no-progress \
+            --exclude "*" --include "*/nodes.yaml" >/dev/null
+          mapfile -t live_nodes < <(python3 - "$inv_dir" <<'PY'
+          import glob, sys, yaml
+          for f in sorted(glob.glob(f"{sys.argv[1]}/*/*/nodes.yaml")):
+              for name in (yaml.safe_load(open(f)) or {}).get("nodes") or {}:
+                  print(name)
+          PY
+          )
           live_set=$(printf '%s\n' "${live_nodes[@]+"${live_nodes[@]}"}" | sort -u)
+          # Safety brake: if we somehow ended up with zero live nodes,
+          # do NOT proceed with deletion. An empty live_set is almost
+          # certainly a misconfiguration (R2 access lost, parser broken,
+          # inventory cleared), not a legitimate "cluster has no nodes"
+          # state. Failing the step keeps the patches intact.
+          if [[ -z "$live_set" ]]; then
+            echo "::error::Sweep got zero live nodes from R2 inventory — refusing to delete any per-node patches. Inspect R2 inventory state before re-running."
+            exit 1
+          fi
           # List all stawi-<node>-link patches in Omni and delete
           # those whose <node> isn't in live_set.
           for id in $(omnictl get configpatches -o jsonpath='{.metadata.id}' 2>/dev/null \
@@ -575,7 +588,7 @@ jobs:
             node="${id#stawi-}"
             node="${node%-link}"
             if ! grep -qx "$node" <<<"$live_set"; then
-              echo "::notice::orphan per-node patch detected: $id (node $node not in tofu state)"
+              echo "::notice::orphan per-node patch detected: $id (node $node not in inventory)"
               omnictl delete configpatches "$id" || echo "::warning::failed to delete $id"
             fi
           done
