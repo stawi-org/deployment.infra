@@ -189,9 +189,9 @@ oci:
       vcn_cidr: 10.200.0.0/16
       enable_ipv6: true
       labels:
-        node.antinvestor.io/capacity-pool: ampere-a1
+        node.stawi.org/capacity-pool: ampere-a1
       annotations:
-        node.antinvestor.io/account-owner: platform
+        node.stawi.org/account-owner: platform
       auth:
         domain_base_url: https://idcs-example.identity.oraclecloud.com
         oidc_client_identifier: "<clientId>:<clientSecret>"
@@ -202,9 +202,9 @@ oci:
           ocpus: 4
           memory_gb: 24
           labels:
-            node.antinvestor.io/workload-class: edge
+            node.stawi.org/workload-class: edge
           annotations:
-            node.antinvestor.io/operator-note: primary-oci-worker
+            node.stawi.org/operator-note: primary-oci-worker
 ```
 
 ### GitHub Repository Variables

@@ -56,7 +56,7 @@ distributed across the cluster.
    │      with canonical hostname) and upload to
    │      production/per-node-patches/<talos>/<node>.yaml.
    │      Also reconciles MachineLabels on each Omni
-   │      Machine: node.antinvestor.io/{name,role,
+   │      Machine: node.stawi.org/{name,role,
    │      account,provider,...}.
    └─────────────────────────┘
                 │

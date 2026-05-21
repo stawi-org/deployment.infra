@@ -24,7 +24,7 @@ variable "cp_dns_zones" {
 
     Per zone:
       - <prod_label>.<zone>  round-robin A/AAAA across nodes carrying
-                             node.kubernetes.io/external-load-balancer="true";
+                             node.stawi.org/external-load-balancer="true";
                              omitted when no nodes match
 
     Default: prod_label="prod".

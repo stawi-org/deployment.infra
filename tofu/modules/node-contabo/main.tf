@@ -115,24 +115,29 @@ locals {
     var.labels,
     {
       "topology.kubernetes.io/region" = var.region
-      "node.antinvestor.io/provider"  = "contabo"
-      "node.antinvestor.io/account"   = var.account_key
-      "node.antinvestor.io/role"      = var.role
-      "node.antinvestor.io/name"      = var.name
+      "node.stawi.org/provider"       = "contabo"
+      "node.stawi.org/account"        = var.account_key
+      "node.stawi.org/role"           = var.role
+      "node.stawi.org/name"           = var.name
     },
+    # Only the CP role label is set here. The kubelet's system:node:<name>
+    # identity is forbidden by NodeRestriction admission from setting
+    # `node-role.kubernetes.io/worker`, and because Talos's NodeApplyController
+    # issues the labels map as a single Update() on workers, including the
+    # worker role key causes the whole PUT to be rejected — taking every
+    # other label (including unrestricted node.stawi.org/* ones) down with
+    # it. The CP path uses an admin client so the control-plane key is fine.
     var.role == "controlplane" ? {
       "node-role.kubernetes.io/control-plane" = ""
-      } : {
-      "node-role.kubernetes.io/worker" = ""
-    }
+    } : {}
   )
   derived_annotations = merge(
     var.annotations,
     {
-      "node.antinvestor.io/product-id" = var.product_id
-      "node.antinvestor.io/provider"   = "contabo"
-      "node.antinvestor.io/account"    = var.account_key
-      "node.antinvestor.io/role"       = var.role
+      "node.stawi.org/product-id" = var.product_id
+      "node.stawi.org/provider"   = "contabo"
+      "node.stawi.org/account"    = var.account_key
+      "node.stawi.org/role"       = var.role
     }
   )
 }

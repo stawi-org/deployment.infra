@@ -158,7 +158,7 @@ echo "::endgroup::"
 # Discover CP machine IDs by intersecting `omnictl get
 # clustermachinestatus` (rows for the cluster's machines) with
 # `omnictl get machinelabels` (filtered by the
-# node.antinvestor.io/role=controlplane label tofu applies). talosctl
+# node.stawi.org/role=controlplane label tofu applies). talosctl
 # under the proxied talosconfig reaches each CP's apid via Omni's
 # siderolink mesh, addressed by Omni Machine ID rather than a public
 # IP. Hard 30s cap — if every CP is unreachable, talosctl otherwise
@@ -168,7 +168,7 @@ CP_IDS=$(omnictl get machinelabels -o json 2>/dev/null \
   | jq -rs '
       flatten
       | map(select(
-          .metadata.labels["node.antinvestor.io/role"] == "controlplane"
+          .metadata.labels["node.stawi.org/role"] == "controlplane"
         ) | .metadata.id)
       | .[]' \
   | head -3)

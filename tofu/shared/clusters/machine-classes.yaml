@@ -23,7 +23,7 @@ metadata:
   id: cp
 spec:
   matchlabels:
-    - node.antinvestor.io/role=controlplane
+    - node.stawi.org/role=controlplane
 ---
 metadata:
   namespace: default
@@ -31,4 +31,4 @@ metadata:
   id: workers
 spec:
   matchlabels:
-    - node.antinvestor.io/role=worker
+    - node.stawi.org/role=worker
