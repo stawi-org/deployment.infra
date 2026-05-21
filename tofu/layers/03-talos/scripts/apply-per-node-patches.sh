@@ -184,4 +184,16 @@ if (( errored > 0 && applied == 0 )); then
   echo "[apply-per-node-patches] ERROR: all attempted applies failed — marking step failed" >&2
   exit 1
 fi
+# Silent-skip detection: if R2 had per-node patch files but we
+# applied zero, the NODES_JSON ↔ R2 patch set diverged (operator-
+# managed inventory dropped a node that still has a patch, or the
+# caller built NODES_JSON from an empty/wrong source). The 2026-05-21
+# rollout hit exactly this — PR #254 retired the tfstate resource the
+# caller read from, so NODES_JSON was {} but R2 had 7 patches, and the
+# step passed green with applied=0. Fail the step instead.
+r2_patch_count=$(find "$workdir" -maxdepth 1 -type f -name '*.yaml' | wc -l)
+if (( r2_patch_count > 0 && applied == 0 )); then
+  echo "[apply-per-node-patches] ERROR: R2 has $r2_patch_count per-node patch file(s) but applied=0. Likely NODES_JSON is empty or hostname/ipv4 matching failed for every entry. The caller's NODES_JSON source has drifted from R2 inventory. Marking step failed." >&2
+  exit 1
+fi
 exit 0

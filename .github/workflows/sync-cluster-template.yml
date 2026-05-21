@@ -487,34 +487,38 @@ jobs:
         run: |
           set -euo pipefail
           ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          STATE_KEY="production/03-talos.tfstate"
-          if ! aws s3api head-object \
-              --bucket cluster-tofu-state \
-              --key "$STATE_KEY" \
-              --endpoint-url "$ENDPOINT" \
-              --region us-east-1 >/dev/null 2>&1; then
-            echo "::notice::03-talos tfstate not found — apply that layer first to populate per-node patches in R2."
-            exit 0
-          fi
-          state=$(mktemp)
+
+          # Build NODES_JSON ({name: {ipv4}}) directly from the R2
+          # inventory's per-account nodes.yaml files — the operator-
+          # managed source of truth. This decouples the sync from
+          # layer-03's tfstate-internal resource shape, which was
+          # `local_sensitive_file.node_labels_json` pre-#254 and became
+          # `null_resource.omnictl_machine_label` after the refactor;
+          # the workflow's old jq path silently matched no resources
+          # post-refactor, so apply skipped on every run while still
+          # passing green.
           nodes_json=$(mktemp -p "${RUNNER_TEMP:-/tmp}" nodes-XXXXXX.json)
-          trap 'rm -f "$state" "$nodes_json"' EXIT
-          aws s3 cp "s3://cluster-tofu-state/$STATE_KEY" "$state" \
+          inv_dir=$(mktemp -d)
+          trap 'rm -rf "$nodes_json" "$inv_dir"' EXIT
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/" "$inv_dir/" \
             --endpoint-url "$ENDPOINT" \
-            --region us-east-1 >/dev/null
-          # Extract node-name → ipv4 from the layer-03 tfstate's
-          # local_sensitive_file.node_labels_json content. That
-          # resource carries the per-node envelope used by
-          # sync-machine-label.sh; we only need the ipv4 sub-field.
-          jq -r '
-            .resources[]
-            | select(.type == "local_sensitive_file" and .name == "node_labels_json")
-            | .instances[0].attributes.content
-          ' "$state" \
-          | jq -c 'with_entries(.value |= { ipv4: .ipv4 })' \
-          > "$nodes_json"
+            --region us-east-1 \
+            --no-progress \
+            --exclude "*" --include "*/nodes.yaml" >/dev/null
+          python3 - "$inv_dir" "$nodes_json" <<'PY'
+          import glob, json, sys, yaml
+          inv_root, out = sys.argv[1], sys.argv[2]
+          result = {}
+          for f in sorted(glob.glob(f"{inv_root}/*/*/nodes.yaml")):
+              data = yaml.safe_load(open(f)) or {}
+              for name, node in (data.get("nodes") or {}).items():
+                  ipv4 = (node.get("provider_data") or {}).get("ipv4") or node.get("ipv4")
+                  result[name] = {"ipv4": ipv4 or ""}
+          open(out, "w").write(json.dumps(result))
+          print(f"[apply-per-node-patches] built NODES_JSON with {len(result)} node(s) from R2 inventory", file=sys.stderr)
+          PY
           if [[ "$(jq -r 'length' "$nodes_json")" -eq 0 ]]; then
-            echo "::notice::no nodes in layer-03 state — skipping per-node apply"
+            echo "::notice::no nodes in R2 inventory — skipping per-node apply"
             exit 0
           fi
           # Talos version comes from versions.auto.tfvars.json
