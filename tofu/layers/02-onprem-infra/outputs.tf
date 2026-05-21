@@ -20,28 +20,29 @@ output "nodes" {
       derived_labels = merge(
         item.node.labels,
         {
-          "topology.kubernetes.io/region"     = try(item.node.region, try(item.account.region, "unknown"))
-          "node.antinvestor.io/provider"      = "onprem"
-          "node.antinvestor.io/account"       = item.account_key
-          "node.antinvestor.io/role"          = item.node.role
-          "node.antinvestor.io/apply-source"  = "manual"
-          "node.antinvestor.io/managed-plane" = "inventory"
+          "topology.kubernetes.io/region" = try(item.node.region, try(item.account.region, "unknown"))
+          "node.stawi.org/provider"       = "onprem"
+          "node.stawi.org/account"        = item.account_key
+          "node.stawi.org/role"           = item.node.role
+          "node.stawi.org/apply-source"   = "manual"
+          "node.stawi.org/managed-plane"  = "inventory"
         },
+        # See node-contabo/main.tf for why the worker side is empty:
+        # NodeRestriction forbids kubelet from setting node-role.kubernetes.io/worker
+        # and Talos's per-node Update() drops the whole label set on rejection.
         item.node.role == "controlplane" ? {
           "node-role.kubernetes.io/control-plane" = ""
-          } : {
-          "node-role.kubernetes.io/worker" = ""
-        },
+        } : {},
       )
       derived_annotations = merge(
         item.node.annotations,
         {
-          "node.antinvestor.io/account-description" = try(item.account.description, "")
-          "node.antinvestor.io/site-ipv4-cidrs"     = join(",", try(item.account.site_ipv4_cidrs, []))
-          "node.antinvestor.io/site-ipv6-cidrs"     = join(",", try(item.account.site_ipv6_cidrs, []))
-          "node.antinvestor.io/provider"            = "onprem"
-          "node.antinvestor.io/account"             = item.account_key
-          "node.antinvestor.io/role"                = item.node.role
+          "node.stawi.org/account-description" = try(item.account.description, "")
+          "node.stawi.org/site-ipv4-cidrs"     = join(",", try(item.account.site_ipv4_cidrs, []))
+          "node.stawi.org/site-ipv6-cidrs"     = join(",", try(item.account.site_ipv6_cidrs, []))
+          "node.stawi.org/provider"            = "onprem"
+          "node.stawi.org/account"             = item.account_key
+          "node.stawi.org/role"                = item.node.role
         },
       )
 

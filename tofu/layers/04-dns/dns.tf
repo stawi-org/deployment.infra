@@ -4,7 +4,7 @@
 # round-robin only.
 #
 #   prod.<zone>      A/AAAA across every node carrying
-#                    `node.kubernetes.io/external-load-balancer="true"`.
+#                    `node.stawi.org/external-load-balancer="true"`.
 #                    Frontends ingress traffic into the cluster. The
 #                    LB itself terminates TLS via cert-manager inside
 #                    the cluster, so this record is plain DNS-only.
@@ -27,7 +27,7 @@ locals {
   # the same label can drive in-cluster service-IP allocation later.
   lb_nodes = {
     for k, v in local.all_nodes_from_state : k => v
-    if try(v.derived_labels["node.kubernetes.io/external-load-balancer"], "false") == "true"
+    if try(v.derived_labels["node.stawi.org/external-load-balancer"], "false") == "true"
   }
   lb_sorted_keys = sort(keys(local.lb_nodes))
   lb_all_ipv4 = compact([

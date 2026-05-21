@@ -12,8 +12,8 @@ onprem:
           region: UG
           role: worker
           labels:
-            node.antinvestor.io/hardware-class: mini-pc
+            node.stawi.org/hardware-class: mini-pc
         rack-2:
           role: worker
           annotations:
-            node.antinvestor.io/operator-note: dhcp-address-changes
+            node.stawi.org/operator-note: dhcp-address-changes

@@ -829,9 +829,9 @@ oci:
         domain_base_url: ${DOMAIN_BASE_URL}
         oidc_client_identifier: "${CLIENT_ID}:${CLIENT_SECRET:-<PASTE_CLIENT_SECRET>}"
       labels:
-        node.antinvestor.io/capacity-pool: ampere-a1
+        node.stawi.org/capacity-pool: ampere-a1
       annotations:
-        node.antinvestor.io/account-owner: platform
+        node.stawi.org/account-owner: platform
       nodes:
         # Generic node naming — controlplane/worker distinction is the
         # role: + plane label below, not the name. Avoids renames-on-promotion.
@@ -841,13 +841,13 @@ oci:
           ocpus: 4
           memory_gb: 24
           labels:
-            node.antinvestor.io/plane: control-plane
-            node.antinvestor.io/role-cache: "true"
-            node.antinvestor.io/role-database: "true"
-            node.antinvestor.io/role-queue: "true"
-            node.kubernetes.io/external-load-balancer: "true"
+            node.stawi.org/plane: control-plane
+            node.stawi.org/role-cache: "true"
+            node.stawi.org/role-database: "true"
+            node.stawi.org/role-queue: "true"
+            node.stawi.org/external-load-balancer: "true"
           annotations:
-            node.antinvestor.io/operator-note: control-plane
+            node.stawi.org/operator-note: control-plane
 EOF
 )
 say "Rendered OCI inventory stanza:"

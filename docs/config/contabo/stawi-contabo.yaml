@@ -7,18 +7,18 @@ contabo:
         oauth2_user: "<api-user>"
         oauth2_pass: "<api-password>"
       labels:
-        node.antinvestor.io/capacity-pool: control-plane
+        node.stawi.org/capacity-pool: control-plane
       annotations:
-        node.antinvestor.io/account-owner: platform
+        node.stawi.org/account-owner: platform
       nodes:
         kubernetes-controlplane-api-1:
           role: controlplane
           product_id: V94
           region: EU
           labels:
-            node.antinvestor.io/plane: control
+            node.stawi.org/plane: control
           annotations:
-            node.antinvestor.io/operator-note: primary-control-plane
+            node.stawi.org/operator-note: primary-control-plane
         kubernetes-controlplane-api-2:
           role: controlplane
           product_id: V94

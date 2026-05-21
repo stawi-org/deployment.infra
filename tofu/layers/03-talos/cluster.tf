@@ -10,9 +10,9 @@
 #
 # What stays here: per-node Omni Machine label sync, narrowed to
 # the two labels Omni-side consumers match on:
-#   - node.antinvestor.io/role — MachineClass routes Machines into
+#   - node.stawi.org/role — MachineClass routes Machines into
 #     the cp / workers MachineSet by selecting on this.
-#   - node.antinvestor.io/name — per-node ConfigPatches
+#   - node.stawi.org/name — per-node ConfigPatches
 #     (apply-per-node-patches.sh) bind to the matching Machine via
 #     target_label_selectors keyed on this.
 # The rest of `derived_labels` (provider, account, topology.*) now
@@ -43,10 +43,10 @@ locals {
   #
   # Narrowed 2026-05-05 to the two labels Omni-side consumers
   # actually match on:
-  #   - node.antinvestor.io/role  — MachineClass selectors in
+  #   - node.stawi.org/role  — MachineClass selectors in
   #     tofu/shared/clusters/machine-classes.yaml route the Machine
   #     into the cp / workers MachineSet.
-  #   - node.antinvestor.io/name  — per-node ConfigPatches
+  #   - node.stawi.org/name  — per-node ConfigPatches
   #     (apply-per-node-patches.sh, T10) bind to the matching
   #     Machine via target_label_selectors keyed on this.
   #
@@ -67,8 +67,8 @@ locals {
     for k, v in local.all_nodes_from_state : k => {
       labels = {
         for lk, lv in {
-          "node.antinvestor.io/role" = try(v.derived_labels["node.antinvestor.io/role"], "")
-          "node.antinvestor.io/name" = try(v.derived_labels["node.antinvestor.io/name"], k)
+          "node.stawi.org/role" = try(v.derived_labels["node.stawi.org/role"], "")
+          "node.stawi.org/name" = try(v.derived_labels["node.stawi.org/name"], k)
         } : lk => lv
         if lv != ""
       }

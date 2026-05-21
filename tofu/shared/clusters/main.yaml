@@ -23,7 +23,7 @@
 #   `MachineLabels.omni.sidero.dev` resource (the `omnictl machine
 #   update --label k=v` README example was wrong — that subcommand
 #   doesn't exist). Labels come from each upstream node module's
-#   `derived_labels` output, including `node.antinvestor.io/role=
+#   `derived_labels` output, including `node.stawi.org/role=
 #   {controlplane,worker}` which the machine-classes.yaml selectors
 #   match against. So machines auto-bind to `cp` / `workers`
 #   MachineSets once labelled.
@@ -474,7 +474,7 @@ machineClass:
 #     the node.
 #
 # Cross-account redundancy on prod.<zone>: LB-targeted workers
-# (carrying node.kubernetes.io/external-load-balancer=true) are
+# (carrying node.stawi.org/external-load-balancer=true) are
 # spread across distinct accounts so single-account outages don't
 # take the ingress pool down.
 kind: Workers

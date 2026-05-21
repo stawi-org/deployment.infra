@@ -12,7 +12,7 @@ age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
 #
 # For each zone this layer publishes:
 #   prod.<zone>       — round-robin across nodes carrying
-#                       node.kubernetes.io/external-load-balancer="true"
+#                       node.stawi.org/external-load-balancer="true"
 #                       (omitted if no such nodes exist)
 cp_dns_zones = [
   {

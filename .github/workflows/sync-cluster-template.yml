@@ -237,7 +237,7 @@ jobs:
             type: MachineLabels.omni.sidero.dev
             id: ${id}
             labels:
-              node.antinvestor.io/role: ${role}
+              node.stawi.org/role: ${role}
           spec: {}
           MANIFEST
             echo "::notice::labelling machine ${id} as role=${role} (${reason})"

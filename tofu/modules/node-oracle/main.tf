@@ -155,25 +155,28 @@ locals {
     {
       "topology.kubernetes.io/region" = var.region
       "topology.kubernetes.io/zone"   = lower(replace(var.availability_domain, ":", "-"))
-      "node.antinvestor.io/provider"  = "oracle"
-      "node.antinvestor.io/account"   = var.account_key
-      "node.antinvestor.io/role"      = var.role
-      "node.antinvestor.io/name"      = var.name
+      "node.stawi.org/provider"       = "oracle"
+      "node.stawi.org/account"        = var.account_key
+      "node.stawi.org/role"           = var.role
+      "node.stawi.org/name"           = var.name
     },
+    # See node-contabo/main.tf for why the worker side is empty: kubelet's
+    # system:node:<name> identity is forbidden by NodeRestriction from
+    # setting node-role.kubernetes.io/worker, and Talos's NodeApplyController
+    # issues a single Update() on workers — including the worker key takes
+    # every other label down with it.
     var.role == "controlplane" ? {
       "node-role.kubernetes.io/control-plane" = ""
-      } : {
-      "node-role.kubernetes.io/worker" = ""
-    }
+    } : {}
   )
   derived_annotations = merge(
     var.annotations,
     {
-      "node.antinvestor.io/shape"               = var.shape
-      "node.antinvestor.io/availability-domain" = var.availability_domain
-      "node.antinvestor.io/provider"            = "oracle"
-      "node.antinvestor.io/account"             = var.account_key
-      "node.antinvestor.io/role"                = var.role
+      "node.stawi.org/shape"               = var.shape
+      "node.stawi.org/availability-domain" = var.availability_domain
+      "node.stawi.org/provider"            = "oracle"
+      "node.stawi.org/account"             = var.account_key
+      "node.stawi.org/role"                = var.role
     },
     # OCI's public IPv4 is NAT'd at the VCN gateway — the on-NIC
     # address is the private one, so kubelet auto-detects InternalIP
