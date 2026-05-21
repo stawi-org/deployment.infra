@@ -89,6 +89,20 @@ module "cluster_dns" {
 data "cloudflare_dns_records" "existing_per_zone" {
   for_each = { for z in var.cp_dns_zones : z.zone_id => z }
   zone_id  = each.key
+
+  # Cloudflare provider v5's `cloudflare_dns_records` data source caps
+  # `result` at `max_items` (default 1000) — once a zone's record set
+  # crosses that ceiling, the data source silently returns a truncated
+  # subset. Records that fall off the tail aren't seen by the import-
+  # block self-heal below, so an apply that tries to create an
+  # already-existing record then fails with CF code 81058 ("identical
+  # record already exists") instead of adopting it. Observed
+  # 2026-05-21 on stawi.org for `prod/AAAA/2a02:c207:2272:778{2,3}::1`
+  # — the antinvestor.com sibling records adopted cleanly because that
+  # zone has fewer records; stawi.org (external-dns + lots of cluster-
+  # managed entries) hit the truncation. Set a high ceiling so the
+  # data source paginates through everything before the lookup runs.
+  max_items = 5000
 }
 
 locals {
