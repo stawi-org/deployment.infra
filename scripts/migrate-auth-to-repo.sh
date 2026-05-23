@@ -49,12 +49,12 @@ for prov in contabo oracle onprem; do
       continue
     fi
     if [[ "$prov" == "contabo" ]]; then
-      sops -d "$tmp" > "$dest"
+      sops -d --input-type yaml --output-type yaml "$tmp" > "$dest"
     else
       cp "$tmp" "$dest"
     fi
     rm -f "$tmp"
-    sops -e -i "$dest"
+    sops -e --input-type yaml --output-type yaml -i "$dest"
     echo "  wrote encrypted $dest"
   done
 done
