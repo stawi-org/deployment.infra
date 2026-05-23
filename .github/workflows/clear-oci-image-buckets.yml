@@ -1,0 +1,176 @@
+# One-shot opt-in workflow: deletes every object in each OCI tenancy's
+# `talos-images-<account>` Object Storage bucket so the next
+# sync-talos-images run uploads fresh bytes. Also marks every existing
+# custom image with the schematic-derived display name as DELETED so
+# the next import doesn't reuse a stale OCID.
+#
+# Use when you want a true fresh start: clean buckets + new OCIDs for
+# every tenancy. Routine refreshes don't need this — sync-talos-images
+# reuses an image by display_name when the schematic SHA matches.
+#
+# Untrusted inputs go through `confirm == "DELETE"` + per-account env
+# bindings; no string interpolation reaches a run: command.
+name: clear-oci-image-buckets
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type DELETE to confirm destructive action'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write # OIDC → OCI WIF.
+
+concurrency:
+  group: clear-oci-image-buckets-production
+  cancel-in-progress: false
+
+jobs:
+  discover-oracle:
+    if: inputs.confirm == 'DELETE'
+    runs-on: ubuntu-latest
+    outputs:
+      accounts: ${{ steps.list.outputs.accounts }}
+      count: ${{ steps.list.outputs.count }}
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Enumerate oracle accounts (from R2 auth.yaml)
+        id: list
+        run: |
+          set -euo pipefail
+          R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          mkdir -p /tmp/oracle-inv
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/oracle/" /tmp/oracle-inv/ \
+            --endpoint-url "$R2_ENDPOINT" --region us-east-1 \
+            --exclude "*" --include "*/auth.yaml" || true
+          pip install --quiet pyyaml
+          accounts=$(python3 - <<'PY'
+          import json, os, sys, yaml
+          base = "/tmp/oracle-inv"
+          out = []
+          if os.path.isdir(base):
+              for entry in sorted(os.listdir(base)):
+                  auth_p = os.path.join(base, entry, "auth.yaml")
+                  if not os.path.exists(auth_p):
+                      continue
+                  data = yaml.safe_load(open(auth_p)) or {}
+                  auth = data.get("auth", data)
+                  if not auth.get("region") or not auth.get("tenancy_ocid"):
+                      continue
+                  comp = (
+                      auth.get("compartment_ocid")
+                      or auth.get("compartment_id")
+                      or data.get("compartment_ocid")
+                      or data.get("compartment_id")
+                  )
+                  if not comp:
+                      continue
+                  out.append({
+                      "profile": entry,
+                      "region": auth["region"],
+                      "tenancy_ocid": auth["tenancy_ocid"],
+                      "compartment_ocid": comp,
+                  })
+          print(json.dumps(out))
+          PY
+          )
+          count=$(jq 'length' <<<"$accounts")
+          echo "::notice::oracle accounts (${count}): ${accounts}"
+          echo "accounts=${accounts}" >> "$GITHUB_OUTPUT"
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+
+  clear:
+    needs: discover-oracle
+    if: needs.discover-oracle.outputs.count != '0'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        account: ${{ fromJson(needs.discover-oracle.outputs.accounts) }}
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      OCI_CLI_AUTH: security_token
+      PROFILE: ${{ matrix.account.profile }}
+      REGION: ${{ matrix.account.region }}
+      COMPARTMENT_OCID: ${{ matrix.account.compartment_ocid }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Configure OCI WIF for this profile
+        run: |
+          set -euo pipefail
+          R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          TMPDIR_AUTH=$(mktemp -d)
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/oracle/${PROFILE}/" \
+            "${TMPDIR_AUTH}/${PROFILE}/" \
+            --endpoint-url "$R2_ENDPOINT" --region us-east-1 \
+            --exclude "*" --include "auth.yaml"
+          AUTH_JSON=$(python3 scripts/build-oci-auth-json.py "${TMPDIR_AUTH}")
+          echo "$AUTH_JSON" > /tmp/oci_auth_accounts.json
+          scripts/configure-oci-wif.sh /tmp/oci_auth_accounts.json
+
+      - name: Install OCI CLI
+        run: |
+          set -euo pipefail
+          pip install --quiet oci-cli
+          oci --version
+
+      - name: Delete every object in talos-images-${{ matrix.account.profile }}
+        run: |
+          set -euo pipefail
+          bucket="talos-images-${PROFILE}"
+          namespace=$(oci --profile "${PROFILE}" os ns get --query 'data' --raw-output)
+          echo "::notice::clearing s3://${namespace}/${bucket} ..."
+          if ! oci --profile "${PROFILE}" os bucket get \
+                --namespace-name "${namespace}" \
+                --bucket-name "${bucket}" >/dev/null 2>&1; then
+            echo "::notice::bucket ${bucket} does not exist (nothing to clear)"
+            exit 0
+          fi
+          mapfile -t objs < <(oci --profile "${PROFILE}" os object list \
+            --namespace-name "${namespace}" \
+            --bucket-name "${bucket}" \
+            --all --query 'data[].name' --raw-output 2>/dev/null \
+            | jq -r '.[]?' 2>/dev/null || true)
+          if (( ${#objs[@]} == 0 )); then
+            echo "::notice::bucket ${bucket} already empty"
+          else
+            for obj in "${objs[@]}"; do
+              [[ -z "$obj" ]] && continue
+              echo "  deleting ${obj}"
+              oci --profile "${PROFILE}" os object delete \
+                --namespace-name "${namespace}" \
+                --bucket-name "${bucket}" \
+                --name "$obj" --force >/dev/null
+            done
+            echo "::notice::deleted ${#objs[@]} objects from ${bucket}"
+          fi
+
+      - name: Delete every custom image whose display_name starts with talos-v
+        run: |
+          set -euo pipefail
+          mapfile -t image_ocids < <(oci --profile "${PROFILE}" compute image list \
+            --compartment-id "${COMPARTMENT_OCID}" \
+            --all --lifecycle-state AVAILABLE \
+            --query 'data[?starts_with("display-name", `talos-v`)].id' \
+            --raw-output 2>/dev/null \
+            | jq -r '.[]?' 2>/dev/null || true)
+          if (( ${#image_ocids[@]} == 0 )); then
+            echo "::notice::no talos-* custom images in compartment ${COMPARTMENT_OCID}"
+          else
+            for ocid in "${image_ocids[@]}"; do
+              [[ -z "$ocid" ]] && continue
+              echo "  deleting image ${ocid}"
+              oci --profile "${PROFILE}" compute image delete \
+                --image-id "$ocid" --force >/dev/null
+            done
+            echo "::notice::deleted ${#image_ocids[@]} custom images"
+          fi
