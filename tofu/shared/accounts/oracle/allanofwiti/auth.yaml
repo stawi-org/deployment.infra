@@ -1,0 +1,27 @@
+auth:
+    annotations:
+        node.antinvestor.io/account-owner: ENC[AES256_GCM,data:Y+y4mRrWjaY=,iv:X4uruQEqbVIgA9+JFa1KPRptRCpqxnxFLOFSqZwa5O0=,tag:nWGZGVbTlIfxcYxlfnixgA==,type:str]
+    compartment_ocid: ENC[AES256_GCM,data:ixaHaWZEdmH8lzpkLRUCDNgHtlAQ9CfHo8Lk8+66iOZL3boWwAwV5gvVHW+IAnV9u2K6VJ8YqzYpk+woez3PONbTYD1/LX2II9D9jlwxwg==,iv:oH+qBjL4FLH8LFtAyER7hB54bv37LU1Bv7VWNaHuO5k=,tag:fy9l94RPRr5n0R+HVwgTQA==,type:str]
+    domain_base_url: ENC[AES256_GCM,data:0ndW+edg3H81p7upbfZSoLo71oC7qOXfYcoG5fUtixH8pSQ9ruVnwjFY/qrvyke0Qu0FezGxakY/RolrDf28dsnilzmQHw==,iv:X6Q5q7SZXi+lh5Ob3+u6uklSocqgjGoAxPhMfybskNk=,tag:Nm2kIPw7SEtSSuBYIKfL9g==,type:str]
+    enable_ipv6: ENC[AES256_GCM,data:g/3IrQ==,iv:AqvQMacRHw+aGx8FQ2wQ68jzz4UM5M6d53gE0zTifz8=,tag:tAtcej32Iv+sMjrYuT42ww==,type:bool]
+    labels:
+        node.antinvestor.io/capacity-pool: ENC[AES256_GCM,data:+C6tsj5WMlCI,iv:OBVkIsk9Q+qr4bbWag3hh80mt3P7BQqQSz67M5KKodQ=,tag:4ypOPLeS5HyNAWQHvBAzuA==,type:str]
+    oidc_client_identifier: ENC[AES256_GCM,data:Dxaisur9Nt73VfZISW9lo329PHyLQnBP8yl4uPzZRLt85z4+ve5A+ZG/AzcAbb8FjLNZgMv6SKfElS++vtVTzAZI41/qa7sfAUCj3A==,iv:n9UczmVf0rjubMSSXBvh8FbYHxCvP8YGlWUqA5WrDd8=,tag:AyyahBNDBBf5UyvTzMGQSg==,type:str]
+    region: ENC[AES256_GCM,data:3w7mVWirh5HBLFYa1mA=,iv:i0HWflw7QHBDWZ7Lg1Q3hFbadIS1t75IIQxNCvT912g=,tag:5O0LThCUAIQ0NoLAR8o93A==,type:str]
+    tenancy_ocid: ENC[AES256_GCM,data:nLZS09BR5T6FTlv0MO9XN0A/nOh2Sa7ODpr25aFzqIUiJ765ImGa78lSF3rY82v1OY7cDywERIhfO86ksTxwdYHeK2vZzvNDMxmrS+ta2A==,iv:ONgV5rygMEmqWhMQ0RjLe+FWm+0Zw4MiCDPTS/4aTr0=,tag:sWj9Shkp1PCgpzRWQerPvA==,type:str]
+    vcn_cidr: ENC[AES256_GCM,data:0SifHnzAJglMCyjLEQ==,iv:HvuZGSjFleyGIfvZC4z055BD0PI0g4oPi1PpdRdYbSg=,tag:JRUllhttJrfJi8r2FG5BDg==,type:str]
+sops:
+    age:
+        - recipient: age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBzVlphTWN6THI5ZmtXYUJp
+            U0Q0TlVnOXRNbUdEa0s1aHhpRWlNL0hOWnhJClR2ZUN4SnExaTZwZkh0bHFKanBj
+            NWhqVjFUalNpb0FJalN6Y0JMK1k0bWMKLS0tIFdaRXgzOWo1WmwrZnRtTG9aL0dF
+            cVVnYnZPSUYrUUlUb09VbTB4MnNFUVEKu3AObvLwXg47+WJiURrwgnd+2lTDxFNX
+            BPnH+ESIZXVT2O3laXVmFU2/eJPZcMHIwP7wzQxVrvHoG+/QzX5jow==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-05-23T08:47:54Z"
+    mac: ENC[AES256_GCM,data:iYe4Ce97RfD4GLnzkFbNIMYxRgsNcTVEfu8LhwNp5cflIeN3RcrnuOaoQof6KD/FFB4nVIpYSqF7K3YJYUWw6dSwRQqkH3ssawoEG3l1NSPt9HBFrkSs7IM0s+7R6VrkeCk761ON3qJ6tlPjUMYfsIM8I1UMjvqGUIx1Vjf//+4=,iv:sXWoMQ6x9E2W/tFQKqAf6M5xXFFU11Xh8Dp21xVA5I0=,tag:dGYGjU+jDIwU+L1pGftohw==,type:str]
+    encrypted_regex: ^(.*)$
+    version: 3.11.0
