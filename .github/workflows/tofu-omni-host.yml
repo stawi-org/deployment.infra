@@ -57,6 +57,10 @@ on:
         description: "Whitespace-separated FROM TO pairs for `tofu state mv` before plan/apply. In-state refactor only (passed to tofu-layer.yml's same input, evaluated via env, never shell-expanded)."
         type: string
         default: ""
+      pre_apply_state_rm:
+        description: "Whitespace- or newline-separated resource addresses to `tofu state rm` before plan/apply. Use when an old resource can't be destroyed cleanly (Contabo VPS destroy returns no http response) and we want tofu to forget about it without calling its destroy. Indexed addresses like module.foo[0].bar.baz are supported."
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -80,4 +84,5 @@ jobs:
       environment: production
       extra_plan_args: ${{ github.event_name == 'workflow_dispatch' && inputs.extra_plan_args || '' }}
       pre_apply_state_mv: ${{ github.event_name == 'workflow_dispatch' && inputs.pre_apply_state_mv || '' }}
+      pre_apply_state_rm: ${{ github.event_name == 'workflow_dispatch' && inputs.pre_apply_state_rm || '' }}
     secrets: inherit
