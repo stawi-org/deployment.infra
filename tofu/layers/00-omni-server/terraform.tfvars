@@ -1,13 +1,15 @@
 # Substrate hosting omni-host: "contabo" adopts existing VPS 202727781
-# (former bwire-3); "oci" provisions an A1.Flex in OCI bwire. Flipped
-# to contabo 2026-05-03 — OCI public IPv4 is unstable for cp.stawi.org.
-omni_host_provider = "contabo"
+# (former bwire-3); "oci" provisions an A1.Flex (2 OCPU / 12 GB) in
+# OCI bwire. Flipped to "oci" 2026-05-23 as part of the fresh-start
+# topology change — Omni now shares the bwire tenancy with one cluster
+# CP (oci-bwire-node-1), filling the full Always-Free 4-OCPU / 24-GB cap.
+omni_host_provider = "oci"
 
-# Bumped 2026-05-04 to force a clean disk wipe + cloud-init re-delivery
-# on bwire-3. Pairs with the r2_backup_prefix flip to "omni-backups-
-# 2026-05-04" in main.tf — together they bring the Omni stack up on a
-# fresh /var/lib/omni without state from the broken OCI-era snapshot.
-force_reinstall_generation = 2
+# Bumped 2026-05-23 to force a clean disk wipe + cloud-init re-delivery.
+# Pairs with the r2_backup_prefix flip to "omni-backups-2026-05-23-oci"
+# in main.tf — together they bring the Omni stack up on a fresh
+# /var/lib/omni without state from the older Contabo-substrate snapshot.
+force_reinstall_generation = 3
 
 # bwire_availability_domain_index defaults to 0 (first AD). The
 # module auto-discovers ADs via oci_identity_availability_domains

@@ -29,7 +29,6 @@ module "bwire_account_state" {
   source              = "../../modules/node-state"
   provider_name       = "oracle"
   account             = "bwire"
-  age_recipients      = split(",", var.age_recipients)
   local_inventory_dir = "/tmp/inventory"
 }
 
@@ -119,6 +118,13 @@ module "omni_host_oci" {
   r2_access_key_id     = var.r2_access_key_id
   r2_secret_access_key = var.r2_secret_access_key
 
+  # Fresh restore namespace for the 2026-05-23 substrate flip back to OCI.
+  # Neither the older OCI snapshots (production/omni-backups/) nor the
+  # Contabo-era snapshots (production/omni-backups-2026-05-04/) carry
+  # forward — the new Omni starts on a clean /var/lib/omni and generates
+  # fresh master keys. Greenfield by design.
+  r2_backup_prefix = "production/omni-backups-2026-05-23-oci"
+
   etcd_backup_enabled = var.etcd_backup_enabled
 
   vpn_users = var.vpn_users
@@ -128,12 +134,15 @@ module "omni_host_oci" {
 }
 
 # Adopt the existing Contabo VPS rather than creating a new one.
-# omni_host_contabo_vps_id defaults to "202727781". The import targets
-# the indexed module address because the module uses count. The block
-# is a no-op once the resource is in state; safe on every subsequent apply.
+# omni_host_contabo_vps_id defaults to "202727781". The for_each gate
+# matches the count gate on module.omni_host_contabo — when
+# omni_host_provider="oci", the target module instance doesn't exist
+# and the import would error with "Configuration for import target
+# does not exist". The import is a no-op once the resource is in state.
 import {
-  to = module.omni_host_contabo[0].contabo_instance.this
-  id = var.omni_host_contabo_vps_id
+  for_each = var.omni_host_provider == "contabo" ? toset([var.omni_host_contabo_vps_id]) : toset([])
+  to       = module.omni_host_contabo[0].contabo_instance.this
+  id       = each.value
 }
 
 module "omni_host_contabo" {
