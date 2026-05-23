@@ -134,12 +134,15 @@ module "omni_host_oci" {
 }
 
 # Adopt the existing Contabo VPS rather than creating a new one.
-# omni_host_contabo_vps_id defaults to "202727781". The import targets
-# the indexed module address because the module uses count. The block
-# is a no-op once the resource is in state; safe on every subsequent apply.
+# omni_host_contabo_vps_id defaults to "202727781". The for_each gate
+# matches the count gate on module.omni_host_contabo — when
+# omni_host_provider="oci", the target module instance doesn't exist
+# and the import would error with "Configuration for import target
+# does not exist". The import is a no-op once the resource is in state.
 import {
-  to = module.omni_host_contabo[0].contabo_instance.this
-  id = var.omni_host_contabo_vps_id
+  for_each = var.omni_host_provider == "contabo" ? toset([var.omni_host_contabo_vps_id]) : toset([])
+  to       = module.omni_host_contabo[0].contabo_instance.this
+  id       = each.value
 }
 
 module "omni_host_contabo" {
