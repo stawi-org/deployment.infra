@@ -14,7 +14,6 @@ module "bwire_account_state" {
   source              = "../../modules/node-state"
   provider_name       = "oracle"
   account             = local.account_key
-  age_recipients      = split(",", var.age_recipients)
   local_inventory_dir = var.local_inventory_dir
 }
 
