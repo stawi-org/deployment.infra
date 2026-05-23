@@ -1,0 +1,44 @@
+# Temporary one-shot diagnostic: dumps the full Omni machinestatuses
+# + machinelabels so we can see whether the bootstrap-bind label
+# applies are landing on the right resources. Delete after the
+# 2026-05-23 cluster-rebuild stabilises.
+name: debug-omni-machines
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  OMNI_VERSION: v1.7.1
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+    steps:
+      - name: Install omnictl
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          cat > /usr/local/bin/omnictl <<'WRAP'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /usr/local/bin/omnictl
+
+      - name: Dump machinestatuses (full yaml)
+        run: omnictl get machinestatuses -o yaml || true
+
+      - name: Dump machinelabels (full yaml)
+        run: omnictl get machinelabels -o yaml || true
+
+      - name: Dump machinesets
+        run: omnictl get machinesets -o yaml || true
+
+      - name: Dump machineclasses
+        run: omnictl get machineclasses -o yaml || true
