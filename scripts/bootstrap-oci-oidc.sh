@@ -15,38 +15,44 @@
 #                  terraform-provider-oci (via ~/.oci/config)
 #
 # Prereqs:
-#   - oci CLI installed and authed (or run from OCI Cloud Shell — all deps
+#   - oci CLI installed and authed (or run from OCI Cloud Shell — most deps
 #     below are pre-installed there)
-#   - jq, curl, python3
+#   - jq, curl, python3, git, sops
+#   - A local clone of deployment.infra with .sops.yaml at the root
+#     (auto-detected via `git rev-parse --show-toplevel` from cwd, or
+#     pass --repo-path explicitly).
 #
-# Runs unchanged on OCI Cloud Shell. The `gh` CLI is NOT required here —
-# the script prints an inventory-ready OCI account stanza to stdout.
+# Each invocation:
+#   1. Configures the OCI Identity Domain (service user, group, policy,
+#      OAuth app, identity propagation trust, monthly budget) idempotently.
+#   2. Writes a SOPS-encrypted auth.yaml into the local deployment.infra
+#      checkout under tofu/shared/accounts/oracle/<gh-profile>/.
+#   3. Adds the new account name under oracle: in tofu/shared/accounts.yaml
+#      (idempotent — no-op if already listed).
+#   4. Creates a branch (default: onboard-oracle-<gh-profile>), commits
+#      both files, pushes. Prints the GitHub "Create PR" URL.
+#
+# No `gh` CLI / GITHUB_TOKEN needed. The operator's existing git push
+# credentials are sufficient.
 #
 # Multi-tenancy / multi-profile:
 #   --profile <NAME>     OCI CLI profile from ~/.oci/config. Default "DEFAULT".
-#   --gh-profile <NAME>  Profile name written to the OCI account key in
-#                        the rendered inventory stanza. Defaults to a slugged
-#                        form of --profile (lowercase alnum). Pick something
-#                        short, e.g. "stawi", "acctB".
-#   --suffix <N>         Inventory export label for the printed example block.
-#                        Default "0".
+#   --gh-profile <NAME>  Account key written to accounts.yaml + used in the
+#                        encrypted auth.yaml path. Defaults to a slugged
+#                        form of --profile (lowercase alnum).
 #   --tenancy / --region / --compartment auto-detect from the profile when
-#                        omitted (via `oci iam region get` and profile config).
+#                        omitted.
+#   --repo-path <PATH>   Path to the deployment.infra checkout. Defaults to
+#                        `git rev-parse --show-toplevel` from cwd.
+#   --branch <NAME>      Branch name (default: onboard-oracle-<gh-profile>).
+#   --no-push            Write + commit locally only, skip the push step.
 #
-# Usage (single tenancy):
-#   ./scripts/bootstrap-oci-oidc.sh --profile DEFAULT --gh-profile stawi --suffix 0
+# Usage:
+#   ./scripts/bootstrap-oci-oidc.sh --profile tenantA --gh-profile newaccount
 #
-# Usage (multi-tenancy — run once per profile):
-#   ./scripts/bootstrap-oci-oidc.sh --profile tenantA --gh-profile stawi --suffix 0
-#   ./scripts/bootstrap-oci-oidc.sh --profile tenantB --gh-profile acctB --suffix 1
-#   ./scripts/bootstrap-oci-oidc.sh --profile tenantC --gh-profile acctC --suffix 2
-#
-# Each invocation prints an OCI account stanza that (when pasted) sets:
-# tenancy_ocid, compartment_ocid, region, vcn_cidr, enable_ipv6, auth, labels,
-# annotations, nodes.
-#
-# Re-running is safe. Every resource is looked up by name; missing ones are
-# created, existing ones are updated.
+# Re-running is safe. Every OCI resource is looked up by name; missing ones
+# are created, existing ones are updated. The accounts.yaml edit is
+# idempotent. The branch is reused if it already exists locally.
 
 set -euo pipefail
 
@@ -56,8 +62,12 @@ SUFFIX="0"
 TENANCY_OCID=""
 REGION=""
 COMPARTMENT_OCID=""
-GH_REPO="antinvestor/deployments"
-GH_BRANCH="main"
+# Local deployment.infra checkout where the script writes the encrypted
+# auth.yaml + accounts.yaml edit + pushes the branch. Auto-detected via
+# `git rev-parse --show-toplevel` from cwd when unset.
+REPO_PATH=""
+BRANCH=""
+NO_PUSH="false"
 # Budget guardrail. Tofu provisioning only uses Always-Free A1 compute (cost
 # ~ $0), so the cap itself is mostly symbolic. Default is a random USD value
 # in [1, 20] picked per-run — the OCI Budgets API rounds up so any random
@@ -98,8 +108,9 @@ while [[ $# -gt 0 ]]; do
     --tenancy)        TENANCY_OCID="$2"; shift 2 ;;
     --region)         REGION="$2"; shift 2 ;;
     --compartment)    COMPARTMENT_OCID="$2"; shift 2 ;;
-    --repo)           GH_REPO="$2"; shift 2 ;;
-    --branch)         GH_BRANCH="$2"; shift 2 ;;
+    --repo-path)      REPO_PATH="$2"; shift 2 ;;
+    --branch)         BRANCH="$2"; shift 2 ;;
+    --no-push)        NO_PUSH="true"; shift ;;
     --budget-amount)  BUDGET_AMOUNT="$2"; shift 2 ;;
     --budget-email)   BUDGET_EMAIL="$2"; shift 2 ;;
     --budget-name)    BUDGET_NAME="$2"; shift 2 ;;
@@ -108,13 +119,23 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-for cmd in oci jq curl python3 ; do
+for cmd in oci jq curl python3 git sops ; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "missing: $cmd" >&2; exit 2; }
 done
 
 say()  { printf '\e[1;34m[%s][%s]\e[0m %s\n' "$(date +%H:%M:%S)" "$PROFILE" "$*"; }
 warn() { printf '\e[1;33m[%s][%s]\e[0m %s\n' "$(date +%H:%M:%S)" "$PROFILE" "$*" >&2; }
 die()  { printf '\e[1;31m[%s][%s]\e[0m %s\n' "$(date +%H:%M:%S)" "$PROFILE" "$*" >&2; exit 1; }
+
+# Resolve the repo root before any OCI work. We fail fast here so a wrong
+# pwd doesn't burn an entire OCI Identity Domain run before complaining.
+if [[ -z "$REPO_PATH" ]]; then
+  REPO_PATH=$(git rev-parse --show-toplevel 2>/dev/null || true)
+  [[ -z "$REPO_PATH" ]] && die "Not inside a git repo; pass --repo-path PATH explicitly"
+fi
+[[ -f "$REPO_PATH/.sops.yaml" ]] \
+  || die "$REPO_PATH has no .sops.yaml — wrong checkout? Aborting before any write."
+say "repo path: $REPO_PATH"
 
 # Default GH_PROFILE = slug of local PROFILE: lowercase, only a-z0-9, collapsed.
 # e.g. "BWIRE@STAWI.ORG" → "bwirestawiorg". Override with --gh-profile.
@@ -809,49 +830,91 @@ fi
 say "  trust:   $TRUST_OCID"
 
 # =========================================================================
-# 7. EMIT INVENTORY STANZA
+# 7. WRITE ENCRYPTED auth.yaml + EDIT accounts.yaml + COMMIT + PUSH
 # =========================================================================
 say ""
 say "=========================================================="
 say "OCI workload identity federation ready for profile [$PROFILE]."
-say ""
 
-inventory_yaml=$(cat <<EOF
-oci:
-  accounts:
-    ${GH_PROFILE}:
-      tenancy_ocid: ${TENANCY_OCID}
-      compartment_ocid: ${COMPARTMENT_OCID}
-      region: ${REGION}
-      vcn_cidr: ${VCN_CIDR:-10.200.0.0/16}
-      enable_ipv6: true
-      auth:
-        domain_base_url: ${DOMAIN_BASE_URL}
-        oidc_client_identifier: "${CLIENT_ID}:${CLIENT_SECRET:-<PASTE_CLIENT_SECRET>}"
-      labels:
-        node.stawi.org/capacity-pool: ampere-a1
-      annotations:
-        node.stawi.org/account-owner: platform
-      nodes:
-        # Generic node naming — controlplane/worker distinction is the
-        # role: + plane label below, not the name. Avoids renames-on-promotion.
-        oci-${GH_PROFILE}-node-1:
-          role: controlplane
-          shape: VM.Standard.A1.Flex
-          ocpus: 4
-          memory_gb: 24
-          labels:
-            node.stawi.org/plane: control-plane
-            node.stawi.org/role-cache: "true"
-            node.stawi.org/role-database: "true"
-            node.stawi.org/role-queue: "true"
-            node.stawi.org/external-load-balancer: "true"
-          annotations:
-            node.stawi.org/operator-note: control-plane
+BRANCH="${BRANCH:-onboard-oracle-${GH_PROFILE}}"
+AUTH_DIR="$REPO_PATH/tofu/shared/accounts/oracle/$GH_PROFILE"
+AUTH_FILE="$AUTH_DIR/auth.yaml"
+ACCOUNTS_FILE="$REPO_PATH/tofu/shared/accounts.yaml"
+
+mkdir -p "$AUTH_DIR"
+
+cat > "$AUTH_FILE" <<EOF
+auth:
+  tenancy_ocid: ${TENANCY_OCID}
+  region: ${REGION}
+  compartment_ocid: ${COMPARTMENT_OCID}
+  vcn_cidr: ${VCN_CIDR:-10.200.0.0/16}
+  enable_ipv6: true
+  auth_method: SecurityToken
+  domain_base_url: ${DOMAIN_BASE_URL}
+  oidc_client_identifier: "${CLIENT_ID}:${CLIENT_SECRET:-<PASTE_CLIENT_SECRET>}"
 EOF
-)
-say "Rendered OCI inventory stanza:"
-printf '%s\n' "$inventory_yaml"
+
+(cd "$REPO_PATH" && sops -e --input-type yaml --output-type yaml -i \
+  "tofu/shared/accounts/oracle/$GH_PROFILE/auth.yaml")
+say "wrote encrypted $AUTH_FILE"
+
+# Idempotent edit of accounts.yaml: append the account under oracle:
+# preserving the file's comments and ordering. Python is used (not yq)
+# because operators don't all have yq on PATH; python3 is already a
+# script-wide hard dep.
+if ! grep -qE "^[[:space:]]*-[[:space:]]+${GH_PROFILE}[[:space:]]*\$" "$ACCOUNTS_FILE"; then
+  python3 - "$ACCOUNTS_FILE" "$GH_PROFILE" <<'PY'
+import sys, re
+path, name = sys.argv[1], sys.argv[2]
+lines = open(path).read().splitlines()
+out = []
+in_oracle = False
+inserted = False
+for line in lines:
+    if re.match(r'^oracle:\s*$', line):
+        in_oracle = True
+        out.append(line)
+        continue
+    if in_oracle and not inserted:
+        if line.startswith('  -') or line.startswith('  #') or line.strip() == '':
+            out.append(line)
+            continue
+        # First non-list / non-comment / non-blank line — we've left
+        # the oracle block. Insert before it.
+        out.append(f"  - {name}")
+        inserted = True
+    out.append(line)
+if in_oracle and not inserted:
+    out.append(f"  - {name}")
+open(path, 'w').write('\n'.join(out) + '\n')
+PY
+  say "added '$GH_PROFILE' to oracle: in tofu/shared/accounts.yaml"
+else
+  say "'$GH_PROFILE' already in accounts.yaml — skipping edit"
+fi
+
+# Branch + commit + push. No gh CLI / GitHub token needed — operator's
+# existing git push credentials carry the change.
+cd "$REPO_PATH"
+git checkout -b "$BRANCH" 2>/dev/null || git checkout "$BRANCH"
+git add "tofu/shared/accounts/oracle/$GH_PROFILE/auth.yaml" "tofu/shared/accounts.yaml"
+git commit -m "onboard oracle ${GH_PROFILE}: add to accounts.yaml + encrypted auth"
+
+if [[ "$NO_PUSH" = "true" ]]; then
+  say "branch '$BRANCH' committed locally — skipping push (--no-push)"
+else
+  push_log=$(git push -u origin "$BRANCH" 2>&1)
+  printf '%s\n' "$push_log"
+  pr_url=$(printf '%s\n' "$push_log" | grep -oE 'https://github.com/[^ ]+/pull/new/[^ ]+' | head -1)
+  if [[ -z "$pr_url" ]]; then
+    origin=$(git config --get remote.origin.url)
+    slug=$(printf '%s' "$origin" | sed -E 's#.*[/:]([^/]+/[^/]+)\.git$#\1#')
+    pr_url="https://github.com/${slug}/compare/${BRANCH}?expand=1"
+  fi
+  say ""
+  say "OPEN: $pr_url"
+fi
 
 # =========================================================================
 # 8. BUDGET + ALERT (cost guardrail)

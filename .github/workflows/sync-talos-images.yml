@@ -1,6 +1,7 @@
 # Syncs Omni-aware Talos images to R2 + every oracle tenancy's compute
-# image catalog. Output is consumed by the node-* tofu modules via
-# tofu/shared/inventory/talos-images.yaml.
+# image catalog. Output (production/inventory/talos-images.yaml in R2)
+# is consumed by the node-* tofu modules via the layer pre-plan
+# `aws s3 sync` step that materialises the inventory dir locally.
 #
 # "Sync" not "regenerate": the build step is a no-op when the schematic
 # hasn't changed (the same .oci bytes stay cached in R2). The per-account
@@ -29,9 +30,9 @@
 #                        Reuses the existing image if its display_name
 #                        (schematic + archive sha) already exists — only
 #                        new tenancies or new bytes do real work.
-#   assemble           — collects per-account artifacts, renders the
-#                        final talos-images.yaml, opens / updates the
-#                        bot/talos-images-bump PR.
+#   assemble-and-upload — collects per-account artifacts, renders the
+#                        final talos-images.yaml, uploads it to R2 at
+#                        production/inventory/talos-images.yaml. No PR.
 #
 # Auth: needs OMNI_SERVICE_ACCOUNT_KEY (operator creates a service
 # account in the Omni dashboard once: Service Accounts → Create →
@@ -60,8 +61,7 @@ on:
     - cron: "0 6 * * 1"
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
   id-token: write # GitHub-OIDC → OCI workload-identity exchange.
 
 # A second concurrent run would race on the inventory file. Cancel any
@@ -105,7 +105,7 @@ jobs:
     # interpolating ${R2_ACCOUNT_ID} (a registered secret) gets
     # `##[warning]Skip output ... since it may contain secret.` and
     # arrives at downstream jobs as the empty string. We pass the
-    # basenames + schematic_id and let assemble-and-pr stitch the
+    # basenames + schematic_id and let assemble-and-upload stitch the
     # URLs from the R2_ACCOUNT_ID secret it loads from `secrets`.
     outputs:
       skipped: ${{ steps.build.outputs.skipped }}
@@ -216,11 +216,20 @@ jobs:
           echo "::notice::schematic source hash = ${schematic_id}"
 
           # ----- Skip if unchanged and not forced -----
-          # Note: the per-account OCI matrix re-runs whenever build
-          # runs, so a new oracle account added between regens is only
-          # picked up on the next change-driven or forced regen. Force
-          # is the operator-facing escape hatch.
-          stored=$(yq -r '.schematic_id // ""' tofu/shared/inventory/talos-images.yaml)
+          # Reads the schematic_id from the R2-hosted inventory copy
+          # (post-M2: talos-images.yaml lives in R2, not the repo).
+          # First-time bootstraps (no prior object) treat stored as
+          # empty and proceed with the full sync.
+          : "${R2_ACCOUNT_ID:?required for R2 endpoint URL}"
+          R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          if aws s3 cp \
+              s3://cluster-tofu-state/production/inventory/talos-images.yaml \
+              /tmp/stored-talos-images.yaml \
+              --endpoint-url "$R2_ENDPOINT" --region us-east-1 2>/dev/null; then
+            stored=$(yq -r '.schematic_id // ""' /tmp/stored-talos-images.yaml)
+          else
+            stored=""
+          fi
           if [[ "${stored}" == "${schematic_id}" && "${FORCE}" != "true" ]]; then
             echo "::notice::schematic unchanged (${stored}); skipping rebuild — pass force=true to override"
             echo "skipped=true" >> "$GITHUB_OUTPUT"
@@ -516,7 +525,7 @@ jobs:
           fi
 
           # ----- Compute SHA-256s and emit job outputs -----
-          # Pass basenames + sha256s only — assemble-and-pr stitches
+          # Pass basenames + sha256s only — assemble-and-upload stitches
           # the URLs from R2_ACCOUNT_ID. GitHub filters any output
           # value that contains a registered secret, so emitting the
           # full URL here would arrive empty downstream.
@@ -852,8 +861,12 @@ jobs:
           if-no-files-found: error
 
   # Renders the final talos-images.yaml from job outputs + per-account
-  # artifacts and opens / updates the bot/talos-images-bump PR.
-  assemble-and-pr:
+  # artifacts and uploads it to R2 (production/inventory/talos-images.yaml).
+  # No PR is opened: existing OCI instances ignore source_details drift
+  # (per fix #aa721d1), Contabo's ensure_image is the only thing that
+  # would react to a URL change and that path is bypassed when the
+  # cluster is rebuilt fresh — see [[contabo_image_url_reinstall]] memory.
+  assemble-and-upload:
     # Run as long as build + discover succeeded. oci-import is a
     # fail-fast=false matrix; we tolerate per-account failures and
     # publish the inventory with whichever OCIDs successfully made it.
@@ -921,7 +934,7 @@ jobs:
             echo "    archive_url: \"${base}/${ORACLE_ARCHIVE_OBJECT}\""
             echo "    archive_sha256: \"${ORACLE_ARCHIVE_SHA256}\""
             echo "    accounts:"
-          } > tofu/shared/inventory/talos-images.yaml
+          } > /tmp/talos-images.yaml
 
           # Per-account block. Sorted by profile for stable diffs.
           # nullglob makes the unmatched glob expand to nothing; without
@@ -934,7 +947,7 @@ jobs:
           shopt -u nullglob
           IFS=$'\n' artifacts=($(printf '%s\n' "${artifacts[@]}" | sort))
           if (( ${#artifacts[@]} == 0 )); then
-            echo "      {}" >> tofu/shared/inventory/talos-images.yaml
+            echo "      {}" >> /tmp/talos-images.yaml
           else
             for f in "${artifacts[@]}"; do
               profile=$(jq -r '.profile' "$f")
@@ -950,31 +963,28 @@ jobs:
                 echo "        namespace: \"${namespace}\""
                 echo "        bucket: \"${bucket}\""
                 echo "        object: \"${object}\""
-              } >> tofu/shared/inventory/talos-images.yaml
+              } >> /tmp/talos-images.yaml
             done
           fi
 
           echo "::group::rendered inventory"
-          cat tofu/shared/inventory/talos-images.yaml
+          cat /tmp/talos-images.yaml
           echo "::endgroup::"
 
-      # Open a PR rather than push directly: image bumps trigger VPS
-      # reinstalls when applied, so a human review beat is required.
-      - name: Open / update PR
-        uses: peter-evans/create-pull-request@v8
-        with:
-          branch: bot/talos-images-bump
-          base: main
-          title: "talos-images: refresh"
-          commit-message: |
-            talos-images: refresh from sync-talos-images workflow
-          body: |
-            Auto-generated by `sync-talos-images`. Verify the
-            extensions / kernel args in `tofu/shared/schematics/cluster.yaml`
-            still match what we want, then merge. Merging triggers the
-            normal `tofu-apply` chain, which will swap each cloud's VPS
-            image to the new variant on the next reinstall window.
-
-            OCI image OCIDs are pre-imported per account; the
-            node-oracle module reads them from inventory at plan time.
-          delete-branch: true
+      # Upload directly to R2 — no PR. The R2-resident copy is what
+      # the node-state-staging step in tofu-layer.yml pulls down at
+      # plan time. Audit trail lives in this workflow's run history
+      # and R2 object versioning.
+      - name: Upload talos-images.yaml to R2
+        env:
+          AWS_ACCESS_KEY_ID:         ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY:     ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
+          R2_ACCOUNT_ID:             ${{ secrets.R2_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          aws s3 cp /tmp/talos-images.yaml \
+            s3://cluster-tofu-state/production/inventory/talos-images.yaml \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --region us-east-1
+          echo "::notice::uploaded production/inventory/talos-images.yaml"

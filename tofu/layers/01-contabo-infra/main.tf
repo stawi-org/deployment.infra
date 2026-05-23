@@ -36,7 +36,6 @@ module "contabo_account_state" {
   source              = "../../modules/node-state"
   provider_name       = "contabo"
   account             = each.key
-  age_recipients      = split(",", var.age_recipients)
   local_inventory_dir = var.local_inventory_dir
 }
 

@@ -18,7 +18,6 @@ module "contabo_nodes_writer" {
   local_inventory_dir = var.local_inventory_dir
   provider_name       = "contabo"
   account             = each.key
-  age_recipients      = split(",", var.age_recipients)
 
   write_nodes = true
   nodes_content = merge(

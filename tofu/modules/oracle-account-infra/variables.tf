@@ -106,3 +106,8 @@ variable "force_reinstall_generation" {
     error_message = "force_reinstall_generation must be >= 1."
   }
 }
+
+variable "local_inventory_dir" {
+  type        = string
+  description = "Local dir populated pre-plan by aws s3 sync from production/inventory/. The module reads <local_inventory_dir>/talos-images.yaml to resolve the per-account custom-image OCID."
+}

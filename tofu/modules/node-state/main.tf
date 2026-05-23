@@ -1,106 +1,71 @@
 # tofu/modules/node-state/main.tf
 #
-# Reads per-(provider, account) inventory files from a LOCAL staging
-# directory (populated by the workflow pre-plan via aws s3 sync from R2).
-# Writes go directly to R2 via aws_s3_object resources.
+# Reads per-(provider, account) inventory state.
 #
-# Agreed R2 layout (only these files live under <provider>/<account>/):
-#   auth.yaml                        declarative credentials (sops for contabo)
-#   nodes.yaml                       declarative node specs
-#   <talos-version>/<node>.yaml      per-node Talos machine config
+# Auth credentials live in the REPO under
+#   tofu/shared/accounts/<provider>/<account>/auth.yaml
+# (SOPS-encrypted via .sops.yaml at repo root). Node specs and per-node
+# Talos configs live in R2 under production/inventory/<provider>/<account>/.
 #
-# Provider observed state (instance OCIDs, IPs, image_apply_generation)
-# is NOT in this tree — it lives in each layer's tfstate and crosses
-# layers via terraform_remote_state.
+# Reads:
+#   - auth.yaml is decrypted via the `sops` provider directly from the
+#     repo path. No R2 round-trip, no local staging step.
+#   - nodes.yaml is read from the local staging dir populated pre-plan
+#     by `aws s3 sync s3://cluster-tofu-state/production/inventory/ <staging>/`.
+# Writes (R2):
+#   - nodes.yaml (observed provider_data is written back here on apply).
+#   - <talos-version>/<node-key>.yaml (rendered Talos machine configs).
 
 locals {
   base_key  = "${var.key_prefix}/${var.provider_name}/${var.account}"
-  auth_key  = "${local.base_key}/auth.yaml"
   nodes_key = "${local.base_key}/nodes.yaml"
 
-  # Only Contabo currently needs auth encryption (OAuth2 secrets).
-  # Oracle auth carries non-sensitive pointers only (actual tokens come
-  # from GitHub OIDC at runtime). On-prem has no auth.
-  is_encrypted_auth = var.provider_name == "contabo"
+  # Repo-resident auth. Provider+account always present.
+  auth_repo = "${path.module}/../../shared/accounts/${var.provider_name}/${var.account}/auth.yaml"
 
-  # Local staged paths (reads).
+  # Local staged path for nodes.yaml.
   base_local  = "${var.local_inventory_dir}/${var.provider_name}/${var.account}"
-  auth_local  = "${local.base_local}/auth.yaml"
   nodes_local = "${local.base_local}/nodes.yaml"
 
-  has_auth  = fileexists(local.auth_local)
+  has_auth  = fileexists(local.auth_repo)
   has_nodes = fileexists(local.nodes_local)
 }
 
 # --- encrypted reads (auth) ------------------------------------------------
 
 data "sops_file" "auth" {
-  count       = local.is_encrypted_auth && local.has_auth ? 1 : 0
-  source_file = local.auth_local
+  count       = local.has_auth ? 1 : 0
+  source_file = local.auth_repo
 }
 
 # --- decoded outputs -------------------------------------------------------
 
 locals {
-  # Branch on is_encrypted_auth at the STRING level so both branches
-  # produce strings that unify. yamldecode once afterwards.
-  auth_raw_yaml = (
-    local.is_encrypted_auth
-    ? (local.has_auth ? data.sops_file.auth[0].raw : "")
-    : (local.has_auth ? file(local.auth_local) : "")
-  )
-  auth_decoded = try(yamldecode(local.auth_raw_yaml), null)
-
+  # carlpett/sops returns a flat-dotted `data` map (e.g. "auth.tenancy_ocid")
+  # which loses the nested shape layers expect (e.g. `mod.auth.auth.tenancy_ocid`).
+  # Use `.raw` (decrypted YAML text) + yamldecode to preserve nesting.
+  #
+  # nonsensitive(): the sops provider marks every decrypted value as
+  # sensitive, and that marking propagates through yamldecode + merge
+  # into downstream `for_each` expressions. OpenTofu crashes when a
+  # marked value reaches for_each ("value is marked, so must be unmarked
+  # first"). Auth contents are OCI domain URLs, OCIDs, region strings,
+  # and a single OIDC client_secret — none participate in production
+  # plan output (just provider config); unmark so layer for_each over
+  # oci_accounts_effective works.
+  auth_decoded  = local.has_auth ? nonsensitive(yamldecode(data.sops_file.auth[0].raw)) : null
   nodes_decoded = try(yamldecode(file(local.nodes_local)), { nodes = {} })
 }
 
 # Diagnostic: which inventory files were found.
 locals {
   inventory_keys = sort(concat(
-    local.has_auth ? [local.auth_local] : [],
+    local.has_auth ? [local.auth_repo] : [],
     local.has_nodes ? [local.nodes_local] : [],
   ))
 }
 
-# --- writers ---------------------------------------------------------------
-
-locals {
-  recipients_joined = join(",", var.age_recipients)
-}
-
-resource "aws_s3_object" "auth" {
-  count  = var.write_auth && local.is_encrypted_auth ? 1 : 0
-  bucket = var.bucket
-  key    = local.auth_key
-  content = provider::sops::encrypt(
-    yamlencode(var.auth_content),
-    "yaml",
-    { age = local.recipients_joined },
-  )
-  content_type = "application/x-yaml"
-
-  lifecycle {
-    precondition {
-      condition     = var.auth_content != null
-      error_message = "write_auth = true but auth_content is null"
-    }
-  }
-}
-
-resource "aws_s3_object" "auth_plaintext" {
-  count        = var.write_auth && !local.is_encrypted_auth ? 1 : 0
-  bucket       = var.bucket
-  key          = local.auth_key
-  content      = yamlencode(var.auth_content)
-  content_type = "application/x-yaml"
-
-  lifecycle {
-    precondition {
-      condition     = var.auth_content != null
-      error_message = "write_auth = true but auth_content is null"
-    }
-  }
-}
+# --- writers (nodes + per-node configs) -----------------------------------
 
 resource "aws_s3_object" "nodes" {
   count        = var.write_nodes ? 1 : 0
