@@ -1,0 +1,85 @@
+# One-shot recovery: create MachineSetNode resources to manually
+# bind unbound machines to the cluster's CP / worker MachineSets.
+#
+# Use when the MachineSet controller hasn't auto-allocated machines
+# from a MachineClass despite labels matching — typically after a
+# fresh Omni instance + manual MachineLabels apply where the
+# controller-side reconcile sticks at allocationtype=static.
+#
+# Reads the labelled machines via `omnictl get machinelabels`, splits
+# them by role label, and applies one MachineSetNode per machine
+# bound to the appropriate MachineSet. Delete this workflow after
+# the 2026-05-23 cluster rebuild stabilises.
+name: bind-machines-to-cluster
+on:
+  workflow_dispatch:
+    inputs:
+      cluster_name:
+        type: string
+        default: stawi
+      confirm:
+        description: Type the cluster name to confirm
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  OMNI_VERSION: v1.7.1
+
+jobs:
+  bind:
+    runs-on: ubuntu-latest
+    if: inputs.confirm == 'stawi'
+    env:
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+      CLUSTER_NAME: ${{ inputs.cluster_name }}
+    steps:
+      - name: Install omnictl
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          cat > /usr/local/bin/omnictl <<'WRAP'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /usr/local/bin/omnictl
+
+      - name: Get labelled machines + create MachineSetNode bindings
+        run: |
+          set -euo pipefail
+          all=$(omnictl get machinelabels -o json | jq -s '.')
+          count=$(jq 'length' <<<"$all")
+          echo "::notice::found ${count} machinelabels"
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+
+          while IFS= read -r m; do
+            mid=$(jq -r '.metadata.id' <<<"$m")
+            role=$(jq -r '.metadata.labels["node.stawi.org/role"] // ""' <<<"$m")
+            if [[ -z "$role" || -z "$mid" ]]; then
+              echo "::warning::skipping machine ${mid:-?} with empty role"
+              continue
+            fi
+            if [[ "$role" == "controlplane" ]]; then
+              mset="${CLUSTER_NAME}-control-planes"
+            else
+              mset="${CLUSTER_NAME}-workers"
+            fi
+            cat > "$tmp/${mid}.yaml" <<MANIFEST
+          metadata:
+            namespace: default
+            type: MachineSetNodes.omni.sidero.dev
+            id: ${mid}
+            labels:
+              omni.sidero.dev/cluster: ${CLUSTER_NAME}
+              omni.sidero.dev/machine-set: ${mset}
+          spec: {}
+          MANIFEST
+            echo "::notice::binding ${mid} → ${mset} (role=${role})"
+            omnictl apply -f "$tmp/${mid}.yaml" || echo "::warning::failed for ${mid}"
+          done < <(jq -c '.[]' <<<"$all")
