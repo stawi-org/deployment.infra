@@ -44,7 +44,16 @@ locals {
   # carlpett/sops returns a flat-dotted `data` map (e.g. "auth.tenancy_ocid")
   # which loses the nested shape layers expect (e.g. `mod.auth.auth.tenancy_ocid`).
   # Use `.raw` (decrypted YAML text) + yamldecode to preserve nesting.
-  auth_decoded  = local.has_auth ? yamldecode(data.sops_file.auth[0].raw) : null
+  #
+  # nonsensitive(): the sops provider marks every decrypted value as
+  # sensitive, and that marking propagates through yamldecode + merge
+  # into downstream `for_each` expressions. OpenTofu crashes when a
+  # marked value reaches for_each ("value is marked, so must be unmarked
+  # first"). Auth contents are OCI domain URLs, OCIDs, region strings,
+  # and a single OIDC client_secret — none participate in production
+  # plan output (just provider config); unmark so layer for_each over
+  # oci_accounts_effective works.
+  auth_decoded  = local.has_auth ? nonsensitive(yamldecode(data.sops_file.auth[0].raw)) : null
   nodes_decoded = try(yamldecode(file(local.nodes_local)), { nodes = {} })
 }
 
