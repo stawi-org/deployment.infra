@@ -29,7 +29,6 @@ module "bwire_account_state" {
   source              = "../../modules/node-state"
   provider_name       = "oracle"
   account             = "bwire"
-  age_recipients      = split(",", var.age_recipients)
   local_inventory_dir = "/tmp/inventory"
 }
 
@@ -118,6 +117,13 @@ module "omni_host_oci" {
   r2_account_id        = var.r2_account_id
   r2_access_key_id     = var.r2_access_key_id
   r2_secret_access_key = var.r2_secret_access_key
+
+  # Fresh restore namespace for the 2026-05-23 substrate flip back to OCI.
+  # Neither the older OCI snapshots (production/omni-backups/) nor the
+  # Contabo-era snapshots (production/omni-backups-2026-05-04/) carry
+  # forward — the new Omni starts on a clean /var/lib/omni and generates
+  # fresh master keys. Greenfield by design.
+  r2_backup_prefix = "production/omni-backups-2026-05-23-oci"
 
   etcd_backup_enabled = var.etcd_backup_enabled
 
