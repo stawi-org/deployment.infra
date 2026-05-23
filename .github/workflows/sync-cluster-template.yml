@@ -267,6 +267,9 @@ jobs:
           # with "Cannot index array with string ipv4". Bind the
           # entry's ipv4 into a let-variable before piping so the
           # value survives the pipe boundary.
+          # First pass: try to match each unbound machine to an inventory
+          # entry by hostname or IPv4.
+          declare -a unmatched_ids=()
           while IFS= read -r m; do
             mid=$(jq -r '.metadata.id' <<<"$m")
             mhost=$(jq -r '.spec.network.hostname // ""' <<<"$m")
@@ -290,9 +293,29 @@ jobs:
             if [[ -n "$role" ]]; then
               apply_label "$mid" "$role" "matched inventory: ${inv_name}"
             else
-              apply_label "$mid" "worker" "no inventory match (host=${mhost:-?} addrs=${maddrs:-?}) — defaulting to worker"
+              unmatched_ids+=("$mid")
             fi
           done < <(jq -c '.[]' <<<"$all")
+
+          # Second pass: when no machine matched by hostname/IP (typical of
+          # a freshly-rebuilt fleet that registered with SideroLink before
+          # MachineStatus.spec.network.* populated — chicken-and-egg with
+          # cluster bootstrap because Talos won't apply ClusterMachineConfig
+          # until it's assigned to a MachineSet, but assignment requires
+          # role labels), elect the first 3 unmatched as controlplane and
+          # the rest as worker. Once Talos config flows and hostnames
+          # propagate, a subsequent sync run can correct the labels by
+          # matching properly. Without this fallback every unmatched
+          # machine becomes worker and the cluster never gets etcd quorum.
+          cp_needed=3
+          for mid in "${unmatched_ids[@]}"; do
+            if (( cp_needed > 0 )); then
+              apply_label "$mid" "controlplane" "no inventory match — bootstrap-elected as cp ($cp_needed remaining)"
+              cp_needed=$((cp_needed - 1))
+            else
+              apply_label "$mid" "worker" "no inventory match — defaulting to worker"
+            fi
+          done
 
       # Render + apply the EtcdBackupS3Configs resource. Global Omni
       # resource (same kind as MachineClass) — not a Cluster template
