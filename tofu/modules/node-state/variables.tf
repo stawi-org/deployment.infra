@@ -24,25 +24,11 @@ variable "key_prefix" {
   description = "Key prefix under which inventory/<provider>/<account>/*.yaml live."
 }
 
-variable "age_recipients" {
-  type        = list(string)
-  description = "Age public keys to encrypt writes to. Reads use SOPS_AGE_KEY from env."
-}
-
 # ---- Write flags + content ----------------------------------------------
-# The agreed R2 inventory layout is only:
-#   <provider>/<account>/auth.yaml
-#   <provider>/<account>/nodes.yaml
-#   <provider>/<account>/<talos-version>/<node-name>.yaml
-# No state.yaml / talos-state.yaml / machine-configs.yaml — those were
-# transitional. Provider observed state lives in tfstate and crosses
-# layers via terraform_remote_state outputs instead.
+# Auth credentials are SOPS-encrypted in the repo (tofu/shared/accounts/);
+# this module only READS them. Writes are limited to nodes.yaml +
+# per-node Talos machine configs (both live in R2).
 
-variable "write_auth" {
-  type        = bool
-  default     = false
-  description = "Set true to write auth.yaml to R2. Requires auth_content to be non-null. Contabo auth is age-encrypted; Oracle is plaintext."
-}
 variable "write_nodes" {
   type        = bool
   default     = false
@@ -54,11 +40,6 @@ variable "write_per_node_configs" {
   description = "Set true to write <talos_version>/<node>.yaml for every entry in per_node_configs_content. Each value is a full Talos machine config rendered for that node."
 }
 
-variable "auth_content" {
-  type        = any
-  default     = null
-  description = "YAML-shaped map written to auth.yaml when write_auth = true. Ignored on read-only invocations."
-}
 variable "nodes_content" {
   type        = any
   default     = null
@@ -77,5 +58,5 @@ variable "talos_version" {
 
 variable "local_inventory_dir" {
   type        = string
-  description = "Local directory where the workflow syncs R2 production/inventory/ before plan. Reads use this; writes go directly to R2."
+  description = "Local directory where the workflow syncs R2 production/inventory/ before plan. Used to read nodes.yaml and (post-M2) talos-images.yaml; writes go directly to R2."
 }

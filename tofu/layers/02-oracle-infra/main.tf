@@ -26,7 +26,6 @@ module "oracle_account_state" {
   source              = "../../modules/node-state"
   provider_name       = "oracle"
   account             = each.key
-  age_recipients      = split(",", var.age_recipients)
   local_inventory_dir = var.local_inventory_dir
 }
 
@@ -77,6 +76,7 @@ module "oracle_account" {
   providers = { oci = oci.account[each.key] }
 
   account_key                          = each.key
+  local_inventory_dir                  = var.local_inventory_dir
   compartment_ocid                     = try(each.value.compartment_ocid, "")
   region                               = try(each.value.region, "")
   vcn_cidr                             = try(each.value.vcn_cidr, "10.0.0.0/16")

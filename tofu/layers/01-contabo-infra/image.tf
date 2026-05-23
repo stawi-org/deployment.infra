@@ -13,7 +13,11 @@
 # triggers, no replace_triggered_by chain.
 
 locals {
-  talos_images = yamldecode(file("${path.module}/../../shared/inventory/talos-images.yaml"))
+  # Sourced from R2 (production/inventory/talos-images.yaml) — synced
+  # locally pre-plan by the layer workflow's `aws s3 sync` step. Was
+  # tofu/shared/inventory/talos-images.yaml in the repo until M2 moved
+  # it to R2 alongside the rest of the inventory tree.
+  talos_images = yamldecode(file("${var.local_inventory_dir}/talos-images.yaml"))
 }
 
 resource "contabo_image" "talos" {

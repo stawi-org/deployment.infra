@@ -25,9 +25,12 @@
 
 locals {
   # Source of truth for image bytes + OCIDs. Populated by the
-  # sync-talos-images workflow's auto-PR. Per-account OCIDs
-  # land under .formats.oracle.accounts.<profile>.ocid.
-  talos_images = yamldecode(file("${path.module}/../../shared/inventory/talos-images.yaml"))
+  # sync-talos-images workflow, which writes directly to R2 at
+  # production/inventory/talos-images.yaml. The consuming layer
+  # syncs that R2 prefix locally pre-plan via `aws s3 sync`, so the
+  # file lives at ${var.local_inventory_dir}/talos-images.yaml.
+  # Per-account OCIDs land under .formats.oracle.accounts.<profile>.ocid.
+  talos_images = yamldecode(file("${var.local_inventory_dir}/talos-images.yaml"))
 
   # Per-account OCID lookup. If the account is missing from the
   # inventory's accounts map (e.g. the operator just added it but

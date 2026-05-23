@@ -4,7 +4,6 @@ module "onprem_account_state" {
   source              = "../../modules/node-state"
   provider_name       = "onprem"
   account             = each.key
-  age_recipients      = split(",", var.age_recipients)
   local_inventory_dir = var.local_inventory_dir
 }
 
