@@ -1,0 +1,21 @@
+auth:
+    compartment_ocid: ENC[AES256_GCM,data:TSigrupDcIsxM3Kvf4V4GueuMbeZhM4Bo/EQSy5n4BHDwpgAEztKA8X/Cz1FYyButtPSp216+1ci+d5FAU0N9/i6OaDJepedhAswms3kew==,iv:gCvqf19K6Lwhg6cACsc9/Pbb3WWpLVXcUPgAN0O771w=,tag:cyFfs6fAKpRKZ4kN+R6Wdg==,type:str]
+    domain_base_url: ENC[AES256_GCM,data:cD2xhE5DQ82PZzaP3Nn9QkVHYXuUX3vZHHfe20FIhIxm7I5yNpXVFkjnfb2FkKUUqJcZPtxbK91n1F1uUJKaK5xL7jRq3g==,iv:sDu9C8hpFfICt7EYFrHNs55lMvR5Vp5/UOkcxugioPY=,tag:P86eg+6uk18IuGr3eWFLnw==,type:str]
+    oidc_client_identifier: ENC[AES256_GCM,data:tgNUM9mVjI4963rcqUVEOSDwWTuwMCPJjTlsVljY/hINqV5RObJ6Rsvq8p9EhSuvquKUHDjzb9S9YMd2FFWXJEWshc/cKpj8MVrSsw==,iv:Idv+DudU/YaElhCYjXuPTdyuC2TeTtQFPIlTwRukwEg=,tag:p5mB57tDmOYXXydSKFxOyw==,type:str]
+    region: ENC[AES256_GCM,data:qSQOb6qPs8VK8GHqraU=,iv:niaY+kawI6ubqZetttraouoibjKhl8wYwOrcv6+0Flw=,tag:+9ITWud39MZ6cqAVh4LNKQ==,type:str]
+    tenancy_ocid: ENC[AES256_GCM,data:iK7Tg5usqprqPa0BI3E3tgRWZfU7M3mnqyQBDjm5ji5iCfVA2g2j8PDIpQwJTESDB3h9ZOR3nf0Qek3v5SfrKrTdsNuV2EcnFN0YBAhsnw==,iv:0XWvzzCgLjHqJVMOwn4u2qGPWDeWhk2V0ffsyRucC8M=,tag:IT1SYW5mw5QtD6khmvbszw==,type:str]
+sops:
+    age:
+        - recipient: age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBPQitVWjB6YUQ5Qk9sS0dn
+            a0JnK2FlRjRGamJPbmxjTWxsVkpSSDcwcWlrCm9SVXdyTVkxUVlmekJjMk1jR3ly
+            NlpuK1E3UFRNOVMveDVBNmhWWWk3MW8KLS0tIFNSV1lUcS9scGV6RkM3U0YwcTBX
+            aU9KZXhIdEEzdW1MVHd2Mjd1RWtBalEKbhFHcy5Cda1OxOEtCGKQPIlqsfgEuEg5
+            5Sq1lZvm7NcwKoqwoSmX9Zs1wQcFylnZS7dRf11g0P86FbdI7gzS4A==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-05-23T08:47:53Z"
+    mac: ENC[AES256_GCM,data:701ygAHHV/lbRDsIN7xZTjwXgpG/QoXUn18HdsPBvV5bY78H4f8lEUcs+J8kEdM7QEDQaQXpnZ9u4r3k+SW4BY/gaQoesxcNz4LI55ghFdfwurdnvOmj1Q6U2O053QFe+E9ARb49gVun4s8kaaEbaLUkRblDlns0mFWGPtA0g4U=,iv:2IveocUqrxNnUdNny7tXK+/iu4qz3yG17iZSLhCswZo=,tag:i2xh+LTbvUqeJ7R6rKpcsw==,type:str]
+    encrypted_regex: ^(.*)$
+    version: 3.11.0

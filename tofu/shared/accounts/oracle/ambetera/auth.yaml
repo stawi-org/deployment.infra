@@ -1,0 +1,21 @@
+auth:
+    compartment_ocid: ENC[AES256_GCM,data:5UuJhj7JZJSSggS1TkNdrqJ+zKZr2SBFktFs/iES5SOYdc6b2DmvawnA4gY7dLH/Iu6/GpD28aGpZZIZrxMcu91ZVmXqv+wc1Bgwu/HGYg==,iv:uN16QNtr5uzLP4f70i9r728arIshiuEYweatcXZrJjQ=,tag:7cGB/NwJv4ZUnvQ3e29LuQ==,type:str]
+    domain_base_url: ENC[AES256_GCM,data:HrokybjINcasuZONg0+mqPZK4S95CNSkMtk+x840BNRkzWBt2qIMU194Dt7S6CVZyL9TYqte5BlIRtN2K/4K355orCEUVA==,iv:S+U1A6SlB1em74L189BeBYYsSooFDFykwKdinTsLvLU=,tag:M6d+0DaBcB940C+f0xsV+g==,type:str]
+    oidc_client_identifier: ENC[AES256_GCM,data:dzcuDmyr1VB/f782mlKHkz+b9T2WGpko2OJ1b1YlMRFmd/Qa5C6ocG5ENN6xYWrd5XZ7CDt8rHTeK+NHbVp0lM8vt6sN3QUIi477NQ==,iv:HhhamBqpzl46LXbQt+f5ptxI1d/wBuxEsyzuSxzYKpY=,tag:2z7BthHT9Moq9y3KFh/kSg==,type:str]
+    region: ENC[AES256_GCM,data:L1AXjLBj2kpASsk=,iv:CokF0TTmI85f4aaG/7rkaoXyaD8M+OLXRXVxqcUUv+g=,tag:M2RZjwUB/dlxvpNbAOxinA==,type:str]
+    tenancy_ocid: ENC[AES256_GCM,data:ySRg1/OlotQmIOkLkDE7H3WK7ZVMOJRmoMVQ987lo5/z5mMZMMBDJ3VSK+AxwmY9EmuHRj051YMqz3MImtytpndh7CWpVPncKdOxP7e4AQ==,iv:sk67hpWShhlhmXRqjUaK4lNgZmDYd53BgyIAwQTZGBE=,tag:GHVUnDc9z3akB9N3RB5Ftg==,type:str]
+sops:
+    age:
+        - recipient: age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSBmQ1k4R0JjMXFEQVJqdzU2
+            amVBRUFtczA5RDNucGI1Tmp5QmdDdVFMcDE0CmZwRTN6dnZTM1o5a1JnTlEvQmtN
+            NXFuQmZZNjkvMmp6MkFERldZU3NXRWMKLS0tIHRWVklhaHlIOUdwdU9XUjRTVXAv
+            QmJ4bVV0aGxLOFNrWUh6ODBSQStxVWcKvpbiu2ezjRfyScyVbHvKO65JShqiT2qA
+            PRI+wzXnBRTC13Tbu8ocAMpRPLpZd711nQHqroExsFV/2CHYEnulDg==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-05-23T08:47:52Z"
+    mac: ENC[AES256_GCM,data:Cusv/HtiDR4tzYWM+TlUmOoPmLM8BPqMzVTNdLrP+iSQf14dIvaz4PLwPCaRL/LKb2+Ks/ALKaMXgHrjM438nwqpxMqF/M6btEwR/WNd5wpIUD8qzmxgQyY1VxoefXvLDXZPyX/7IGAWnXn5baa+okGXIVhO2nAPQ6J9E27ErtI=,iv:vceMPguBq5izx5lWyyCrpbObRxlrRbHMlr8670OraEw=,tag:X+Y0oLR4ThwmTVCkTZaWzA==,type:str]
+    encrypted_regex: ^(.*)$
+    version: 3.11.0
