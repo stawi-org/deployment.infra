@@ -1,0 +1,24 @@
+name: dump-omni-machines
+on:
+  workflow_dispatch:
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+    steps:
+      - run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/v1.7.1/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          cat > /usr/local/bin/omnictl <<'WRAP'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /usr/local/bin/omnictl
+          echo "=== machines ==="
+          omnictl get machines -o json 2>/dev/null | jq -s '.[] | {id:.metadata.id, hostname:.spec.network.hostname, connected:.spec.connected, labels:.metadata.labels}'
+          echo "=== machinestatus ==="
+          omnictl get machinestatus -o json 2>/dev/null | jq -s '.[] | {id:.metadata.id, hostname:.spec.network.hostname, role:.spec.role, cluster:.spec.cluster, connected:.spec.connected, schematic:.spec.schematic.id}'
