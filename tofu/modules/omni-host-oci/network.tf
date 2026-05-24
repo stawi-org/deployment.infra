@@ -19,9 +19,11 @@ resource "oci_core_network_security_group" "this" {
   display_name   = "${var.name}-nsg"
 }
 
-# TCP ingress: 80, 443, 8090, 8100
+# TCP ingress: 22, 80, 443, 8090, 8100
+# (22 added 2026-05-24 for fleet-connectivity diagnosis; revert
+#  to base list once the bug is identified.)
 resource "oci_core_network_security_group_security_rule" "tcp_ingress_v4" {
-  for_each                  = toset(["80", "443", "8090", "8100"])
+  for_each                  = toset(["22", "80", "443", "8090", "8100"])
   network_security_group_id = oci_core_network_security_group.this.id
   direction                 = "INGRESS"
   protocol                  = "6"

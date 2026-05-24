@@ -129,8 +129,9 @@ module "omni_host_oci" {
 
   vpn_users = var.vpn_users
 
-  # SSH stays HARD off on OCI — admin path is the WG VPN listener.
-  ssh_authorized_keys = []
+  # SSH temporarily enabled (2026-05-24) for fleet-connectivity
+  # diagnosis. Revert to [] once the bug is identified.
+  ssh_authorized_keys = ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID5xol7Isv6niRCRydIo4LRrKxWD3p8WBMXe/IGYK0JD bwire517@gmail.com"]
 }
 
 # Adopt the existing Contabo VPS rather than creating a new one.
