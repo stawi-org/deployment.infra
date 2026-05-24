@@ -83,4 +83,13 @@ force_image_generation = 12
 #                   every OCI Talos node with a fresh download token
 #                   from the now-stable new Omni. Pairs with
 #                   01-contabo-infra gen=22 PUT-reinstall.
-force_reinstall_generation = 17
+#  18 — 2026-05-24: after the OCI Omni VM was again recreated via
+#                   -replace= (PR-less manual apply at 03:35 to get
+#                   a clean /var/lib/omni and fresh WG server keys),
+#                   the gen-17 fleet images still embedded the
+#                   previous Omni's WG pubkey. Re-syncing images
+#                   post-latest-Omni-recreate then bumping pulls
+#                   every node onto an image carrying the current
+#                   WG server pubkey + token. Pairs with
+#                   01-contabo-infra gen=23 PUT-reinstall.
+force_reinstall_generation = 18

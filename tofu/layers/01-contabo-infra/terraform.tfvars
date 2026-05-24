@@ -138,4 +138,10 @@ age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
 #                   identity established before disconnect).
 #                   Re-PUT every Contabo VPS with a freshly-downloaded
 #                   image. Pairs with 02-oracle-infra gen=17.
-force_reinstall_generation = 22
+#  23 — 2026-05-24: post second-OCI-Omni-recreate (03:35 manual
+#                   -replace=). Fleet images had stale WG server
+#                   pubkey from the previous Omni VM; re-PUT pulls
+#                   Contabo VPSes onto fresh images with current
+#                   WG pubkey + token. Pairs with 02-oracle-infra
+#                   gen=18.
+force_reinstall_generation = 23
