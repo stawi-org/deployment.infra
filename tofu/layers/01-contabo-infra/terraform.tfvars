@@ -130,4 +130,12 @@ age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
 #                   Talos, so applying the new --iface arg requires
 #                   a reinstall rather than a config edit. Pairs
 #                   with 02-oracle-infra gen=16 destroy+create.
-force_reinstall_generation = 21
+#  22 — 2026-05-24: post 2026-05-23 omni-host flip (Contabo → OCI
+#                   bwire) + cluster wipe. First roll's images
+#                   carried the new-Omni token but every machine
+#                   stuck at `connected: false` after a brief
+#                   register (token consumed at join, no persistent
+#                   identity established before disconnect).
+#                   Re-PUT every Contabo VPS with a freshly-downloaded
+#                   image. Pairs with 02-oracle-infra gen=17.
+force_reinstall_generation = 22

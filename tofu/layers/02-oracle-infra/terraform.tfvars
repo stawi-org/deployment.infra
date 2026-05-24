@@ -73,4 +73,14 @@ force_image_generation = 12
 #                   8950-byte VXLAN packets didn't fit through
 #                   the 1420-byte WG path. Pairs with
 #                   01-contabo-infra gen=21 PUT-reinstall.
-force_reinstall_generation = 16
+#  17 — 2026-05-24: post 2026-05-23 omni-host flip (Contabo → OCI
+#                   bwire) + cluster wipe. The first roll embedded
+#                   the new-Omni siderolink token in fresh images,
+#                   but every machine briefly registered and then
+#                   stuck at `connected: false` (token consumed at
+#                   join but no persistent identity established).
+#                   Bumping forces a clean destroy+create cycle on
+#                   every OCI Talos node with a fresh download token
+#                   from the now-stable new Omni. Pairs with
+#                   01-contabo-infra gen=22 PUT-reinstall.
+force_reinstall_generation = 17
