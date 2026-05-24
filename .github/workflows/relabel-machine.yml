@@ -1,0 +1,50 @@
+name: relabel-machine
+on:
+  workflow_dispatch:
+    inputs:
+      hostname:
+        required: true
+        type: string
+      role:
+        required: true
+        type: choice
+        options: [controlplane, worker]
+jobs:
+  relabel:
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+      HOSTNAME: ${{ inputs.hostname }}
+      ROLE: ${{ inputs.role }}
+    steps:
+      - run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/v1.7.1/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          cat > /usr/local/bin/omnictl <<'WRAP'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /usr/local/bin/omnictl
+          # Find machine id by hostname
+          MID=$(omnictl get machinestatus -o json 2>/dev/null | jq -rs --arg h "$HOSTNAME" '.[] | select(.spec.network.hostname == $h) | .metadata.id')
+          [[ -n "$MID" ]] || { echo "::error::no machine for hostname $HOSTNAME"; exit 1; }
+          echo "machine id: $MID for $HOSTNAME"
+          # Apply MachineLabels resource. Role labels are namespaced under node.stawi.org/role
+          cat > /tmp/labels.yaml <<YAMLEOF
+          apiVersion: omni.sidero.dev/v1alpha1
+          kind: MachineLabels
+          metadata:
+            namespace: default
+            id: $MID
+          spec:
+            labels:
+              node.stawi.org/role: $ROLE
+              omni.sidero.dev/role-$ROLE: ""
+          YAMLEOF
+          omnictl apply -f /tmp/labels.yaml
+          echo "applied"
+          # Now show the machine's current labels
+          omnictl get machinelabels $MID -o yaml || omnictl get machinelabels $MID
