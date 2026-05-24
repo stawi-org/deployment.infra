@@ -25,7 +25,7 @@ permissions:
   id-token: write
 
 env:
-  CLOUDFLARE_ZONE_STAWI: ${{ secrets.CLOUDFLARE_ZONE_ID_STAWI }}
+  CLOUDFLARE_ZONE_STAWI: ${{ vars.CLOUDFLARE_ZONE_ID_STAWI }}
   CLOUDFLARE_API_TOKEN:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
 jobs:
