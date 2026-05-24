@@ -79,13 +79,9 @@ jobs:
             --instance-id "$instance_id" \
             --query 'data[?contains("lifecycle-state",`ATTACHED`)] | [0]."vnic-id"' --raw-output 2>/dev/null | tr -d '"')
           [[ -z "$vnic_id" || "$vnic_id" == "null" ]] && { echo "::error::no VNIC attachment for $instance_id"; exit 1; }
-          ipv4=$(oci --profile bwire network vnic get --vnic-id "$vnic_id" \
-            --query 'data."public-ip"' --raw-output | tr -d '"')
-          ipv6=$(oci --profile bwire network ipv6 list \
-            --compartment-id "$compartment_id" \
-            --vnic-id "$vnic_id" \
-            --query 'data[0]."ip-address"' --raw-output 2>/dev/null | tr -d '"' || true)
-          [[ "$ipv6" == "null" ]] && ipv6=""
+          vnic_json=$(oci --profile bwire network vnic get --vnic-id "$vnic_id")
+          ipv4=$(jq -r '.data."public-ip" // ""' <<<"$vnic_json")
+          ipv6=$(jq -r '.data."ipv6-addresses"[0] // ""' <<<"$vnic_json")
           echo "::notice::oci-bwire-omni -> IPv4=${ipv4} IPv6=${ipv6:-(none)}"
           echo "ipv4=${ipv4}" >> "$GITHUB_OUTPUT"
           echo "ipv6=${ipv6}" >> "$GITHUB_OUTPUT"
