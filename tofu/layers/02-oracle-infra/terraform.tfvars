@@ -92,4 +92,4 @@ force_image_generation = 12
 #                   every node onto an image carrying the current
 #                   WG server pubkey + token. Pairs with
 #                   01-contabo-infra gen=23 PUT-reinstall.
-force_reinstall_generation = 18
+force_reinstall_generation = 19
