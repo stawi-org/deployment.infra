@@ -137,11 +137,17 @@ resource "null_resource" "wait_for_omni_ready" {
 
   provisioner "local-exec" {
     interpreter = ["bash", "-c"]
+    # on_failure=continue keeps `tofu apply` moving even when the
+    # health-check probe never goes green during the apply window —
+    # the apply window may race ahead of DNS propagation, and the
+    # downstream sync workflows poll separately. Marking the
+    # resource as created lets cloudflare_dns_record updates land.
+    on_failure = continue
     environment = {
       ENDPOINT = "https://${var.siderolink_api_advertised_host}/healthz"
     }
     command = <<-EOT
-      set -euo pipefail
+      set -uo pipefail
       echo "[wait_for_omni_ready] polling $ENDPOINT"
       deadline=$(( $(date +%s) + 600 ))
       while :; do
@@ -151,7 +157,7 @@ resource "null_resource" "wait_for_omni_ready" {
           exit 0
         fi
         if [[ $(date +%s) -ge $deadline ]]; then
-          echo "[wait_for_omni_ready] timed out after 10min waiting for $ENDPOINT (last code: $code)" >&2
+          echo "[wait_for_omni_ready] timed out after 10min waiting for $ENDPOINT (last code: $code); soft-fail (on_failure=continue)" >&2
           exit 1
         fi
         sleep 10
