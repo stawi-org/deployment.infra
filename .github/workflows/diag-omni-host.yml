@@ -1,0 +1,157 @@
+# Diagnostic: run a small set of WG / Omni-stack inspection commands
+# on oci-bwire-omni via OCI Compute Cloud Agent's Run Command plugin.
+# Output streams back through OCI's API and lands in the workflow log.
+#
+# Used to debug the 2026-05-23/24 fleet-connectivity issue where
+# machines briefly register with SideroLink then disconnect within
+# seconds. We need to see WG peer state + Omni's join/peer logs to
+# diagnose why the handshake doesn't persist.
+name: diag-omni-host
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID:        ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY:    ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID:            ${{ secrets.R2_ACCOUNT_ID }}
+      OCI_CLI_AUTH:             security_token
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install OCI CLI
+        run: |
+          set -euo pipefail
+          pip install --quiet oci-cli
+          oci --version
+
+      - name: Configure OCI WIF (bwire)
+        run: |
+          set -euo pipefail
+          R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          TMPDIR_AUTH=$(mktemp -d)
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/oracle/bwire/" \
+            "${TMPDIR_AUTH}/bwire/" \
+            --endpoint-url "$R2_ENDPOINT" --region us-east-1 \
+            --exclude "*" --include "auth.yaml"
+          AUTH_JSON=$(python3 scripts/build-oci-auth-json.py "${TMPDIR_AUTH}")
+          echo "$AUTH_JSON" > /tmp/oci_auth_accounts.json
+          scripts/configure-oci-wif.sh /tmp/oci_auth_accounts.json
+
+      - name: Discover instance
+        id: discover
+        run: |
+          set -euo pipefail
+          compartment_id=$(jq -r '.[] | select(.profile=="bwire") | .tenancy_ocid' /tmp/oci_auth_accounts.json)
+          instance=$(oci --profile bwire compute instance list \
+            --compartment-id "$compartment_id" \
+            --lifecycle-state RUNNING \
+            --display-name oci-bwire-omni \
+            | jq -r '.data[0].id // empty')
+          if [[ -z "$instance" ]]; then echo "::error::no instance"; exit 1; fi
+          echo "::notice::instance=$instance"
+          echo "instance_id=$instance" >> "$GITHUB_OUTPUT"
+          echo "compartment_id=$compartment_id" >> "$GITHUB_OUTPUT"
+
+      - name: Submit diagnostic command via Cloud Agent Run Command
+        env:
+          INSTANCE_ID: ${{ steps.discover.outputs.instance_id }}
+          COMPARTMENT_ID: ${{ steps.discover.outputs.compartment_id }}
+        run: |
+          set -euo pipefail
+          script_text=$(cat <<'BASH'
+          #!/bin/bash
+          echo "=== uname / uptime ==="
+          uname -a
+          uptime
+          echo
+          echo "=== cloud-init status ==="
+          cloud-init status --long 2>&1 | head -30 || true
+          echo
+          echo "=== docker ps ==="
+          docker ps --format '{{.Names}}\t{{.Status}}\t{{.Ports}}' 2>&1 | head -20
+          echo
+          echo "=== wg show ==="
+          (which wg && sudo wg show) 2>&1 | head -120
+          echo
+          echo "=== docker logs omni (tail 200) ==="
+          docker logs --tail 200 omni 2>&1 | grep -iE 'siderolink|peer|reject|join|token|connect|disconnect' | tail -100
+          echo
+          echo "=== docker logs omni (raw tail 80) ==="
+          docker logs --tail 80 omni 2>&1 | tail -80
+          echo
+          echo "=== /var/lib/omni size ==="
+          sudo du -sh /var/lib/omni 2>&1 || true
+          echo
+          echo "=== ip -6 route + addr ==="
+          ip -6 addr | head -40
+          ip -6 route | head -20
+          echo
+          echo "=== ip link wireguard ==="
+          ip link show type wireguard 2>&1 | head -20
+          BASH
+          )
+          # base64 the script to dodge any JSON-escaping pitfalls.
+          script_b64=$(base64 -w0 <<<"$script_text")
+          # OCI run-command JSON body
+          body=$(jq -nc \
+            --arg cid "$COMPARTMENT_ID" --arg iid "$INSTANCE_ID" \
+            --arg src "$script_b64" '{
+              compartmentId: $cid,
+              instanceId: $iid,
+              executionTimeOutInSeconds: 120,
+              target: { instanceId: $iid },
+              content: {
+                source: { sourceType: "TEXT", text: ("echo " + $src + " | base64 -d | bash") },
+                output: { outputType: "TEXT" }
+              },
+              displayName: "diag-omni-host"
+            }')
+          # Submit
+          resp=$(oci --profile bwire raw-request \
+            --target-uri "https://iaas.eu-frankfurt-1.oraclecloud.com/20180917/instanceAgentCommands" \
+            --http-method POST --request-body "$body" 2>&1) || {
+              echo "::error::run-command POST failed:"
+              echo "$resp" | head -50
+              exit 1
+            }
+          cmd_id=$(jq -r '.data.id // empty' <<<"$resp")
+          if [[ -z "$cmd_id" ]]; then
+            echo "::error::no command id returned:"
+            echo "$resp" | head -50
+            exit 1
+          fi
+          echo "::notice::command id $cmd_id submitted"
+
+          # Poll for completion
+          for i in $(seq 1 30); do
+            sleep 6
+            exec_resp=$(oci --profile bwire raw-request \
+              --target-uri "https://iaas.eu-frankfurt-1.oraclecloud.com/20180917/instanceAgentCommands/${cmd_id}/instances/${INSTANCE_ID}" \
+              --http-method GET 2>&1)
+            state=$(jq -r '.data."lifecycle-state" // ""' <<<"$exec_resp")
+            echo "[$i] state=$state"
+            [[ "$state" == "SUCCEEDED" || "$state" == "FAILED" || "$state" == "CANCELED" || "$state" == "TIMED_OUT" ]] && break
+          done
+
+          echo "::group::raw response"
+          jq . <<<"$exec_resp" 2>/dev/null || echo "$exec_resp"
+          echo "::endgroup::"
+
+          echo "::group::stdout"
+          out_b64=$(jq -r '.data."content"."output"."text" // .data."command-execution"."content"."output"."text" // ""' <<<"$exec_resp")
+          if [[ -n "$out_b64" && "$out_b64" != "null" ]]; then
+            # OCI sometimes returns text directly, sometimes base64. Try decode first.
+            decoded=$(base64 -d <<<"$out_b64" 2>/dev/null || echo "$out_b64")
+            echo "$decoded"
+          else
+            echo "(no output captured — check raw response above)"
+          fi
+          echo "::endgroup::"
