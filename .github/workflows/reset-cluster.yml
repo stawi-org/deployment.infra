@@ -1,0 +1,33 @@
+name: reset-cluster
+on:
+  workflow_dispatch:
+jobs:
+  reset:
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+    steps:
+      - run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/v1.7.1/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          cat > /usr/local/bin/omnictl <<'WRAP'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /usr/local/bin/omnictl
+          echo "=== current cluster ==="
+          omnictl get cluster -o yaml || true
+          echo ""
+          echo "=== delete cluster stawi (forces all ClusterMachine teardown) ==="
+          omnictl delete cluster stawi || echo "(maybe already deleted)"
+          echo ""
+          echo "=== wait for cleanup (machines lose .spec.cluster) ==="
+          for i in $(seq 1 30); do
+            cnt=$(omnictl get machinestatus -o json 2>/dev/null | jq -rs '[.[] | select(.spec.cluster == "stawi")] | length')
+            echo "[$i] cluster-bound machines: $cnt"
+            [[ "$cnt" -eq 0 ]] && break
+            sleep 10
+          done
