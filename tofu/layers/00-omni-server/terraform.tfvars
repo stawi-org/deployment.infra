@@ -1,15 +1,26 @@
 # Substrate hosting omni-host: "contabo" adopts existing VPS 202727781
 # (former bwire-3); "oci" provisions an A1.Flex (2 OCPU / 12 GB) in
-# OCI bwire. Flipped to "oci" 2026-05-23 as part of the fresh-start
-# topology change — Omni now shares the bwire tenancy with one cluster
-# CP (oci-bwire-node-1), filling the full Always-Free 4-OCPU / 24-GB cap.
-omni_host_provider = "oci"
+# OCI bwire.
+#
+# Reverted to "contabo" 2026-05-24 after OCI eu-frankfurt-1 stopped
+# forwarding inbound public traffic to newly-created VMs in the bwire
+# tenancy — VM RUNNING + instance-agent healthy internally, but every
+# tested public IP (92.5.x ×4 ephemeral, 92.5.69.251 reserved, 89.168.x,
+# 138.2.182.31, 158.180.36.132) returned "No route to host" from 18+/20
+# global probes (check-host.net DE/NL/FR/PT/ES/SG/UK/SI/JP/US/IL/RU/TR/
+# HU/AT/IN/ID nodes). Same break affects the cluster CP nodes in the
+# same tenancy, which is why fleet machines kept disconnecting from
+# Omni — Talos nodes can't reach the SideroLink WG endpoint on the
+# OCI omni-host. Contabo bwire-3's public IP routes globally. OCI CP
+# nodes still reach the Contabo omni-host outbound (egress works),
+# which is sufficient for SideroLink (nodes initiate the WG tunnel).
+omni_host_provider = "contabo"
 
-# Bumped 2026-05-23 to force a clean disk wipe + cloud-init re-delivery.
-# Pairs with the r2_backup_prefix flip to "omni-backups-2026-05-23-oci"
-# in main.tf — together they bring the Omni stack up on a fresh
-# /var/lib/omni without state from the older Contabo-substrate snapshot.
-force_reinstall_generation = 3
+# Bumped to 4 (2026-05-24) for clean disk wipe + cloud-init re-delivery
+# on the Contabo reinstall path. Pairs with the r2_backup_prefix flip
+# to a fresh "omni-backups-2026-05-24-contabo" — together they bring
+# the Omni stack up on a clean /var/lib/omni with new master keys.
+force_reinstall_generation = 4
 
 # bwire_availability_domain_index defaults to 0 (first AD). The
 # module auto-discovers ADs via oci_identity_availability_domains
