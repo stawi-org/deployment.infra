@@ -1,0 +1,65 @@
+# One-shot recovery: soft-reset the OCI Omni host instance via OCI CLI.
+# Use when the Omni stack is up enough to respond to gRPC but fleet
+# machines keep dropping their SideroLink connections — sometimes
+# Omni's WG peer state gets wedged and a clean restart re-anchors.
+name: restart-omni-host
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type RESTART to confirm
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  restart:
+    if: inputs.confirm == 'RESTART'
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID:        ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY:    ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID:            ${{ secrets.R2_ACCOUNT_ID }}
+      OCI_CLI_AUTH:             security_token
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install OCI CLI
+        run: |
+          set -euo pipefail
+          pip install --quiet oci-cli
+          oci --version
+
+      - name: Configure OCI WIF (bwire profile)
+        run: |
+          set -euo pipefail
+          R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          TMPDIR_AUTH=$(mktemp -d)
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/oracle/bwire/" \
+            "${TMPDIR_AUTH}/bwire/" \
+            --endpoint-url "$R2_ENDPOINT" --region us-east-1 \
+            --exclude "*" --include "auth.yaml"
+          AUTH_JSON=$(python3 scripts/build-oci-auth-json.py "${TMPDIR_AUTH}")
+          echo "$AUTH_JSON" > /tmp/oci_auth_accounts.json
+          scripts/configure-oci-wif.sh /tmp/oci_auth_accounts.json
+
+      - name: Find the omni-host instance + soft-reset
+        run: |
+          set -euo pipefail
+          compartment_id=$(jq -r '.[] | select(.profile=="bwire") | .tenancy_ocid' /tmp/oci_auth_accounts.json)
+          instance=$(oci --profile bwire compute instance list \
+            --compartment-id "$compartment_id" \
+            --lifecycle-state RUNNING \
+            --display-name oci-bwire-omni \
+            --query 'data[0].id' --raw-output 2>/dev/null || true)
+          if [[ -z "$instance" || "$instance" == "null" ]]; then
+            echo "::error::no oci-bwire-omni instance found"
+            exit 1
+          fi
+          echo "::notice::soft-resetting $instance"
+          oci --profile bwire compute instance action --action SOFTRESET --instance-id "$instance" --wait-for-state RUNNING --max-wait-seconds 600
+          echo "::notice::SOFTRESET complete"
