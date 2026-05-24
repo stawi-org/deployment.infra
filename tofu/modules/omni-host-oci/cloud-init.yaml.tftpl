@@ -5,6 +5,16 @@ fqdn: ${name}
 users:
   - name: root
     lock_passwd: true
+%{ if length(ssh_authorized_keys) > 0 ~}
+  - name: ubuntu
+    shell: /bin/bash
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+    groups: [adm, sudo]
+    ssh_authorized_keys:
+%{ for k in ssh_authorized_keys ~}
+      - ${k}
+%{ endfor ~}
+%{ endif ~}
 
 ssh_pwauth: false
 disable_root: true
