@@ -1,0 +1,29 @@
+name: dump-inventory
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        type: choice
+        options: [contabo, oracle, onprem]
+        required: true
+      account:
+        type: string
+        required: true
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      PROVIDER:      ${{ inputs.provider }}
+      ACCOUNT:       ${{ inputs.account }}
+    steps:
+      - name: print
+        run: |
+          set -euo pipefail
+          KEY="production/inventory/${PROVIDER}/${ACCOUNT}/nodes.yaml"
+          aws s3 cp "s3://cluster-tofu-state/${KEY}" - \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --region us-east-1
