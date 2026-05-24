@@ -55,7 +55,7 @@ jobs:
             --compartment-id "$compartment_id" \
             --lifecycle-state RUNNING \
             --display-name oci-bwire-omni \
-            --query 'data[0].id' --raw-output 2>/dev/null || true)
+            | jq -r '.data[0].id // empty')
           if [[ -z "$instance" || "$instance" == "null" ]]; then
             echo "::error::no oci-bwire-omni instance found"
             exit 1
