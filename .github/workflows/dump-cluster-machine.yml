@@ -1,0 +1,34 @@
+name: dump-cluster-machine
+on:
+  workflow_dispatch:
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+    steps:
+      - run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/v1.7.1/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          cat > /usr/local/bin/omnictl <<'WRAP'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /usr/local/bin/omnictl
+          echo "=== clustermachine ==="
+          omnictl get clustermachine -o yaml
+          echo ""
+          echo "=== clustermachineconfigstatus ==="
+          omnictl get clustermachineconfigstatus -o yaml
+          echo ""
+          echo "=== events on cluster ==="
+          omnictl get events --tail=50 2>&1 | head -100 || echo "(no events resource)"
+          echo ""
+          echo "=== machinestatus YAML for CPs (full detail) ==="
+          for m in oci-bwire-node-1 oci-alimbacho67-node-1 oci-alimbacho67-node-2; do
+            echo "--- $m ---"
+            omnictl get machinestatus -o yaml 2>/dev/null | yq "select(.spec.network.hostname == \"$m\")" | head -30
+          done
