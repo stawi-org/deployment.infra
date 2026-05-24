@@ -1,0 +1,128 @@
+# Independent Cloudflare DNS sync for the OCI Omni host.
+#
+# Reads the live oci-bwire-omni instance's public IPv4 + IPv6 via OCI
+# CLI and patches the four DNS records (cp.stawi.org, cpd.stawi.org,
+# A + AAAA) directly through Cloudflare's API. Bypasses tofu's apply
+# graph so DNS converges to the actual instance IP within a minute
+# of an instance recreate, even when downstream tofu provisioners
+# (wait_for_omni_ready in particular) take their 10-min budget.
+#
+# Triggers: workflow_dispatch + every 10 min on cron + on tofu-omni-host
+# completion. The cron-driven self-heal makes DNS robust to OCI's
+# ephemeral-public-IP behaviour — any instance recreate or IP rotation
+# converges DNS without a tofu apply.
+name: sync-omni-host-dns
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_run:
+    workflows: [tofu-omni-host]
+    types: [completed]
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  CLOUDFLARE_ZONE_STAWI: ${{ secrets.CLOUDFLARE_ZONE_ID_STAWI }}
+  CLOUDFLARE_API_TOKEN:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+jobs:
+  sync:
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure')
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID:        ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY:    ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID:            ${{ secrets.R2_ACCOUNT_ID }}
+      OCI_CLI_AUTH:             security_token
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install OCI CLI
+        run: |
+          set -euo pipefail
+          pip install --quiet oci-cli
+          oci --version
+
+      - name: Configure OCI WIF (bwire)
+        run: |
+          set -euo pipefail
+          R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          TMPDIR_AUTH=$(mktemp -d)
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/oracle/bwire/" \
+            "${TMPDIR_AUTH}/bwire/" \
+            --endpoint-url "$R2_ENDPOINT" --region us-east-1 \
+            --exclude "*" --include "auth.yaml"
+          AUTH_JSON=$(python3 scripts/build-oci-auth-json.py "${TMPDIR_AUTH}")
+          echo "$AUTH_JSON" > /tmp/oci_auth_accounts.json
+          scripts/configure-oci-wif.sh /tmp/oci_auth_accounts.json
+
+      - name: Discover oci-bwire-omni live IPs
+        id: discover
+        run: |
+          set -euo pipefail
+          compartment_id=$(jq -r '.[] | select(.profile=="bwire") | .tenancy_ocid' /tmp/oci_auth_accounts.json)
+          instance_id=$(oci --profile bwire compute instance list \
+            --compartment-id "$compartment_id" \
+            --lifecycle-state RUNNING \
+            --display-name oci-bwire-omni \
+            --query 'data[0].id' --raw-output 2>/dev/null | tr -d '"' || true)
+          if [[ -z "$instance_id" || "$instance_id" == "null" ]]; then
+            echo "::error::no RUNNING oci-bwire-omni instance found in compartment $compartment_id"
+            exit 1
+          fi
+          vnic_id=$(oci --profile bwire compute vnic-attachment list \
+            --compartment-id "$compartment_id" \
+            --instance-id "$instance_id" \
+            --query 'data[?contains("lifecycle-state",`ATTACHED`)] | [0]."vnic-id"' --raw-output 2>/dev/null | tr -d '"')
+          [[ -z "$vnic_id" || "$vnic_id" == "null" ]] && { echo "::error::no VNIC attachment for $instance_id"; exit 1; }
+          ipv4=$(oci --profile bwire network vnic get --vnic-id "$vnic_id" \
+            --query 'data."public-ip"' --raw-output | tr -d '"')
+          ipv6=$(oci --profile bwire network ipv6 list \
+            --compartment-id "$compartment_id" \
+            --vnic-id "$vnic_id" \
+            --query 'data[0]."ip-address"' --raw-output 2>/dev/null | tr -d '"' || true)
+          [[ "$ipv6" == "null" ]] && ipv6=""
+          echo "::notice::oci-bwire-omni -> IPv4=${ipv4} IPv6=${ipv6:-(none)}"
+          echo "ipv4=${ipv4}" >> "$GITHUB_OUTPUT"
+          echo "ipv6=${ipv6}" >> "$GITHUB_OUTPUT"
+
+      - name: Patch Cloudflare DNS records
+        env:
+          IPV4: ${{ steps.discover.outputs.ipv4 }}
+          IPV6: ${{ steps.discover.outputs.ipv6 }}
+        run: |
+          set -euo pipefail
+          : "${CLOUDFLARE_API_TOKEN:?required}"
+          : "${CLOUDFLARE_ZONE_STAWI:?required}"
+          api="https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_STAWI}/dns_records"
+          patch() {
+            local name="$1" type="$2" content="$3" proxied="$4"
+            [[ -z "$content" ]] && { echo "::notice::skip ${name} ${type} - no value"; return 0; }
+            local rid
+            rid=$(curl -fsSL -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              "${api}?type=${type}&name=${name}" \
+              | jq -r '.result[0].id // empty')
+            if [[ -z "$rid" ]]; then
+              echo "::notice::creating ${name} ${type} -> ${content}"
+              curl -fsSL -X POST -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+                -H "Content-Type: application/json" \
+                -d "$(jq -nc --arg n "$name" --arg t "$type" --arg c "$content" --argjson p "$proxied" \
+                  '{name:$n,type:$t,content:$c,ttl:1,proxied:$p}')" \
+                "$api" > /dev/null
+            else
+              echo "::notice::patching ${name} ${type} ${rid} -> ${content}"
+              curl -fsSL -X PATCH -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+                -H "Content-Type: application/json" \
+                -d "$(jq -nc --arg c "$content" --argjson p "$proxied" \
+                  '{content:$c,proxied:$p}')" \
+                "${api}/${rid}" > /dev/null
+            fi
+          }
+          patch cp.stawi.org A    "$IPV4" true
+          patch cp.stawi.org AAAA "$IPV6" true
+          patch cpd.stawi.org A    "$IPV4" false
+          patch cpd.stawi.org AAAA "$IPV6" false
