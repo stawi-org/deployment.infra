@@ -177,23 +177,14 @@ locals {
       "node.stawi.org/provider"            = "oracle"
       "node.stawi.org/account"             = var.account_key
       "node.stawi.org/role"                = var.role
-    },
-    # OCI's public IPv4 is NAT'd at the VCN gateway — the on-NIC
-    # address is the private one, so kubelet auto-detects InternalIP
-    # as the private IP and Flannel reads InternalIP for its public-ip
-    # annotation. That breaks cross-cluster Flannel-VXLAN reachability
-    # (other nodes try to tunnel to a non-routable RFC1918 address).
-    # Force Flannel to use the actual public IP via the documented
-    # public-ip-overwrite annotation. Annotations aren't restricted by
-    # NodeRestriction admission, so kubelet sets it on its own node.
-    local.public_ip != null && local.public_ip != "" ? {
-      "flannel.alpha.coreos.com/public-ip-overwrite" = local.public_ip
-    } : {},
-    # IPv6 is on-NIC under OCI (no NAT66) so kubelet usually picks
-    # the right address — but pinning it explicitly costs nothing and
-    # documents the intent.
-    local.ipv6 != null ? {
-      "flannel.alpha.coreos.com/public-ipv6-overwrite" = local.ipv6
-    } : {}
+      # Flannel public-ip-overwrite: OCI's public IPv4 is NAT'd at the
+      # VCN gateway, so kubelet auto-detects the private IP. Force
+      # Flannel to use the actual public IP for cross-node VXLAN.
+      # Unconditional so the annotation map shape is deterministic at
+      # plan time (conditional merge with unknown IPs makes tomap()
+      # fail when 2+ nodes exist in the same account).
+      "flannel.alpha.coreos.com/public-ip-overwrite"   = coalesce(local.public_ip, "")
+      "flannel.alpha.coreos.com/public-ipv6-overwrite" = coalesce(local.ipv6, "")
+    }
   )
 }
