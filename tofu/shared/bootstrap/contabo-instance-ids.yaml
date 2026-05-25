@@ -12,5 +12,5 @@ contabo:
       contabo_instance_id: "202727783"
     contabo-bwire-node-2:
       contabo_instance_id: "202727782"
-    contabo-bwire-node-3:
-      contabo_instance_id: "202727781"
+    # contabo-bwire-node-3 (202727781) is the omni-host, managed by
+    # layer 00-omni-server — do NOT add to cluster inventory.
