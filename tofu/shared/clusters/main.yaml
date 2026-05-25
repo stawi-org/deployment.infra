@@ -196,6 +196,8 @@ patches:
       # tunnel address, not a routable cluster-internal address).
       machine:
         kubelet:
+          clusterDNS:
+            - "fd00:10:96::a"
           nodeIP:
             validSubnets:
               - "::/0"
