@@ -123,6 +123,10 @@ resource "oci_core_instance" "this" {
   }
 
   preserve_boot_volume = false
+
+  lifecycle {
+    ignore_changes = [source_details]
+  }
 }
 
 # Block downstream layers on omni-stack readiness post-apply, so any

@@ -88,15 +88,15 @@ resource "oci_core_instance" "this" {
   metadata = {}
 
   lifecycle {
-    # availability_domain is resolved by the parent module's capacity
-    # probe (oracle-account-infra/main.tf). It picks the AD with the
-    # most current capacity, so the value can drift between plans
-    # even without operator intent — without this, a capacity shift
-    # in another AD would destroy+create a working instance to "move"
-    # it. Ignore so the chosen-at-create AD sticks for the instance
-    # lifetime.
-    #
-    ignore_changes = [availability_domain]
+    # availability_domain: resolved by the parent module's capacity
+    # probe — can drift between plans without operator intent.
+    # source_details: boot_volume_size_in_gbs changes (especially
+    # shrinks) force destroy+create; source_id (image) changes are
+    # handled by the explicit replace_triggered_by below. Ignoring
+    # the whole block ensures re-applying with a different declared
+    # boot volume size doesn't recreate running instances — the new
+    # size takes effect only on next reinstall.
+    ignore_changes = [availability_domain, source_details]
 
     # Replacement triggers — destroy+create the instance whenever any
     # of these signals fires. Both signal classes wrap their values in

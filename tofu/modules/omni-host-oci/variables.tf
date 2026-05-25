@@ -216,8 +216,8 @@ variable "memory_gb" {
 
 variable "boot_volume_size_gb" {
   type        = number
-  default     = 50
-  description = "Boot volume size (GB). OCI's per-image minimum is 50 GB; the omni-host doesn't need more — Ubuntu noble + Docker images sit around 6 GB, /var/lib/omni's working set is in the low hundreds of MB, and full snapshots upload hourly to R2 instead of accumulating on disk. Pairing this with node-oracle's 90 GB CP boot volume keeps the bwire tenancy at 140 GB / 200 GB Always-Free block-volume cap."
+  default     = 97
+  description = "Boot volume size (GB). OCI's per-image minimum is 50 GB. The bwire tenancy hosts both the omni-host and one cluster node; 97 GB each (194 GB total) stays under the 200 GB Always-Free block-volume cap. source_details is in ignore_changes so existing instances keep their current size until next recreation."
 }
 
 variable "ubuntu_image_ocid" {
