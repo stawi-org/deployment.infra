@@ -20,36 +20,30 @@ resource "cloudflare_ruleset" "oauth2_cors_headers" {
   name    = "CORS headers for oauth2.stawi.org"
   phase   = "http_response_headers_transform"
 
-  rules = [
-    {
-      action = "rewrite"
-      action_parameters = {
-        headers = [
-          {
-            name      = "Access-Control-Allow-Origin"
-            operation = "set"
-            value     = "*"
-          },
-          {
-            name      = "Access-Control-Allow-Methods"
-            operation = "set"
-            value     = "GET, POST, OPTIONS"
-          },
-          {
-            name      = "Access-Control-Allow-Headers"
-            operation = "set"
-            value     = "Authorization, Content-Type, Accept"
-          },
-          {
-            name      = "Access-Control-Max-Age"
-            operation = "set"
-            value     = "86400"
-          },
-        ]
+  rules = [{
+    action = "rewrite"
+    action_parameters = {
+      headers = {
+        "Access-Control-Allow-Origin" = {
+          operation = "set"
+          value     = "*"
+        }
+        "Access-Control-Allow-Methods" = {
+          operation = "set"
+          value     = "GET, POST, OPTIONS"
+        }
+        "Access-Control-Allow-Headers" = {
+          operation = "set"
+          value     = "Authorization, Content-Type, Accept"
+        }
+        "Access-Control-Max-Age" = {
+          operation = "set"
+          value     = "86400"
+        }
       }
-      expression  = "(http.host eq \"oauth2.stawi.org\")"
-      description = "Add CORS * to all oauth2.stawi.org responses (inc. CF error pages)"
-      enabled     = true
-    },
-  ]
+    }
+    expression  = "(http.host eq \"oauth2.stawi.org\")"
+    description = "Add CORS * to all oauth2.stawi.org responses (inc. CF error pages)"
+    enabled     = true
+  }]
 }
