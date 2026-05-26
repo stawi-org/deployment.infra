@@ -40,7 +40,11 @@ locals {
   oci_accounts_effective = {
     for k in local.oracle_account_keys : k => merge(
       try(local.oracle_auth_from_module[k], {}),
-      { nodes = local.oracle_nodes_from_module[k] }
+      {
+        nodes       = local.oracle_nodes_from_module[k]
+        labels      = try(module.oracle_account_state[k].nodes.labels, {})
+        annotations = try(module.oracle_account_state[k].nodes.annotations, {})
+      }
     )
   }
 }
