@@ -29,8 +29,43 @@ env:
   CLOUDFLARE_API_TOKEN:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
 jobs:
+  # Gate the whole workflow on the configured Omni-host substrate.
+  # This sync only makes sense for the OCI substrate, whose instance
+  # gets an *ephemeral* public IP that rotates on every recreate —
+  # the self-heal cron exists to converge DNS to the new IP. The
+  # Contabo substrate is an *adopted* VPS with a static IP that never
+  # rotates, and layer-00 tofu already pins cp/cpd DNS to it
+  # (omni_host_ipv4 = coalescelist(contabo, oci)), so this OCI-only
+  # discovery would query an instance that doesn't exist. Read the
+  # committed tfvars and skip unless provider == oci; the job
+  # self-activates if the operator flips back to OCI.
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      provider: ${{ steps.provider.outputs.provider }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Read omni_host_provider from layer-00 tfvars
+        id: provider
+        run: |
+          set -euo pipefail
+          tfvars=tofu/layers/00-omni-server/terraform.tfvars
+          # Anchor to a non-comment line (comments start with #) and
+          # take the quoted value. tail -1 guards against a stray
+          # duplicate; the variable validation in variables.tf already
+          # constrains it to contabo|oci.
+          provider=$(grep -E '^[[:space:]]*omni_host_provider[[:space:]]*=' "$tfvars" \
+            | sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/' | tail -1)
+          echo "::notice::omni_host_provider=${provider:-(unset)}"
+          echo "provider=${provider}" >> "$GITHUB_OUTPUT"
+
   sync:
-    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure')
+    needs: preflight
+    if: >-
+      needs.preflight.outputs.provider == 'oci' &&
+      (github.event_name != 'workflow_run' ||
+       github.event.workflow_run.conclusion == 'success' ||
+       github.event.workflow_run.conclusion == 'failure')
     runs-on: ubuntu-latest
     env:
       AWS_ACCESS_KEY_ID:        ${{ secrets.R2_ACCESS_KEY_ID }}
