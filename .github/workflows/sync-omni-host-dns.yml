@@ -29,8 +29,43 @@ env:
   CLOUDFLARE_API_TOKEN:  ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
 jobs:
+  # Gate the whole workflow on the configured Omni-host substrate.
+  # This sync only makes sense for the OCI substrate, whose instance
+  # gets an *ephemeral* public IP that rotates on every recreate —
+  # the self-heal cron exists to converge DNS to the new IP. The
+  # Contabo substrate is an *adopted* VPS with a static IP that never
+  # rotates, and layer-00 tofu already pins cp/cpd DNS to it
+  # (omni_host_ipv4 = coalescelist(contabo, oci)), so this OCI-only
+  # discovery would query an instance that doesn't exist. Read the
+  # committed tfvars and skip unless provider == oci; the job
+  # self-activates if the operator flips back to OCI.
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      provider: ${{ steps.provider.outputs.provider }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Read omni_host_provider from layer-00 tfvars
+        id: provider
+        run: |
+          set -euo pipefail
+          tfvars=tofu/layers/00-omni-server/terraform.tfvars
+          # Anchor to a non-comment line (comments start with #) and
+          # take the quoted value. tail -1 guards against a stray
+          # duplicate; the variable validation in variables.tf already
+          # constrains it to contabo|oci.
+          provider=$(grep -E '^[[:space:]]*omni_host_provider[[:space:]]*=' "$tfvars" \
+            | sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/' | tail -1)
+          echo "::notice::omni_host_provider=${provider:-(unset)}"
+          echo "provider=${provider}" >> "$GITHUB_OUTPUT"
+
   sync:
-    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure')
+    needs: preflight
+    if: >-
+      needs.preflight.outputs.provider == 'oci' &&
+      (github.event_name != 'workflow_run' ||
+       github.event.workflow_run.conclusion == 'success' ||
+       github.event.workflow_run.conclusion == 'failure')
     runs-on: ubuntu-latest
     env:
       AWS_ACCESS_KEY_ID:        ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -65,28 +100,42 @@ jobs:
         run: |
           set -euo pipefail
           compartment_id=$(jq -r '.[] | select(.profile=="bwire") | .tenancy_ocid' /tmp/oci_auth_accounts.json)
+          # Empty compartment means broken auth/config, not a missing
+          # instance — fail loudly so it isn't masked by the skip below.
+          [[ -z "$compartment_id" || "$compartment_id" == "null" ]] && { echo "::error::no bwire tenancy_ocid in oci_auth_accounts.json"; exit 1; }
           instance_id=$(oci --profile bwire compute instance list \
             --compartment-id "$compartment_id" \
             --lifecycle-state RUNNING \
             --display-name oci-bwire-omni \
             --query 'data[0].id' --raw-output 2>/dev/null | tr -d '"' || true)
           if [[ -z "$instance_id" || "$instance_id" == "null" ]]; then
-            echo "::error::no RUNNING oci-bwire-omni instance found in compartment $compartment_id"
-            exit 1
+            # The Omni host may legitimately not be running yet (provider
+            # migration in progress, instance recreating, etc). This is a
+            # self-heal cron — with nothing to heal, no-op quietly rather
+            # than emitting a recurring red failure every 10 minutes.
+            echo "::notice::no RUNNING oci-bwire-omni instance in compartment $compartment_id - skipping DNS sync"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           vnic_id=$(oci --profile bwire compute vnic-attachment list \
             --compartment-id "$compartment_id" \
             --instance-id "$instance_id" \
             --query 'data[?contains("lifecycle-state",`ATTACHED`)] | [0]."vnic-id"' --raw-output 2>/dev/null | tr -d '"')
-          [[ -z "$vnic_id" || "$vnic_id" == "null" ]] && { echo "::error::no VNIC attachment for $instance_id"; exit 1; }
+          if [[ -z "$vnic_id" || "$vnic_id" == "null" ]]; then
+            echo "::notice::no ATTACHED VNIC for $instance_id yet - skipping DNS sync"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           vnic_json=$(oci --profile bwire network vnic get --vnic-id "$vnic_id")
           ipv4=$(jq -r '.data."public-ip" // ""' <<<"$vnic_json")
           ipv6=$(jq -r '.data."ipv6-addresses"[0] // ""' <<<"$vnic_json")
           echo "::notice::oci-bwire-omni -> IPv4=${ipv4} IPv6=${ipv6:-(none)}"
+          echo "found=true" >> "$GITHUB_OUTPUT"
           echo "ipv4=${ipv4}" >> "$GITHUB_OUTPUT"
           echo "ipv6=${ipv6}" >> "$GITHUB_OUTPUT"
 
       - name: Patch Cloudflare DNS records
+        if: steps.discover.outputs.found == 'true'
         env:
           IPV4: ${{ steps.discover.outputs.ipv4 }}
           IPV6: ${{ steps.discover.outputs.ipv6 }}
