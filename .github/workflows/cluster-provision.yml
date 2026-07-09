@@ -184,11 +184,16 @@ jobs:
 
   infra:
     needs: [preflight, images]
+    # images may report failure if a single oci-import matrix cell
+    # fails (empty tenancy, OOC). Prefer proceeding when preflight
+    # passed — inventory free-tier + Omni are the hard gates. Soft
+    # images failure still usually left talos-images.yaml partially
+    # updated (assemble-and-upload always() path).
     if: |
       always()
       && needs.preflight.result == 'success'
       && (inputs.mode == 'full' || inputs.mode == 'infra')
-      && (needs.images.result == 'success' || needs.images.result == 'skipped')
+      && (needs.images.result == 'success' || needs.images.result == 'skipped' || needs.images.result == 'failure')
       && inputs.dry_run != true
     uses: ./.github/workflows/tofu-apply.yml
     secrets: inherit
