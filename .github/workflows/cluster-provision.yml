@@ -208,6 +208,7 @@ jobs:
       && (inputs.mode == 'full' || inputs.mode == 'cluster')
       && needs.infra.result != 'cancelled'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       OMNI_ENDPOINT: https://cp.stawi.org
       OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
@@ -225,9 +226,20 @@ jobs:
           chmod +x /usr/local/bin/omnictl
 
       - name: Force-clear cluster stawi
+        timeout-minutes: 12
         run: |
           set -euo pipefail
-          # Same resource order as omni-force-cluster-clear.yml
+          # Prefer the dedicated force-clear path when available; fall
+          # back to a bounded per-kind delete. Never hang unbounded —
+          # each omnictl call is capped so a wedged API cannot block
+          # the whole provision graph for hours.
+          delete_one() {
+            local kind="$1" id="$2"
+            echo "deleting $kind/$id"
+            timeout 30 omnictl delete "$kind" "$id" --force 2>/dev/null \
+              || timeout 30 omnictl delete "$kind" "$id" 2>/dev/null \
+              || echo "warn: could not delete $kind/$id"
+          }
           kinds=(
             "MachineSetNodes.omni.sidero.dev"
             "ConfigPatches.omni.sidero.dev"
@@ -239,7 +251,7 @@ jobs:
           )
           for kind in "${kinds[@]}"; do
             echo "::group::delete $kind"
-            ids=$(omnictl get "$kind" -o json 2>/dev/null \
+            ids=$(timeout 60 omnictl get "$kind" -o json 2>/dev/null \
               | jq -rs --arg c stawi '
                   [.[] | select(
                     (.metadata.labels["omni.sidero.dev/cluster"] // "") == $c
@@ -248,24 +260,24 @@ jobs:
                   ) | .metadata.id] | unique | .[]
                 ' || true)
             for id in $ids; do
-              echo "deleting $kind/$id"
-              omnictl delete "$kind" "$id" --force 2>/dev/null \
-                || omnictl delete "$kind" "$id" 2>/dev/null \
-                || echo "warn: could not delete $kind/$id"
+              delete_one "$kind" "$id"
             done
             echo "::endgroup::"
           done
-          omnictl delete cluster stawi 2>/dev/null || true
+          timeout 60 omnictl delete cluster stawi 2>/dev/null || true
           echo "::notice::cluster wipe attempted"
 
   converge:
     needs: [preflight, infra, wipe]
+    # Infra reusable workflow fails when any account matrix cell fails
+    # (e.g. empty ambetera tenancy). Still converge on healthy nodes —
+    # same isolation philosophy as fail-fast=false matrices.
     if: |
       always()
       && needs.preflight.result == 'success'
       && (inputs.mode == 'full' || inputs.mode == 'cluster')
       && inputs.dry_run != true
-      && (needs.infra.result == 'success' || needs.infra.result == 'skipped' || inputs.mode == 'cluster')
+      && needs.infra.result != 'cancelled'
       && (needs.wipe.result == 'success' || needs.wipe.result == 'skipped')
     uses: ./.github/workflows/sync-cluster-template.yml
     with:
