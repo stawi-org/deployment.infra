@@ -679,13 +679,17 @@ jobs:
               echo "::notice::Cluster Ready ($healthy/$total machines healthy)"
               exit 0
             fi
-            if [[ "$api" == "true" && "$cp" == "true" && "${ALLOW_PARTIAL_READY:-true}" == "true" \
-                && -n "$healthy" && "$healthy" != "0" ]]; then
-              # After half the deadline, accept CP+API ready with some
-              # healthy machines so Flux can start while workers finish.
+            # Partial success for rebuilds: kube-apiserver up + majority
+            # of machines healthy. cpready can lag when one CP member is
+            # still re-registering after a force-clear (observed:
+            # apiready=true healthy=9/10 cpready=false for 15+ min).
+            if [[ "${ALLOW_PARTIAL_READY:-true}" == "true" && "$api" == "true" \
+                && -n "$healthy" && -n "$total" && "$healthy" != "0" && "$total" != "0" ]]; then
               remaining=$(( deadline - $(date +%s) ))
-              if (( remaining < READY_WAIT_SECS / 2 )); then
-                echo "::warning::Accepting partial Ready: apiready+cpready with healthy=$healthy/$total (workers still joining)"
+              # Need integer majority healthy after half the wait window.
+              majority=$(( (total / 2) + 1 ))
+              if (( remaining < READY_WAIT_SECS / 2 && healthy >= majority )); then
+                echo "::warning::Accepting partial Ready: apiready=$api cpready=$cp healthy=$healthy/$total (majority up; remaining members may still join)"
                 exit 0
               fi
             fi
