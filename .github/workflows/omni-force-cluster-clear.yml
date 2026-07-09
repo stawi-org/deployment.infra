@@ -50,7 +50,7 @@ jobs:
             exit 1
           fi
 
-      - name: Install omnictl
+      - name: Install omnictl + yq
         run: |
           set -euo pipefail
           curl -fsSL -o /tmp/omnictl.real \
@@ -63,46 +63,96 @@ jobs:
           WRAP
           chmod +x /tmp/omnictl
           sudo install -m 0755 /tmp/omnictl /usr/local/bin/omnictl
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.44.6/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
 
       - name: Force-delete cluster-scoped resources
-        timeout-minutes: 15
+        timeout-minutes: 20
         run: |
-          set -euo pipefail
-          # Resources to clear, in the order Omni's controllers expect.
-          # Each omnictl call is time-bounded — wedged machines previously
-          # hung this job forever waiting for talosctl reset RPCs.
-          delete_one() {
+          set -uo pipefail
+          # Wedged teardown leaves resources in phase=tearingDown with
+          # finalizers waiting for talosctl reset on unreachable nodes.
+          # Plain delete hangs; strip finalizers then force-delete.
+          strip_and_delete() {
             local kind="$1" id="$2"
-            echo "deleting $kind/$id"
+            echo "--- $kind/$id"
+            if timeout 30 omnictl get "$kind" "$id" -o yaml > /tmp/r.yaml 2>/dev/null; then
+              yq -i '
+                del(.metadata.finalizers) |
+                del(.metadata.version) |
+                del(.metadata.created) |
+                del(.metadata.updated) |
+                del(.metadata.phase) |
+                del(.metadata.owner)
+              ' /tmp/r.yaml
+              if timeout 30 omnictl apply -f /tmp/r.yaml >/dev/null 2>&1; then
+                echo "  finalizers stripped"
+              else
+                echo "  (apply rejected — may already be tearing down)"
+              fi
+            else
+              echo "  (get failed / absent)"
+            fi
             timeout 30 omnictl delete "$kind" "$id" --force 2>/dev/null \
               || timeout 30 omnictl delete "$kind" "$id" 2>/dev/null \
-              || echo "(absent, timed out, or already torn down)"
+              || echo "  (delete timed out or absent)"
           }
+
           kinds=(
             "MachineSetNodes.omni.sidero.dev"
             "ConfigPatches.omni.sidero.dev"
             "ClusterMachineConfigStatuses.omni.sidero.dev"
+            "ClusterMachineStatuses.omni.sidero.dev"
+            "ClusterMachineConfigPatches.omni.sidero.dev"
             "ClusterMachines.omni.sidero.dev"
             "MachineSets.omni.sidero.dev"
             "MachineLabels.omni.sidero.dev"
+            "ClusterBootstrapStatuses.omni.sidero.dev"
+            "ClusterSecrets.omni.sidero.dev"
+            "ClusterStatuses.omni.sidero.dev"
             "Clusters.omni.sidero.dev"
           )
           for kind in "${kinds[@]}"; do
             echo "::group::$kind (cluster=$CLUSTER_NAME)"
-            ids=$(timeout 60 omnictl get "$kind" -l "omni.sidero.dev/cluster=$CLUSTER_NAME" \
-                  -o jsonpath='{.metadata.id}' 2>/dev/null | tr ' ' '\n' | grep -v '^$' || true)
-            for id in $ids; do
-              delete_one "$kind" "$id"
-            done
+            # Prefer label selector; also match id == cluster name / prefix.
+            ids=$(timeout 60 omnictl get "$kind" -o json 2>/dev/null \
+              | jq -rs --arg c "$CLUSTER_NAME" '
+                  [.[] | select(
+                    (.metadata.labels["omni.sidero.dev/cluster"] // "") == $c
+                    or (.metadata.id // "") == $c
+                    or ((.metadata.id // "") | startswith($c + "-"))
+                  ) | .metadata.id] | unique | .[]
+                ' || true)
+            if [[ -z "${ids// }" ]]; then
+              echo "(none)"
+            else
+              for id in $ids; do
+                strip_and_delete "$kind" "$id"
+              done
+            fi
             echo "::endgroup::"
           done
 
-          # Direct cluster resource delete by name (no label filter).
-          timeout 60 omnictl delete Clusters.omni.sidero.dev "$CLUSTER_NAME" --force 2>/dev/null || \
-            timeout 60 omnictl delete Clusters.omni.sidero.dev "$CLUSTER_NAME" 2>/dev/null || \
-            echo "(cluster $CLUSTER_NAME not found — already gone)"
+          # Always try the cluster object by name last.
+          echo "::group::final Clusters/$CLUSTER_NAME"
+          strip_and_delete "Clusters.omni.sidero.dev" "$CLUSTER_NAME"
+          timeout 30 omnictl delete cluster "$CLUSTER_NAME" --force 2>/dev/null || true
+          echo "::endgroup::"
 
-      - name: Show remaining cluster + machine state
+      - name: Assert cluster gone
+        run: |
+          set -euo pipefail
+          if timeout 30 omnictl get Clusters.omni.sidero.dev "$CLUSTER_NAME" -o yaml 2>/dev/null; then
+            echo "::error::cluster $CLUSTER_NAME still present after force-clear"
+            timeout 30 omnictl get Clusters.omni.sidero.dev "$CLUSTER_NAME" -o yaml || true
+            exit 1
+          fi
+          echo "::notice::cluster $CLUSTER_NAME is gone"
+
+      - name: Show remaining machine state
+        if: always()
         run: |
           set -euo pipefail
           echo "::group::clusters"
