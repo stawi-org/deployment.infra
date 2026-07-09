@@ -206,7 +206,7 @@ jobs:
       && inputs.wipe_cluster == true
       && inputs.dry_run != true
       && (inputs.mode == 'full' || inputs.mode == 'cluster')
-      && (needs.infra.result == 'success' || needs.infra.result == 'skipped' || inputs.mode == 'cluster')
+      && needs.infra.result != 'cancelled'
     runs-on: ubuntu-latest
     env:
       OMNI_ENDPOINT: https://cp.stawi.org
