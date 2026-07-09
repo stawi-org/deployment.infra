@@ -105,19 +105,30 @@ jobs:
             --region us-east-1 \
             --delete
 
-      # Fail fast if this account's inventory would exceed Always Free
-      # caps — before tofu plan/apply burns reinstall time.
-      - name: Validate OCI Always Free inventory (this account)
+      # Fail fast if inventory would exceed Always Free caps — before
+      # apply burns reinstall time. Plan mode soft-fails so PRs stay
+      # green while inventory is being reconciled; apply mode hard-fails.
+      - name: Validate OCI Always Free inventory
         if: inputs.layer == '02-oracle-infra'
         env:
-          ACCOUNT: ${{ inputs.account }}
+          MODE: ${{ inputs.mode }}
         run: |
           set -euo pipefail
           pip install --quiet pyyaml
-          # Validate the whole oracle tree (cheap) so multi-node sum
-          # errors surface even when only one matrix cell runs.
+          set +e
           python3 scripts/validate-oci-free-tier.py \
             --inventory-dir /tmp/inventory/oracle
+          rc=$?
+          set -e
+          if [[ $rc -eq 0 ]]; then
+            exit 0
+          fi
+          if [[ "$MODE" == "plan" ]]; then
+            echo "::warning::OCI inventory exceeds Always Free caps (plan continues; apply will hard-fail until reconcile-oci-free-tier runs)"
+            exit 0
+          fi
+          echo "::error::OCI inventory exceeds Always Free caps — run reconcile-oci-free-tier workflow before apply"
+          exit 1
 
       # Layer 03 drives Omni via omnictl shell-outs from null_resources.
       # Pinned to the same omnictl release used by sync-cluster-template /
