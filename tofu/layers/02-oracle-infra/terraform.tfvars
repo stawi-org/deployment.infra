@@ -92,4 +92,7 @@ force_image_generation = 12
 #                   every node onto an image carrying the current
 #                   WG server pubkey + token. Pairs with
 #                   01-contabo-infra gen=23 PUT-reinstall.
-force_reinstall_generation = 19
+#  19 — prior fleet roll.
+#  20 — 2026-07-09: clean-slate rebuild after Always Free resize
+#                   (2 OCPU/12GB) + Talos v1.13.6 pin.
+force_reinstall_generation = 20
