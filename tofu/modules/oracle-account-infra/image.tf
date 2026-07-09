@@ -32,11 +32,26 @@ locals {
   # Per-account OCIDs land under .formats.oracle.accounts.<profile>.ocid.
   talos_images = yamldecode(file("${var.local_inventory_dir}/talos-images.yaml"))
 
-  # Per-account OCID lookup. If the account is missing from the
-  # inventory's accounts map (e.g. the operator just added it but
-  # the regen workflow hasn't republished yet), this errors at plan
-  # time with a clear "key 'X' does not exist" — desired loud-fail.
-  image_ocid = local.talos_images.formats.oracle.accounts[var.account_key].ocid
+  # Per-account OCID lookup. Empty-node accounts (declared in
+  # accounts.yaml but not yet carrying VMs) skip the lookup so plan
+  # succeeds without a talos-images.yaml entry. Missing OCID with
+  # non-empty nodes still fails loud at plan time.
+  image_ocid = (
+    length(var.nodes) == 0
+    ? null
+    : try(local.talos_images.formats.oracle.accounts[var.account_key].ocid, null)
+  )
+}
+
+check "talos_image_ocid_present_when_nodes_exist" {
+  assert {
+    condition     = length(var.nodes) == 0 || local.image_ocid != null
+    error_message = <<-EOT
+      account ${var.account_key}: nodes are declared but no custom-image OCID in
+      production/inventory/talos-images.yaml (formats.oracle.accounts.${var.account_key}.ocid).
+      Run sync-talos-images / cluster-provision mode=images for this tenancy first.
+    EOT
+  }
 }
 
 # OCI imports custom images with an empty compatible-shape list by
@@ -47,9 +62,9 @@ locals {
 # AddImageShapeCompatibilityEntry is idempotent (PUT semantics), so
 # reruns are cheap. for_each over the distinct shapes used by
 # var.nodes so adding a new shape family later just registers an
-# extra entry.
+# extra entry. Empty when image_ocid is null (no nodes).
 resource "oci_core_shape_management" "talos_compat" {
-  for_each       = toset([for n in values(var.nodes) : n.shape])
+  for_each       = local.image_ocid == null ? toset([]) : toset([for n in values(var.nodes) : n.shape])
   compartment_id = var.compartment_ocid
   image_id       = local.image_ocid
   shape_name     = each.key
