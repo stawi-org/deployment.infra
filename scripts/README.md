@@ -24,8 +24,19 @@ run during account onboarding.
 
 ## Shared library
 
-`lib/inventory_yaml.py` — helpers for reading/writing the R2 inventory's YAML
-files. Imported by `seed-inventory.sh` and `bootstrap-oci-oidc.sh`.
+| Module | Purpose |
+|---|---|
+| `lib/inventory_yaml.py` | R2 inventory YAML helpers (`seed-inventory`, bootstrap) |
+| `lib/oci_free_tier.py` | Always Free caps (2 OCPU / 12 GB / 200 GB boot) |
+| `validate-oci-free-tier.py` | CI/preflight inventory check |
+| `reconcile-oci-free-tier-inventory.py` | Rewrite inventory to free-tier-safe sizes |
+
+```bash
+# Unit tests for free-tier helpers
+python3 -m unittest scripts.lib.test_oci_free_tier -q
+# or from scripts/lib:
+python3 -m unittest test_oci_free_tier.py -q
+```
 
 ---
 

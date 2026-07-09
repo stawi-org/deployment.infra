@@ -180,24 +180,33 @@ infra side is healthy.
 
 ## Full rebuild (omni-host wiped, all VPSes need reinstall)
 
+Preferred path (single orchestrator — see [cluster-provision.md](./cluster-provision.md)):
+
 ```
-# 1. mint a fresh image schematic (regen-token bump in
-#    tofu/shared/schematics/cluster.yaml is OPTIONAL — the workflow
-#    detects schematic content changes and skips on no-op).
-gh workflow run sync-talos-images.yml -f talos_version=v1.13.0
+# 0. free-tier inventory must pass (2 OCPU / 12 GB per OCI tenancy)
+gh workflow run reconcile-oci-free-tier.yml -f write=true -f confirm=RECONCILE
 
-# 2. merge bot/talos-images-bump PR (auto-opened by step 1).
+# 1. optional clean slate (Omni cluster + R2 per-node patches)
+gh workflow run cluster-clean-slate.yml -f confirm=CLEAN-SLATE
+gh workflow run clear-oci-image-buckets.yml -f confirm=DELETE
 
-# 3. bump force_reinstall_generation in
-#    tofu/layers/01-contabo-infra/terraform.tfvars (and also in
-#    02-oracle-infra/terraform.tfvars if OCI VMs need new images).
+# 2. bump force_reinstall_generation in
+#    tofu/layers/01-contabo-infra/terraform.tfvars (and
+#    02-oracle-infra/terraform.tfvars if OCI VMs need reimage).
 #    Push to main.
 
-# 4. tofu-apply applies all layers in order; 03-talos waits for
-#    SideroLink re-registration before reconciling MachineLabels.
-gh workflow run tofu-apply.yml
+# 3. one-button provision (images → infra → cluster template → flux)
+gh workflow run cluster-provision.yml \
+  -f mode=full \
+  -f force_image_sync=true \
+  -f deploy_flux=true
+```
 
-# 5. recreate the cluster.
+Legacy multi-step (still works):
+
+```
+gh workflow run sync-talos-images.yml -f talos_version=v1.13.6 -f force=true
+gh workflow run tofu-apply.yml
 gh workflow run omni-force-cluster-clear.yml -f confirm=stawi
 gh workflow run sync-cluster-template.yml
 ```

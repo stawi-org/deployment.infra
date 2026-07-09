@@ -28,6 +28,17 @@ on:
         type: string
         required: false
         default: ""
+  # Called by cluster-provision after cluster Ready.
+  workflow_call:
+    inputs:
+      cluster_name:
+        type: string
+        required: false
+        default: stawi
+      flux_version:
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read

@@ -71,3 +71,14 @@ variable "force_reinstall_generation" {
     error_message = "force_reinstall_generation must be >= 1."
   }
 }
+
+variable "enforce_always_free" {
+  type        = bool
+  default     = true
+  description = <<-EOT
+    Pass-through to oracle-account-infra. When true (default), plan
+    fails if inventory would exceed Always Free Ampere A1 caps:
+    ≤2 OCPU, ≤12 GB memory, ≤200 GB boot volume sum, ≤2 instances,
+    shape VM.Standard.A1.Flex only. See modules/oracle-account-infra/free-tier.tf.
+  EOT
+}

@@ -67,11 +67,10 @@ resource "oci_core_instance" "this" {
   source_details {
     source_type = "image"
     source_id   = var.image_id
-    # Capped at var.boot_volume_size_in_gbs (default 190, hard
-    # ceiling 195) — see variables.tf. Stays under OCI's always-free
-    # 200 GB-per-tenancy block-volume quota with margin so the
-    # tenancy never bills. Floor is ~50 GB (Talos QCOW2 base).
-    # Reductions force destroy+create (OCI rejects in-place shrink).
+    # Capped at var.boot_volume_size_in_gbs (default 100; tenancy sum
+    # enforced in oracle-account-infra/free-tier.tf ≤ 200 GB Always
+    # Free). Floor is ~50 GB (Talos QCOW2 base). Reductions force
+    # destroy+create (OCI rejects in-place shrink).
     boot_volume_size_in_gbs = var.boot_volume_size_in_gbs
   }
 

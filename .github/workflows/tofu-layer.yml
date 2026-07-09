@@ -105,6 +105,31 @@ jobs:
             --region us-east-1 \
             --delete
 
+      # Fail fast if inventory would exceed Always Free caps — before
+      # apply burns reinstall time. Plan mode soft-fails so PRs stay
+      # green while inventory is being reconciled; apply mode hard-fails.
+      - name: Validate OCI Always Free inventory
+        if: inputs.layer == '02-oracle-infra'
+        env:
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          pip install --quiet pyyaml
+          set +e
+          python3 scripts/validate-oci-free-tier.py \
+            --inventory-dir /tmp/inventory/oracle
+          rc=$?
+          set -e
+          if [[ $rc -eq 0 ]]; then
+            exit 0
+          fi
+          if [[ "$MODE" == "plan" ]]; then
+            echo "::warning::OCI inventory exceeds Always Free caps (plan continues; apply will hard-fail until reconcile-oci-free-tier runs)"
+            exit 0
+          fi
+          echo "::error::OCI inventory exceeds Always Free caps — run reconcile-oci-free-tier workflow before apply"
+          exit 1
+
       # Layer 03 drives Omni via omnictl shell-outs from null_resources.
       # Pinned to the same omnictl release used by sync-cluster-template /
       # sync-talos-images so the resource shapes match what's running
@@ -167,113 +192,11 @@ jobs:
             scripts/configure-oci-wif.sh /tmp/oci_auth_accounts.json
           fi
 
-      - name: Stage Talos .oci archive for OCI image import
-        if: inputs.layer == '02-oracle-infra'
-        # OCI's CreateImage / UpdateImage APIs do NOT expose
-        # launchOptions in any SDK or CLI surface — the only way to
-        # pin them is via image_metadata.json embedded in a `.oci`
-        # archive (qcow2 + JSON, plain tar). OCI auto-detects the
-        # archive on import and reads externalLaunchOptions as the
-        # image's defaults — exactly what Talos arm64 needs (UEFI_64
-        # + fully-paravirtualized virtio so /dev/sda is visible).
-        #
-        # Schema follows Talos's published template verbatim:
-        #   docs.siderolabs.com/talos/v1.13/platform-specific-
-        #   installations/cloud-platforms/oracle/
-        # Three fields are non-obvious but load-bearing:
-        #   * version: 2 (number, NOT "1.0" string) — OCI's parser
-        #     rejects unknown schema versions silently and falls back
-        #     to no-metadata defaults (ISCSI bootVolumeType — Talos
-        #     can't find /dev/sda).
-        #   * externalLaunchOptions.launchOptionsSource — without
-        #     this, OCI doesn't apply the launchOptions overrides.
-        #   * additionalMetadata.shapeCompatibilities — declares
-        #     which shapes the metadata is valid for. Lives under
-        #     additionalMetadata, not at the top level.
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          files=(/tmp/inventory/oracle/*/auth.yaml)
-          if (( ${#files[@]} == 0 )); then
-            echo "::notice::no oracle accounts in inventory; skipping OCI image stage"
-            exit 0
-          fi
-          TALOS_VERSION=$(jq -r '.talos_version' tofu/shared/versions.auto.tfvars.json)
-          if [[ -z "$TALOS_VERSION" || "$TALOS_VERSION" == "null" ]]; then
-            echo "::error::could not read talos_version from tofu/shared/versions.auto.tfvars.json"
-            exit 1
-          fi
-          # The schematic file is static YAML. Tofu may append a
-          # `siderolink.api=<url>` extraKernelArg at apply time when
-          # var.omni_siderolink_url is non-empty (see image.tf in
-          # consuming layers) — but the workflow only needs the base
-          # schematic to compute the qcow2 download URL.
-          # Capture HTTP code so we can accept any 2xx (factory returns
-          # 201 Created on a fresh registration; idempotent reposts
-          # may return 200 OK).
-          schematic_response=$(curl -sS -w '\n__HTTP__%{http_code}' -X POST \
-            https://factory.talos.dev/schematics \
-            -H "Content-Type: application/yaml" \
-            --data-binary @tofu/shared/schematic.yaml)
-          schematic_http=$(echo "$schematic_response" | tail -1 | sed 's/^__HTTP__//')
-          schematic_body=$(echo "$schematic_response" | head -n -1)
-          if [[ ! "$schematic_http" =~ ^2[0-9][0-9]$ ]]; then
-            echo "::error::factory rejected schematic (HTTP $schematic_http): $schematic_body"
-            exit 1
-          fi
-          SCHEMATIC_ID=$(echo "$schematic_body" | jq -r '.id')
-          if [[ -z "$SCHEMATIC_ID" || "$SCHEMATIC_ID" == "null" ]]; then
-            echo "::error::failed to resolve Talos schematic id"
-            exit 1
-          fi
-          mkdir -p /tmp/talos-oci
-          OCI_ARCHIVE="/tmp/talos-oci/talos-${TALOS_VERSION}-${SCHEMATIC_ID}-oracle-arm64.oci"
-          if [[ ! -s "$OCI_ARCHIVE" ]]; then
-            staging=$(mktemp -d)
-            curl -fsSL -o "$staging/image.qcow2" \
-              "https://factory.talos.dev/image/${SCHEMATIC_ID}/${TALOS_VERSION}/oracle-arm64.qcow2"
-            # Strip leading "v" from talos version — OCI metadata's
-            # operatingSystemVersion is unprefixed (e.g. "1.13.0").
-            OS_VERSION="${TALOS_VERSION#v}"
-            cat > "$staging/image_metadata.json" <<META
-          {
-            "version": 2,
-            "externalLaunchOptions": {
-              "firmware": "UEFI_64",
-              "networkType": "PARAVIRTUALIZED",
-              "bootVolumeType": "PARAVIRTUALIZED",
-              "remoteDataVolumeType": "PARAVIRTUALIZED",
-              "localDataVolumeType": "PARAVIRTUALIZED",
-              "launchOptionsSource": "PARAVIRTUALIZED",
-              "pvAttachmentVersion": 2,
-              "pvEncryptionInTransitEnabled": true,
-              "consistentVolumeNamingEnabled": true
-            },
-            "imageCapabilityData": null,
-            "imageCapsFormatVersion": null,
-            "operatingSystem": "Talos",
-            "operatingSystemVersion": "${OS_VERSION}",
-            "additionalMetadata": {
-              "shapeCompatibilities": [
-                {
-                  "internalShapeName": "VM.Standard.A1.Flex",
-                  "ocpuConstraints": null,
-                  "memoryConstraints": null
-                }
-              ]
-            }
-          }
-          META
-            tar -cf "$OCI_ARCHIVE" -C "$staging" image.qcow2 image_metadata.json
-            rm -rf "$staging"
-            echo "built $(stat -c%s "$OCI_ARCHIVE") byte .oci archive"
-          else
-            echo "already present, reusing"
-          fi
-          # Variable name retained for state continuity — module's
-          # oci_objectstorage_object reads from this path; contents
-          # are now a .oci archive instead of a raw qcow2.
-          echo "TF_VAR_talos_qcow2_local_path=$OCI_ARCHIVE" >> "$GITHUB_ENV"
+      # OCI custom-image build/import is owned exclusively by
+      # sync-talos-images.yml (writes OCIDs to R2 talos-images.yaml).
+      # oracle-account-infra/image.tf only looks up the OCID — it no
+      # longer uploads qcow2 or CreateImage. The previous factory.talos.dev
+      # staging step here was dead weight × N matrix cells.
 
       - name: Clear stale state lock
         if: inputs.mode == 'plan' || inputs.mode == 'apply'

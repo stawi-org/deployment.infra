@@ -57,7 +57,7 @@ talos:
   # `talos_version`. The image inventory in
   # tofu/shared/inventory/talos-images.yaml is built with this same
   # version; mismatch produces an upgrade-on-bootstrap.
-  version: v1.13.0
+  version: v1.13.6
 features:
   # workload-proxy lets `kubectl --kubeconfig <omni-issued>` route via
   # the Omni dashboard's k8s-proxy without needing direct CP IP

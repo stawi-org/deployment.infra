@@ -203,21 +203,26 @@ variable "shape" {
 }
 
 variable "ocpus" {
-  type        = number
+  type = number
+  # Post-2026-06 Always Free A1 is 2 OCPU total per tenancy. Default
+  # consumes the entire free envelope — only valid when this tenancy
+  # has NO other A1 VMs (cluster nodes live elsewhere, or omni is the
+  # sole A1 consumer). If sharing a tenancy with a cluster node, set
+  # ocpus=1 / memory_gb=6 on both sides.
   default     = 2
-  description = "vCPU count. 2 OCPUs leaves room for a sibling cluster-CP VM in the same tenancy under the 4-OCPU Always-Free ARM cap."
+  description = "vCPU count. Always Free Ampere A1 is 2 OCPU total per tenancy (as of 2026-06-15). Default 2 uses the whole free pool on this host alone."
 }
 
 variable "memory_gb" {
   type        = number
   default     = 12
-  description = "Memory (GB). 2 VMs at 12 GB exactly fills the 24-GB Always-Free ARM cap."
+  description = "Memory (GB). Always Free Ampere A1 is 12 GB total per tenancy. Default 12 uses the whole free pool on this host alone."
 }
 
 variable "boot_volume_size_gb" {
   type        = number
-  default     = 97
-  description = "Boot volume size (GB). OCI's per-image minimum is 50 GB. The bwire tenancy hosts both the omni-host and one cluster node; 97 GB each (194 GB total) stays under the 200 GB Always-Free block-volume cap. source_details is in ignore_changes so existing instances keep their current size until next recreation."
+  default     = 100
+  description = "Boot volume size (GB). Always Free Block Volume is 200 GB total. Default 100 leaves headroom if a sibling volume is added later. source_details is in ignore_changes so existing instances keep their current size until next recreation."
 }
 
 variable "ubuntu_image_ocid" {

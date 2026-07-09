@@ -40,23 +40,23 @@ variable "force_reinstall_generation" {
 
 variable "boot_volume_size_in_gbs" {
   type        = number
-  default     = 180
+  default     = 100
   description = <<-EOT
-    Boot volume size in GB. OCI's always-free tier gives 200 GB total
-    block-volume per tenancy. For tenancies hosting multiple instances
-    (e.g. bwire shares a cluster node + the omni-host), set
-    boot_volume_size_gb per-node in R2 inventory to split the quota
-    (e.g. 97 GB each = 194 GB total). The default 180 is for single-
-    node tenancies with no other block-volume consumers.
+    Boot volume size in GB. OCI Always Free gives 200 GB total block
+    volume per tenancy (boot + data combined). Default 100 leaves
+    headroom for a second volume or growth without breaching the
+    200 GB envelope. For two-node tenancies, set boot_volume_size_gb
+    in R2 inventory so the sum is ≤ 200 (e.g. 100 + 100).
 
     source_details is in ignore_changes, so changing this value does
     not affect running instances — the new size takes effect only on
     the next reinstall (image change or force_reinstall_generation
-    bump). The Talos QCOW2's declared size (47 GB) is the floor.
+    bump). The Talos QCOW2's declared size (~47 GB) is the floor (we
+    use 50 GB).
   EOT
   validation {
-    condition     = var.boot_volume_size_in_gbs >= 50 && var.boot_volume_size_in_gbs <= 195
-    error_message = "boot_volume_size_in_gbs must be between 50 (Talos QCOW2 floor) and 195 (per-tenancy free-tier ceiling)."
+    condition     = var.boot_volume_size_in_gbs >= 50 && var.boot_volume_size_in_gbs <= 200
+    error_message = "boot_volume_size_in_gbs must be between 50 (Talos QCOW2 floor) and 200 (Always Free block-volume envelope)."
   }
 }
 variable "assign_ipv6" {

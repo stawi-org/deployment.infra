@@ -198,9 +198,12 @@ oci:
       nodes:
         wk-1:
           role: worker
+          # Always Free A1 caps (per tenancy, post 2026-06-15):
+          # ≤2 OCPU, ≤12 GB RAM, ≤200 GB boot/block, shape A1.Flex only.
           shape: VM.Standard.A1.Flex
-          ocpus: 4
-          memory_gb: 24
+          ocpus: 2
+          memory_gb: 12
+          boot_volume_size_gb: 100
           labels:
             node.stawi.org/workload-class: edge
           annotations:
@@ -217,14 +220,23 @@ This optional variable remains available for decommissioning:
 
 ## Bringup sequence
 
-Each layer is run via `workflow_dispatch` of the per-mode workflow, which dispatches to `tofu-layer.yml`. Plans are reviewed before apply.
+**Preferred:** one orchestrated path — see [docs/cluster-provision.md](docs/cluster-provision.md).
 
-1. **Layer 00 — Talos secrets.** Run `tofu-plan` with `layer=00-talos-secrets`, review, then `tofu-apply` with the same layer.
-2. **Layer 01 — Contabo infra.** Same pattern. Provisions VPSes.
-3. **Layer 02 — Oracle infra.** Same pattern. Provisions IPv4/IPv6 OCI nodes from the inventory file.
-4. **Layer 02-onprem — On-prem inventory.** Same pattern. Produces node contracts and Talos node configs for declared physical sites. On-prem inventory uses `nodes` under `accounts`.
-5. **Layer 03 — Talos apply + bootstrap.** Same pattern. Reconciles MachineLabels onto Omni-registered machines and runs `omnictl cluster template sync` against the cluster definition in `tofu/shared/clusters/main.yaml`. Cluster credentials are issued on demand via `omnictl kubeconfig --cluster stawi --service-account` and `omnictl talosconfig --cluster stawi`.
-6. **Layer 04 — Flux.** Same pattern. Installs Flux Operator, applies `FluxInstance` pointing at `stawi-org/deployment.manifest`. Verify FluxInstance reaches Ready with `kubectl get fluxinstance -A`.
+```bash
+gh workflow run cluster-provision.yml -f mode=full -f force_image_sync=true -f deploy_flux=true
+```
+
+That runs preflight (including OCI Always Free inventory checks) → image sync → `tofu-apply` (per-account matrix) → cluster template sync → Flux.
+
+Layer-by-layer (still supported): each layer via `workflow_dispatch` of `tofu-plan` / `tofu-apply` → `tofu-layer.yml`.
+
+1. **Layer 00 — Talos secrets.**
+2. **Layer 01 — Contabo infra.**
+3. **Layer 02 — Oracle infra** (Always Free caps enforced at plan time; see [docs/oci-always-free.md](docs/oci-always-free.md)).
+4. **Layer 02-onprem — On-prem inventory.**
+5. **Layer 03 — Talos** (MachineLabels + per-node patches to R2).
+6. **Layer 04 — DNS** (runs in parallel with talos after infra).
+7. **Flux** via `deploy-flux` (also called from `cluster-provision`).
 
 ### Topology boundary
 

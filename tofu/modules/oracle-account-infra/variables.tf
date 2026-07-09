@@ -31,12 +31,11 @@ variable "nodes" {
     # to spread off AD-1 once they've confirmed multi-AD access.
     availability_domain_index = optional(number, 0)
     # Per-node boot volume size in GB. Optional; null falls back to
-    # node-oracle's 180 GB default. OCI rejects in-place shrink, so
+    # free-tier.tf's default (100 GB). OCI rejects in-place shrink, so
     # changing this on an existing node forces destroy+create. Floor
-    # 50 (Talos QCOW2 base), ceiling 195 (per-tenancy free-tier cap).
-    # Trim where you can — bwire's tenancy holds both a cluster CP
-    # and the omni-host, so the CP entry typically wants 140 GB to
-    # leave 50 GB for the omni-host inside the 200 GB cap.
+    # 50 (Talos QCOW2 base). Tenancy sum must stay ≤ 200 GB Always Free
+    # Block Volume (see free-tier.tf checks). For two nodes in one
+    # tenancy, set ~100 GB each (or lower).
     boot_volume_size_gb = optional(number)
   }))
   validation {
@@ -51,6 +50,32 @@ variable "nodes" {
     ])
     error_message = "availability_domain_index must be >= 0 (0-based index into the tenancy's availability_domains list)."
   }
+  validation {
+    condition = alltrue([
+      for _, node in var.nodes :
+      node.ocpus > 0 && node.memory_gb > 0
+    ])
+    error_message = "Each OCI node must declare positive ocpus and memory_gb."
+  }
+  validation {
+    condition = alltrue([
+      for _, node in var.nodes :
+      node.boot_volume_size_gb == null || (node.boot_volume_size_gb >= 50 && node.boot_volume_size_gb <= 200)
+    ])
+    error_message = "boot_volume_size_gb, when set, must be between 50 and 200 (Always Free block-volume envelope)."
+  }
+}
+
+variable "enforce_always_free" {
+  type        = bool
+  default     = true
+  description = <<-EOT
+    When true (default), plan fails if this tenancy's declared nodes
+    would exceed OCI Always Free Ampere A1 + block-volume caps
+    (2 OCPU, 12 GB memory, 200 GB boot/block, ≤2 A1 instances, shape
+    VM.Standard.A1.Flex only). Set false only for intentionally paid
+    tenancies — never for the multi-account free-tier fleet.
+  EOT
 }
 
 variable "labels" {
