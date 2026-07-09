@@ -226,46 +226,23 @@ jobs:
           chmod +x /usr/local/bin/omnictl
 
       - name: Force-clear cluster stawi
-        timeout-minutes: 12
+        timeout-minutes: 15
         run: |
           set -euo pipefail
-          # Prefer the dedicated force-clear path when available; fall
-          # back to a bounded per-kind delete. Never hang unbounded —
-          # each omnictl call is capped so a wedged API cannot block
-          # the whole provision graph for hours.
-          delete_one() {
-            local kind="$1" id="$2"
-            echo "deleting $kind/$id"
-            timeout 30 omnictl delete "$kind" "$id" --force 2>/dev/null \
-              || timeout 30 omnictl delete "$kind" "$id" 2>/dev/null \
-              || echo "warn: could not delete $kind/$id"
-          }
-          kinds=(
-            "MachineSetNodes.omni.sidero.dev"
-            "ConfigPatches.omni.sidero.dev"
-            "ClusterMachineConfigStatuses.omni.sidero.dev"
-            "ClusterMachines.omni.sidero.dev"
-            "MachineSets.omni.sidero.dev"
-            "MachineLabels.omni.sidero.dev"
-            "Clusters.omni.sidero.dev"
-          )
-          for kind in "${kinds[@]}"; do
-            echo "::group::delete $kind"
-            ids=$(timeout 60 omnictl get "$kind" -o json 2>/dev/null \
-              | jq -rs --arg c stawi '
-                  [.[] | select(
-                    (.metadata.labels["omni.sidero.dev/cluster"] // "") == $c
-                    or (.metadata.id // "") == $c
-                    or ((.metadata.id // "") | startswith($c + "-"))
-                  ) | .metadata.id] | unique | .[]
-                ' || true)
-            for id in $ids; do
-              delete_one "$kind" "$id"
-            done
-            echo "::endgroup::"
-          done
-          timeout 60 omnictl delete cluster stawi 2>/dev/null || true
-          echo "::notice::cluster wipe attempted"
+          # Official path for stuck Destroying clusters with ghost
+          # (disconnected) machines — see omni-force-cluster-clear.yml
+          # and siderolabs/omni#2465.
+          set +e
+          timeout 600 omnictl cluster delete stawi \
+            --destroy-disconnected-machines -v
+          del_rc=$?
+          set -e
+          echo "::notice::cluster delete exit=$del_rc"
+          if timeout 30 omnictl get Clusters.omni.sidero.dev stawi -o yaml >/dev/null 2>&1; then
+            echo "::warning::cluster stawi still present after wipe attempt"
+          else
+            echo "::notice::cluster stawi is gone"
+          fi
 
   converge:
     needs: [preflight, infra, wipe]
