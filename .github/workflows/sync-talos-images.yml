@@ -51,8 +51,19 @@ on:
         type: string
         default: v1.13.0
       force:
-        description: Open a PR even if the schematic is unchanged
+        description: Force rebuild even if the schematic is unchanged
         type: boolean
+        default: false
+  # Called by cluster-provision (mode=full|images).
+  workflow_call:
+    inputs:
+      talos_version:
+        type: string
+        required: false
+        default: ""
+      force:
+        type: boolean
+        required: false
         default: false
   # Weekly catch-up — Mondays 06:00 UTC. Talos and Omni both publish
   # patch releases at unpredictable cadence; weekly is enough to avoid
@@ -130,7 +141,8 @@ jobs:
       # OMNI_SERVICE_ACCOUNT_KEY.
       OMNI_ENDPOINT: https://cp.stawi.org
       OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
-      TALOS_VERSION: ${{ inputs.talos_version || 'v1.13.0' }}
+      # workflow_call may pass empty talos_version → fall back to pin.
+      TALOS_VERSION: ${{ inputs.talos_version != '' && inputs.talos_version || 'v1.13.0' }}
       FORCE: ${{ inputs.force }}
       AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}

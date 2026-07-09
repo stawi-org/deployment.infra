@@ -1,0 +1,130 @@
+# Destructive clean-slate for cluster storage + Omni cluster state.
+# Does NOT destroy Contabo/OCI VMs or tofu state for infra layers —
+# use force_reinstall_generation + cluster-provision for node reimage.
+#
+# Clears:
+#   1. Omni cluster stawi (force-clear resources)
+#   2. R2 production/per-node-patches/**
+#   3. Optional: OCI talos-images-* buckets + custom images (via clear-oci-image-buckets)
+#   4. Optional: Omni etcd-backup objects in bwire omni-backup-storage (best-effort)
+#
+# After this, run:
+#   cluster-provision mode=full wipe_cluster=false (cluster already wiped)
+#   force_image_sync=true with the pinned talos_version
+name: cluster-clean-slate
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type CLEAN-SLATE to confirm
+        type: string
+        required: true
+      clear_oci_images:
+        description: Also clear per-account OCI image buckets + custom images
+        type: boolean
+        default: true
+      clear_per_node_patches:
+        description: Delete R2 production/per-node-patches/**
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: cluster-clean-slate
+  cancel-in-progress: false
+
+env:
+  OMNI_VERSION: v1.7.1
+
+jobs:
+  confirm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          if [[ "$CONFIRM" != "CLEAN-SLATE" ]]; then
+            echo "::error::confirm must be CLEAN-SLATE"
+            exit 1
+          fi
+
+  wipe-omni:
+    needs: confirm
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+    steps:
+      - name: Install omnictl + force-clear stawi
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          cat > /usr/local/bin/omnictl <<'WRAP'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /usr/local/bin/omnictl
+          kinds=(
+            "MachineSetNodes.omni.sidero.dev"
+            "ConfigPatches.omni.sidero.dev"
+            "ClusterMachineConfigStatuses.omni.sidero.dev"
+            "ClusterMachines.omni.sidero.dev"
+            "MachineSets.omni.sidero.dev"
+            "MachineLabels.omni.sidero.dev"
+            "Clusters.omni.sidero.dev"
+          )
+          for kind in "${kinds[@]}"; do
+            ids=$(omnictl get "$kind" -o json 2>/dev/null \
+              | jq -rs --arg c stawi '
+                  [.[] | select(
+                    (.metadata.labels["omni.sidero.dev/cluster"] // "") == $c
+                    or (.metadata.id // "") == $c
+                    or ((.metadata.id // "") | startswith($c + "-"))
+                  ) | .metadata.id] | unique | .[]
+                ' || true)
+            for id in $ids; do
+              omnictl delete "$kind" "$id" --force 2>/dev/null \
+                || omnictl delete "$kind" "$id" 2>/dev/null || true
+            done
+          done
+          omnictl delete cluster stawi 2>/dev/null || true
+          echo "::notice::Omni cluster wipe done"
+
+  wipe-r2-patches:
+    needs: confirm
+    if: inputs.clear_per_node_patches
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+    steps:
+      - name: Delete per-node patches prefix
+        run: |
+          set -euo pipefail
+          ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          aws s3 rm "s3://cluster-tofu-state/production/per-node-patches/" \
+            --recursive \
+            --endpoint-url "$ENDPOINT" \
+            --region us-east-1 || true
+          echo "::notice::cleared production/per-node-patches/"
+
+  note-oci-images:
+    needs: confirm
+    if: inputs.clear_oci_images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Operator follow-up
+        run: |
+          echo "::notice::To clear OCI image buckets, also run:"
+          echo "  gh workflow run clear-oci-image-buckets.yml -f confirm=DELETE"
+          echo "This is a separate workflow (OIDC matrix) not inlined here."

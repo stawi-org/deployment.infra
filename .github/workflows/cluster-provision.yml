@@ -1,0 +1,281 @@
+# Single entrypoint for reproducible cluster bring-up / repair.
+#
+# Modes:
+#   full     — images (if needed) → tofu-apply → optional wipe →
+#              sync-cluster-template → optional flux
+#   infra    — tofu-apply only
+#   cluster  — force-clear (optional) + sync-cluster-template + Ready
+#   images   — sync-talos-images only
+#
+# All destructive sub-steps require confirm tokens. Dry-run skips applies.
+#
+# Design goals: one run ID, no manual multi-workflow sequencing, modes
+# that stay valid as account count grows (infra work is still the
+# per-account matrix inside tofu-apply).
+name: cluster-provision
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "full | infra | cluster | images"
+        type: choice
+        options: [full, infra, cluster, images]
+        default: full
+      talos_version:
+        description: "Talos version for image sync (empty = versions.auto.tfvars.json)"
+        type: string
+        required: false
+        default: ""
+      force_image_sync:
+        description: Force image rebuild even if schematic unchanged
+        type: boolean
+        default: false
+      wipe_cluster:
+        description: Force-clear Omni cluster before template sync (cluster|full)
+        type: boolean
+        default: false
+      confirm_wipe:
+        description: Type stawi to confirm wipe_cluster
+        type: string
+        required: false
+        default: ""
+      deploy_flux:
+        description: Run deploy-flux after cluster Ready
+        type: boolean
+        default: true
+      dry_run:
+        description: Validate / plan path only where supported
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+concurrency:
+  group: cluster-provision-production
+  cancel-in-progress: false
+
+env:
+  OMNI_VERSION: v1.7.1
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      talos_version: ${{ steps.versions.outputs.talos_version }}
+      free_tier_ok: ${{ steps.free_tier.outputs.ok }}
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      MODE: ${{ inputs.mode }}
+      WIPE: ${{ inputs.wipe_cluster }}
+      CONFIRM_WIPE: ${{ inputs.confirm_wipe }}
+      TALOS_VERSION_INPUT: ${{ inputs.talos_version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Confirm wipe token
+        if: env.WIPE == 'true'
+        run: |
+          set -euo pipefail
+          if [[ "$CONFIRM_WIPE" != "stawi" ]]; then
+            echo "::error::wipe_cluster=true requires confirm_wipe=stawi"
+            exit 1
+          fi
+          if [[ "$MODE" != "full" && "$MODE" != "cluster" ]]; then
+            echo "::error::wipe_cluster only valid for mode=full|cluster"
+            exit 1
+          fi
+
+      - name: Resolve versions
+        id: versions
+        run: |
+          set -euo pipefail
+          pinned=$(jq -r '.talos_version' tofu/shared/versions.auto.tfvars.json)
+          ver="${TALOS_VERSION_INPUT:-}"
+          if [[ -z "$ver" ]]; then
+            ver="$pinned"
+          fi
+          echo "talos_version=$ver" >> "$GITHUB_OUTPUT"
+          echo "pinned_talos=$pinned" >> "$GITHUB_OUTPUT"
+          echo "::notice::talos_version=$ver (pinned file=$pinned)"
+          jq -r 'to_entries[] | "\(.key)=\(.value)"' tofu/shared/versions.auto.tfvars.json
+
+      - name: Secrets present (non-empty smoke)
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in OMNI_SERVICE_ACCOUNT_KEY R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY; do
+            # Values arrive via env only when mapped; check mapped ones.
+            :
+          done
+          if [[ -z "${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}" ]]; then
+            echo "::error::OMNI_SERVICE_ACCOUNT_KEY missing"; missing=1
+          fi
+          if [[ -z "${{ secrets.R2_ACCOUNT_ID }}" ]]; then
+            echo "::error::R2_ACCOUNT_ID missing"; missing=1
+          fi
+          exit "$missing"
+
+      - name: Omni health
+        env:
+          OMNI_ENDPOINT: https://cp.stawi.org
+          OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          cat > /usr/local/bin/omnictl <<'WRAP'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /usr/local/bin/omnictl
+          # Soft-fail omni health in dry_run so operators can validate
+          # inventory offline; hard-fail otherwise.
+          if omnictl get user --output json >/dev/null 2>&1; then
+            echo "::notice::Omni auth OK"
+          else
+            if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+              echo "::warning::Omni unreachable (dry_run continues)"
+            else
+              echo "::error::Omni unreachable or OMNI_SERVICE_ACCOUNT_KEY invalid"
+              exit 1
+            fi
+          fi
+
+      - name: Validate OCI Always Free inventory
+        id: free_tier
+        run: |
+          set -euo pipefail
+          pip install --quiet pyyaml
+          mkdir -p /tmp/inventory
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/oracle/" /tmp/inventory/oracle/ \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --region us-east-1 || true
+          if python3 scripts/validate-oci-free-tier.py --inventory-dir /tmp/inventory/oracle; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+              echo "::warning::free-tier violations (dry_run continues)"
+            else
+              echo "::error::OCI inventory exceeds Always Free caps — reconcile with scripts/reconcile-oci-free-tier-inventory.py or workflow reconcile-oci-free-tier"
+              exit 1
+            fi
+          fi
+
+  images:
+    needs: preflight
+    if: |
+      needs.preflight.result == 'success'
+      && (inputs.mode == 'full' || inputs.mode == 'images')
+      && inputs.dry_run != true
+    uses: ./.github/workflows/sync-talos-images.yml
+    with:
+      talos_version: ${{ needs.preflight.outputs.talos_version }}
+      force: ${{ inputs.force_image_sync }}
+    secrets: inherit
+
+  infra:
+    needs: [preflight, images]
+    if: |
+      always()
+      && needs.preflight.result == 'success'
+      && (inputs.mode == 'full' || inputs.mode == 'infra')
+      && (needs.images.result == 'success' || needs.images.result == 'skipped')
+      && inputs.dry_run != true
+    uses: ./.github/workflows/tofu-apply.yml
+    secrets: inherit
+
+  wipe:
+    needs: [preflight, infra]
+    if: |
+      always()
+      && needs.preflight.result == 'success'
+      && inputs.wipe_cluster == true
+      && inputs.dry_run != true
+      && (inputs.mode == 'full' || inputs.mode == 'cluster')
+      && (needs.infra.result == 'success' || needs.infra.result == 'skipped' || inputs.mode == 'cluster')
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+    steps:
+      - name: Install omnictl
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          cat > /usr/local/bin/omnictl <<'WRAP'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /usr/local/bin/omnictl
+
+      - name: Force-clear cluster stawi
+        run: |
+          set -euo pipefail
+          # Same resource order as omni-force-cluster-clear.yml
+          kinds=(
+            "MachineSetNodes.omni.sidero.dev"
+            "ConfigPatches.omni.sidero.dev"
+            "ClusterMachineConfigStatuses.omni.sidero.dev"
+            "ClusterMachines.omni.sidero.dev"
+            "MachineSets.omni.sidero.dev"
+            "MachineLabels.omni.sidero.dev"
+            "Clusters.omni.sidero.dev"
+          )
+          for kind in "${kinds[@]}"; do
+            echo "::group::delete $kind"
+            ids=$(omnictl get "$kind" -o json 2>/dev/null \
+              | jq -rs --arg c stawi '
+                  [.[] | select(
+                    (.metadata.labels["omni.sidero.dev/cluster"] // "") == $c
+                    or (.metadata.id // "") == $c
+                    or ((.metadata.id // "") | startswith($c + "-"))
+                  ) | .metadata.id] | unique | .[]
+                ' || true)
+            for id in $ids; do
+              echo "deleting $kind/$id"
+              omnictl delete "$kind" "$id" --force 2>/dev/null \
+                || omnictl delete "$kind" "$id" 2>/dev/null \
+                || echo "warn: could not delete $kind/$id"
+            done
+            echo "::endgroup::"
+          done
+          omnictl delete cluster stawi 2>/dev/null || true
+          echo "::notice::cluster wipe attempted"
+
+  converge:
+    needs: [preflight, infra, wipe]
+    if: |
+      always()
+      && needs.preflight.result == 'success'
+      && (inputs.mode == 'full' || inputs.mode == 'cluster')
+      && inputs.dry_run != true
+      && (needs.infra.result == 'success' || needs.infra.result == 'skipped' || inputs.mode == 'cluster')
+      && (needs.wipe.result == 'success' || needs.wipe.result == 'skipped')
+    uses: ./.github/workflows/sync-cluster-template.yml
+    with:
+      dry_run: false
+    secrets: inherit
+
+  flux:
+    needs: [converge]
+    if: |
+      always()
+      && needs.converge.result == 'success'
+      && inputs.deploy_flux == true
+      && inputs.dry_run != true
+      && (inputs.mode == 'full' || inputs.mode == 'cluster')
+    uses: ./.github/workflows/deploy-flux.yml
+    with:
+      cluster_name: stawi
+    secrets: inherit

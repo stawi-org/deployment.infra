@@ -25,7 +25,7 @@ name: stawi-cluster
 kubernetes:
   version: v1.35.2
 talos:
-  version: v1.13.0
+  version: v1.13.6
 features:
   enableWorkloadProxy: true
 patches:

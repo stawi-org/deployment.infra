@@ -18,9 +18,11 @@
 #     from local Object Storage instead of crossing cloud boundaries.
 #   - Single source of truth: no drift between "the bytes R2 has" and
 #     "the bytes account X imported / restored".
-#   - Free-tier headroom: Object Storage has a 200 GB Always-Free
-#     quota per tenancy. Image inventory is ~4 GB; tofu state +
-#     vault are sub-MB.
+#   - Free-tier headroom: Object Storage Always Free is **20 GB**
+#     per tenancy (NOT 200 — that is Block Volume). Keep image
+#     inventory pruned (sync-talos-images keeps current + 1 prior
+#     schematic). Image set is ~1–2 GB; tofu state + vault are sub-MB.
+#     Exceeding 20 GB on Always Free-only accounts risks object purge.
 #
 # `pkgs.stawi.org` (operator-facing CF custom domain that today wraps
 # R2) flips to a CF Worker that proxies to bwire's

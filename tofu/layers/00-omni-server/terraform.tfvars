@@ -1,6 +1,8 @@
 # Substrate hosting omni-host: "contabo" adopts existing VPS 202727781
-# (former bwire-3); "oci" provisions an A1.Flex (2 OCPU / 12 GB) in
-# OCI bwire.
+# (former bwire-3); "oci" provisions an A1.Flex in OCI bwire.
+# Note: Always Free A1 is 2 OCPU / 12 GB *total* per tenancy
+# (post 2026-06-15). An OCI omni-host at 2/12 leaves zero free A1
+# headroom for cluster nodes in the same tenancy.
 #
 # Reverted to "contabo" 2026-05-24 after OCI eu-frankfurt-1 stopped
 # forwarding inbound public traffic to newly-created VMs in the bwire

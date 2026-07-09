@@ -96,4 +96,7 @@ module "oracle_account" {
   shared_patches_dir                   = "${path.module}/../../shared/patches"
   omni_siderolink_url                  = var.omni_siderolink_url
   force_reinstall_generation           = var.force_reinstall_generation
+  # Fail plan if declared nodes would exceed Always Free A1/block caps.
+  # Flip false only for intentionally paid tenancies.
+  enforce_always_free = var.enforce_always_free
 }

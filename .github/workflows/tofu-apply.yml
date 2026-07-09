@@ -165,15 +165,12 @@ jobs:
       environment: production
     secrets: inherit
 
-  # bwire-only OCI storage layer (buckets + operator CSK).
-  # Runs AFTER oracle-infra so the destroy phase of the
-  # buckets/CSK from 02-oracle-infra-bwire.tfstate completes
-  # first; this job's plan then CREATEs them in the new
-  # 02-oci-storage.tfstate. talos depends on this job so
-  # cluster-template ops don't fire during the destroy/create
-  # gap.
+  # bwire-only OCI storage layer (buckets + operator CSK). Independent
+  # of the per-account oracle matrix — only needs secrets + bwire auth
+  # in R2. Running parallel with contabo/oracle/onprem removes the
+  # false serial wait on the slowest OCI account cell.
   oci-storage:
-    needs: oracle-infra
+    needs: secrets
     permissions:
       contents: read
       id-token: write
@@ -186,28 +183,14 @@ jobs:
     secrets: inherit
 
   talos:
-    # talos layer runs omnictl against cpd.stawi.org for cluster-
-    # template sync + machine-labels. omni-host lifecycle is owned
-    # by tofu-omni-host.yml — this workflow assumes the host is
-    # already up. If it isn't, the omnictl calls fail loudly here,
-    # which is preferable to silently kicking off a reinstall.
+    # talos layer runs omnictl against cpd.stawi.org for machine-labels
+    # + per-node patch render. omni-host lifecycle is owned by
+    # tofu-omni-host.yml — this workflow assumes the host is already up.
     needs: [contabo-infra, oracle-infra, onprem-infra, oci-storage]
-    # Per-account isolation across all three providers: each infra layer
-    # is now a fail-fast=false matrix, so `needs.X.result == 'success'`
-    # would block talos unless EVERY cell succeeded. That's the wrong
-    # semantic for our goal — we want talos to proceed when at least
-    # one cell completed without an explicit cancel.
-    #
-    # contabo: provides CPs and quorum, so we still need at least one
-    #   cell to have produced a state file. The aggregate matrix result
-    #   is 'success' only when every cell wins, but != 'cancelled'
-    #   trips when at least one cell ran and the matrix wasn't manually
-    #   cancelled. The downstream cluster-health check catches an
-    #   actual quorum loss if the surviving CPs aren't enough.
-    # oracle / onprem: workers (and occasional CPs); per-cell failures
-    #   simply remove that account's nodes from the merged map and
-    #   talos skips them naturally. Same != 'cancelled' gate.
-    if: always() && needs.contabo-infra.result != 'cancelled' && needs.oracle-infra.result != 'cancelled' && needs.onprem-infra.result != 'cancelled'
+    # Per-account isolation: fail-fast=false matrices report aggregate
+    # success only when every cell wins. We proceed unless cancelled so
+    # healthy accounts still label/sync; cluster-health catches quorum loss.
+    if: always() && needs.contabo-infra.result != 'cancelled' && needs.oracle-infra.result != 'cancelled' && needs.onprem-infra.result != 'cancelled' && needs.oci-storage.result != 'cancelled'
     permissions:
       contents: read
       id-token: write
@@ -220,12 +203,10 @@ jobs:
     secrets: inherit
 
   dns:
-    # DNS apply is independent of talos config apply success — a talos
-    # failure does not block DNS reconciliation. The 04-dns layer reads
-    # infra remote states directly, not 03-talos's state, so a stale
-    # 03-talos state has no effect.
-    needs: talos
-    if: always() && needs.talos.result != 'cancelled'
+    # DNS reads infra remote states (node IPs), not 03-talos state.
+    # Run in parallel with talos once infra matrices finish.
+    needs: [contabo-infra, oracle-infra, onprem-infra]
+    if: always() && needs.contabo-infra.result != 'cancelled' && needs.oracle-infra.result != 'cancelled' && needs.onprem-infra.result != 'cancelled'
     permissions:
       contents: read
       id-token: write

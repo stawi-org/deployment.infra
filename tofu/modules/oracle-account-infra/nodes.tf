@@ -12,12 +12,15 @@ module "node" {
   for_each = var.nodes
   source   = "../node-oracle"
 
-  name                    = each.key
-  role                    = each.value.role
-  shape                   = each.value.shape
-  ocpus                   = each.value.ocpus
-  memory_gb               = each.value.memory_gb
-  boot_volume_size_in_gbs = coalesce(each.value.boot_volume_size_gb, 180)
+  name      = each.key
+  role      = each.value.role
+  shape     = each.value.shape
+  ocpus     = each.value.ocpus
+  memory_gb = each.value.memory_gb
+  # Default 100 GB: single-node tenancies stay under 200 GB Always Free
+  # with headroom; two-node tenancies should set boot_volume_size_gb
+  # explicitly so the sum stays ≤ 200 (see free-tier.tf).
+  boot_volume_size_in_gbs = coalesce(each.value.boot_volume_size_gb, local.free_tier_default_boot_gb)
   subnet_id               = oci_core_subnet.public.id
   image_id                = local.image_ocid
   compartment_ocid        = var.compartment_ocid

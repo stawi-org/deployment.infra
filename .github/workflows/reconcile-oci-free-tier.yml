@@ -1,0 +1,94 @@
+# Rewrite R2 OCI inventory so every tenancy fits Always Free caps
+# (2 OCPU / 12 GB / ≤200 GB boot / A1.Flex / ≤2 nodes).
+#
+# Preserves roles, labels, annotations, provider_data. Only rewrites
+# shape/ocpus/memory_gb/boot_volume_size_gb via
+# scripts/reconcile-oci-free-tier-inventory.py.
+#
+# After this runs, the next tofu-apply / force_reinstall will resize
+# instances (OCI destroy+create for shape_config changes).
+name: reconcile-oci-free-tier
+
+on:
+  workflow_dispatch:
+    inputs:
+      write:
+        description: Write changes to R2 (false = dry-run report only)
+        type: boolean
+        default: false
+      confirm:
+        description: Type RECONCILE to confirm write=true
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reconcile-oci-free-tier
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      WRITE: ${{ inputs.write }}
+      CONFIRM: ${{ inputs.confirm }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Confirm write
+        if: env.WRITE == 'true'
+        run: |
+          set -euo pipefail
+          if [[ "$CONFIRM" != "RECONCILE" ]]; then
+            echo "::error::write=true requires confirm=RECONCILE"
+            exit 1
+          fi
+
+      - name: Install deps
+        run: pip install --quiet pyyaml
+
+      - name: Sync inventory from R2
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/inventory/oracle
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/oracle/" /tmp/inventory/oracle/ \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --region us-east-1
+
+      - name: Reconcile
+        run: |
+          set -euo pipefail
+          args=(--inventory-dir /tmp/inventory/oracle)
+          if [[ "$WRITE" == "true" ]]; then
+            args+=(--write)
+          fi
+          # dry-run exits 1 when changes needed — still a successful job
+          # signal via notice; only exit 2 (errors) fails the workflow.
+          set +e
+          python3 scripts/reconcile-oci-free-tier-inventory.py "${args[@]}"
+          rc=$?
+          set -e
+          if [[ $rc -eq 2 ]]; then
+            exit 2
+          fi
+          python3 scripts/validate-oci-free-tier.py --inventory-dir /tmp/inventory/oracle
+          if [[ "$WRITE" != "true" && $rc -eq 1 ]]; then
+            echo "::notice::dry-run found accounts needing reconcile; re-run with write=true confirm=RECONCILE"
+          fi
+
+      - name: Upload reconciled inventory to R2
+        if: env.WRITE == 'true'
+        run: |
+          set -euo pipefail
+          aws s3 sync /tmp/inventory/oracle/ "s3://cluster-tofu-state/production/inventory/oracle/" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --region us-east-1 \
+            --exclude "*" --include "*/nodes.yaml"
+          echo "::notice::wrote reconciled nodes.yaml files to R2"

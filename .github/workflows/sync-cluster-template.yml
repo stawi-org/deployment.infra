@@ -30,12 +30,21 @@ on:
         description: Validate + diff only; do not apply
         type: boolean
         default: false
+  # Called by cluster-provision (mode=full|cluster).
+  workflow_call:
+    inputs:
+      dry_run:
+        type: boolean
+        required: false
+        default: false
   # Re-render the cluster template whenever tofu-apply completes —
   # that's the moment R2 inventory's provider_data.status flips to
   # "running" for newly provisioned nodes. MachineSet sizes are
   # rendered from that field, so each apply should pull a fresh
   # render. The job-level `if:` further filters this to main-branch
   # tofu-apply runs that actually succeeded.
+  # Skipped when cluster-provision already ran converge in the same
+  # graph (operator-driven full path).
   workflow_run:
     workflows: [tofu-apply]
     types: [completed]
