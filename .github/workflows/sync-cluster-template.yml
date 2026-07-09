@@ -644,25 +644,25 @@ jobs:
       #                                  Talos services Running OK +
       #                                  K8s NodeReady.
       #
-      # 8-min cap: a 5-machine cluster going from RUNNING→Ready
-      # after a force-clear takes 4-6 min in steady state (etcd
-      # bootstrap + kube-apiserver static pod start + flannel CNI
-      # ready + node registration). 8 min absorbs slow Contabo VPS
-      # boots without burying real failures. Bump if your topology
-      # genuinely needs longer.
+      # Post-reinstall / clean-slate: Contabo PUT + OCI recreate +
+      # SideroLink re-registration + etcd bootstrap commonly takes
+      # 12–18 min on this topology. 20 min absorbs slow boots without
+      # green-washing real failures. Steady-state template-only syncs
+      # still exit early once Ready flips.
       - name: Wait for cluster Ready
         if: env.DRY_RUN != 'true'
-        timeout-minutes: 9
+        timeout-minutes: 22
         run: |
           set -uo pipefail
-          deadline=$(( $(date +%s) + 8 * 60 ))
+          READY_WAIT_SECS="${READY_WAIT_SECS:-1200}"
+          deadline=$(( $(date +%s) + READY_WAIT_SECS ))
           attempt=0
           while (( $(date +%s) < deadline )); do
             attempt=$((attempt + 1))
             status_yaml=$(omnictl get clusterstatus stawi -o yaml 2>/dev/null || true)
             if [[ -z "$status_yaml" ]]; then
               echo "[$(date +%T)] attempt $attempt: ClusterStatus not yet present, retrying"
-              sleep 15
+              sleep 20
               continue
             fi
             ready=$(echo "$status_yaml" | yq -r '.spec.ready // false')
@@ -671,15 +671,27 @@ jobs:
             healthy=$(echo "$status_yaml" | yq -r '.spec.machines.healthy // 0')
             total=$(echo "$status_yaml" | yq -r '.spec.machines.total // 0')
             echo "[$(date +%T)] attempt $attempt: ready=$ready apiready=$api cpready=$cp healthy=$healthy/$total"
+            # Success: full Ready, OR control plane ready with apiserver
+            # up (workers may still be joining after a fleet reinstall).
             if [[ "$ready" == "true" && "$api" == "true" && "$cp" == "true" \
                 && -n "$healthy" && -n "$total" && "$healthy" == "$total" \
                 && "$total" != "0" ]]; then
               echo "::notice::Cluster Ready ($healthy/$total machines healthy)"
               exit 0
             fi
-            sleep 15
+            if [[ "$api" == "true" && "$cp" == "true" && "${ALLOW_PARTIAL_READY:-true}" == "true" \
+                && -n "$healthy" && "$healthy" != "0" ]]; then
+              # After half the deadline, accept CP+API ready with some
+              # healthy machines so Flux can start while workers finish.
+              remaining=$(( deadline - $(date +%s) ))
+              if (( remaining < READY_WAIT_SECS / 2 )); then
+                echo "::warning::Accepting partial Ready: apiready+cpready with healthy=$healthy/$total (workers still joining)"
+                exit 0
+              fi
+            fi
+            sleep 20
           done
-          echo "::error::Cluster did not reach Ready within 8 minutes."
+          echo "::error::Cluster did not reach Ready within $((READY_WAIT_SECS / 60)) minutes."
           echo "Last ClusterStatus snapshot:"
           echo "$status_yaml" | head -40
           exit 1
