@@ -46,7 +46,7 @@ jobs:
               exit 1
             fi
           done
-      - name: Install omnictl
+      - name: Install omnictl + yq
         run: |
           set -euo pipefail
           curl -fsSL -o /usr/local/bin/omnictl.real \
@@ -57,7 +57,14 @@ jobs:
           exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
           WRAP
           chmod +x /usr/local/bin/omnictl
+          # ubuntu-latest does not ship yq; without it the strip step
+          # silently no-ops and omnictl delete hangs on finalizers.
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.44.6/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
       - name: Strip finalizers from each kind that holds them
+        timeout-minutes: 20
         run: |
           set -uo pipefail
           kinds=(
@@ -71,7 +78,7 @@ jobs:
           for id in $MACHINE_IDS; do
             echo "::group::strip finalizers for machine $id"
             for kind in "${kinds[@]}"; do
-              if ! omnictl get "$kind" "$id" -o yaml > /tmp/r.yaml 2>/dev/null; then
+              if ! timeout 45 omnictl get "$kind" "$id" -o yaml > /tmp/r.yaml 2>/dev/null; then
                 echo "  $kind/$id: not present (skipping)"
                 continue
               fi
@@ -83,14 +90,17 @@ jobs:
                 del(.metadata.phase) |
                 del(.metadata.owner)
               ' /tmp/r.yaml
-              if omnictl apply -f /tmp/r.yaml >/dev/null 2>&1; then
+              if timeout 45 omnictl apply -f /tmp/r.yaml >/dev/null 2>&1; then
                 echo "  $kind/$id: finalizers stripped"
               else
                 echo "::warning::  $kind/$id: apply rejected"
               fi
-              omnictl delete "$kind" "$id" >/dev/null 2>&1 \
-                && echo "  $kind/$id: deleted" \
-                || echo "  $kind/$id: delete returned non-zero"
+              if timeout 45 omnictl delete "$kind" "$id" --force >/dev/null 2>&1 \
+                || timeout 45 omnictl delete "$kind" "$id" >/dev/null 2>&1; then
+                echo "  $kind/$id: deleted"
+              else
+                echo "  $kind/$id: delete returned non-zero / timed out"
+              fi
             done
             echo "::endgroup::"
           done
@@ -99,6 +109,6 @@ jobs:
           set +e
           for id in $MACHINE_IDS; do
             echo "::group::$id"
-            omnictl get machinestatus "$id" -o yaml 2>&1 | head -8
+            timeout 30 omnictl get machinestatus "$id" -o yaml 2>&1 | head -8
             echo "::endgroup::"
           done
