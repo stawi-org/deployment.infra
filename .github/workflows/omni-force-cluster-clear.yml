@@ -65,9 +65,19 @@ jobs:
           sudo install -m 0755 /tmp/omnictl /usr/local/bin/omnictl
 
       - name: Force-delete cluster-scoped resources
+        timeout-minutes: 15
         run: |
           set -euo pipefail
           # Resources to clear, in the order Omni's controllers expect.
+          # Each omnictl call is time-bounded — wedged machines previously
+          # hung this job forever waiting for talosctl reset RPCs.
+          delete_one() {
+            local kind="$1" id="$2"
+            echo "deleting $kind/$id"
+            timeout 30 omnictl delete "$kind" "$id" --force 2>/dev/null \
+              || timeout 30 omnictl delete "$kind" "$id" 2>/dev/null \
+              || echo "(absent, timed out, or already torn down)"
+          }
           kinds=(
             "MachineSetNodes.omni.sidero.dev"
             "ConfigPatches.omni.sidero.dev"
@@ -79,25 +89,25 @@ jobs:
           )
           for kind in "${kinds[@]}"; do
             echo "::group::$kind (cluster=$CLUSTER_NAME)"
-            ids=$(omnictl get "$kind" -l "omni.sidero.dev/cluster=$CLUSTER_NAME" \
+            ids=$(timeout 60 omnictl get "$kind" -l "omni.sidero.dev/cluster=$CLUSTER_NAME" \
                   -o jsonpath='{.metadata.id}' 2>/dev/null | tr ' ' '\n' | grep -v '^$' || true)
             for id in $ids; do
-              echo "deleting $kind/$id"
-              omnictl delete "$kind" "$id" || echo "(absent or already torn down)"
+              delete_one "$kind" "$id"
             done
             echo "::endgroup::"
           done
 
           # Direct cluster resource delete by name (no label filter).
-          omnictl delete Clusters.omni.sidero.dev "$CLUSTER_NAME" || \
+          timeout 60 omnictl delete Clusters.omni.sidero.dev "$CLUSTER_NAME" --force 2>/dev/null || \
+            timeout 60 omnictl delete Clusters.omni.sidero.dev "$CLUSTER_NAME" 2>/dev/null || \
             echo "(cluster $CLUSTER_NAME not found — already gone)"
 
       - name: Show remaining cluster + machine state
         run: |
           set -euo pipefail
           echo "::group::clusters"
-          omnictl get clusters -o table || true
+          timeout 60 omnictl get clusters -o table || true
           echo "::endgroup::"
           echo "::group::machines"
-          omnictl get machinestatus -o table || true
+          timeout 60 omnictl get machinestatus -o table || true
           echo "::endgroup::"
