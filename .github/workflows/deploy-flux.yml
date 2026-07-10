@@ -179,6 +179,17 @@ jobs:
           if [[ -n "$FLUX_VERSION_INPUT" ]]; then
             version_arg=(--version "$FLUX_VERSION_INPUT")
           fi
+          # Clear stuck Helm release secrets left by interrupted
+          # install/upgrade (common after Omni API flakes). Without
+          # this, helm fails with "another operation is in progress".
+          for s in $(kubectl -n flux-system get secret -o name 2>/dev/null \
+              | grep 'secret/sh.helm.release.v1.flux-operator' || true); do
+            status=$(kubectl -n flux-system get "$s" -o jsonpath='{.metadata.labels.status}' 2>/dev/null || true)
+            if [[ "$status" == "pending-install" || "$status" == "pending-upgrade" || "$status" == "pending-rollback" ]]; then
+              echo "deleting stuck helm secret $s (status=$status)"
+              kubectl -n flux-system delete "$s" --wait=false || true
+            fi
+          done
           # values via temp file — helm --set with dotted label keys
           # needs single-quoting of every dot escape, which is fragile
           # in shell. YAML is unambiguous.
