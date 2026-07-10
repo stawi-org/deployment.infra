@@ -33,14 +33,22 @@ jobs:
       - name: Kubeconfig + health dump
         run: |
           set -euo pipefail
+          # Match dump-kubeconfig.yml grant path (full masters, not read-only).
           omnictl kubeconfig --cluster stawi --service-account \
             --user diag --groups system:masters --ttl 1h \
-            --grant-type=kubernetes /tmp/kubeconfig.yaml \
-            || omnictl kubeconfig --cluster stawi --service-account \
-              --user diag --groups system:masters --ttl 1h /tmp/kubeconfig.yaml
+            /tmp/kubeconfig.yaml
           export KUBECONFIG=/tmp/kubeconfig.yaml
-          alias k='kubectl --insecure-skip-tls-verify=true'
           k() { kubectl --insecure-skip-tls-verify=true "$@"; }
+          # Wait briefly if Omni proxy is mid-reconnect.
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            n=$(k get nodes --no-headers 2>/dev/null | wc -l | tr -d ' ')
+            if [[ "${n:-0}" -gt 0 ]]; then
+              echo "nodes visible: $n (try $i)"
+              break
+            fi
+            echo "waiting for nodes (try $i)"
+            sleep 5
+          done
 
           echo "======== NODES ========"
           k get nodes -o wide || true
