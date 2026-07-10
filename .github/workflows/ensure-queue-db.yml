@@ -1,0 +1,200 @@
+# Ensure NATS queues + CNPG DB clusters are healthy after greenfield.
+# Uses Omni SA kubeconfig (same path as deploy-flux).
+name: ensure-queue-db
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  OMNI_VERSION: v1.7.1
+
+jobs:
+  ensure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          cat > /usr/local/bin/omnictl <<'WRAP'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /usr/local/bin/omnictl
+          curl -fsSLo /usr/local/bin/kubectl https://dl.k8s.io/release/v1.36.0/bin/linux/amd64/kubectl
+          chmod +x /usr/local/bin/kubectl
+          curl -fsSL https://raw.githubusercontent.com/fluxcd/flux2/main/install/flux.sh | bash
+
+      - name: Kubeconfig
+        run: |
+          set -euo pipefail
+          omnictl kubeconfig --cluster stawi --service-account \
+            --user ensure --groups system:masters --ttl 2h \
+            /tmp/kubeconfig.yaml
+          echo "KUBECONFIG=/tmp/kubeconfig.yaml" >> "$GITHUB_ENV"
+          # Prefer skipping TLS verify for Omni edge
+          kubectl config set-cluster "$(kubectl config view -o jsonpath='{.clusters[0].name}')" \
+            --insecure-skip-tls-verify=true --kubeconfig=/tmp/kubeconfig.yaml || true
+
+      - name: Wait for API + nodes
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 36); do
+            n=$(kubectl get nodes --request-timeout=15s --no-headers 2>/dev/null | wc -l | tr -d ' ')
+            echo "try $i nodes=$n"
+            if [[ "${n:-0}" -ge 8 ]]; then
+              kubectl get nodes -o wide
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::no nodes after wait"
+          kubectl get --raw=/api/v1/namespaces || true
+          exit 1
+
+      - name: Snapshot before
+        run: |
+          set -euo pipefail
+          echo "=== flux ks ==="
+          kubectl get ks -n flux-system | grep -iE 'NAME|nats|cnpg|storage|vault|external|cert' || true
+          echo "=== nats hub ==="
+          kubectl get hr,sts,pods -n queue-system || true
+          echo "=== cnpg ==="
+          kubectl get hr,pods -n cnpg-system || true
+          kubectl get cluster.postgresql.cnpg.io -A -o wide || true
+
+      - name: Reconcile Flux foundations
+        run: |
+          set -euo pipefail
+          flux reconcile source git flux-system -n flux-system || true
+          flux reconcile ks flux-system -n flux-system --with-source || true
+          flux reconcile ks providers -n flux-system --with-source || true
+          # Core deps for queue + db
+          for ks in infrastructure-storage infrastructure-certmanager infrastructure-vault \
+                    infrastructure-external-secrets infrastructure-external-secrets-config \
+                    infrastructure-cloudnative-pg infrastructure-cloudnative-nats-crds \
+                    infrastructure-cloudnative-nats; do
+            echo "reconcile $ks"
+            flux reconcile ks "$ks" -n flux-system || true
+          done
+
+      - name: Wait for NATS hub Ready
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            hr=$(kubectl get hr -n queue-system queue-system-queue -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo missing)
+            sts=$(kubectl get sts -n queue-system queue-system-queue -o jsonpath='{.status.readyReplicas}/{.spec.replicas}' 2>/dev/null || echo '-/-')
+            echo "[$i] hub hr=$hr sts=$sts"
+            if [[ "$hr" == "True" ]]; then
+              # Prefer 3/3 but accept ready HR
+              kubectl get pods -n queue-system -o wide
+              exit 0
+            fi
+            # If HR missing, force parent ks
+            if [[ "$hr" == "missing" ]]; then
+              flux reconcile ks infrastructure-cloudnative-nats -n flux-system --with-source || true
+            fi
+            # If failed, show reason and try force annotate
+            if [[ "$hr" == "False" ]]; then
+              kubectl get hr -n queue-system queue-system-queue -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}{"\n"}' || true
+              kubectl annotate hr -n queue-system queue-system-queue \
+                reconcile.fluxcd.io/requestedAt="$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite || true
+            fi
+            sleep 15
+          done
+          echo "::error::NATS hub not Ready"
+          kubectl get hr,sts,pods,events -n queue-system || true
+          exit 1
+
+      - name: Wait for CNPG operator + clusters
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 40); do
+            hr=$(kubectl get hr -n cnpg-system cloudnative-pg -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo missing)
+            echo "[$i] cnpg-operator hr=$hr"
+            [[ "$hr" == "True" ]] && break
+            flux reconcile ks infrastructure-cloudnative-pg -n flux-system || true
+            sleep 15
+          done
+          # Reconcile namespace setups that own clusters
+          for ks in identity-setup platform-setup finance-setup communications-setup \
+                    operations-setup product-opportunities-setup product-seed-setup product-stawi-setup; do
+            flux reconcile ks "$ks" -n flux-system || true
+          done
+          # Wait for clusters to appear and become ready
+          for i in $(seq 1 60); do
+            echo "[$i] CNPG clusters:"
+            kubectl get cluster.postgresql.cnpg.io -A -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name,READY:.status.readyInstances,INST:.spec.instances,PHASE:.status.phase 2>&1 || true
+            ready=$(kubectl get cluster.postgresql.cnpg.io -A -o json 2>/dev/null \
+              | jq '[.items[] | select((.status.readyInstances//0) >= (.spec.instances//1))] | length')
+            total=$(kubectl get cluster.postgresql.cnpg.io -A -o json 2>/dev/null | jq '.items|length')
+            echo "ready_clusters=$ready total=$total"
+            # Expect at least 6 of 8 greenfield clusters
+            if [[ "${total:-0}" -ge 6 && "${ready:-0}" -ge 6 ]]; then
+              echo "CNPG OK"
+              break
+            fi
+            sleep 20
+          done
+
+      - name: Wait for per-ns NATS queues
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 40); do
+            echo "[$i] per-ns queues:"
+            ok=0
+            for ns in identity platform finance communications operations product-opportunities product-seed; do
+              hr=$(kubectl get hr -n "$ns" -o name 2>/dev/null | grep -i queue | head -1 || true)
+              if [[ -z "$hr" ]]; then
+                echo "  $ns: no queue HR"
+                continue
+              fi
+              name=${hr#*/}
+              st=$(kubectl get hr -n "$ns" "$name" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo '?')
+              sts=$(kubectl get sts -n "$ns" -o jsonpath='{range .items[*]}{.metadata.name}:{.status.readyReplicas}/{.spec.replicas}{" "}{end}' 2>/dev/null || true)
+              echo "  $ns: hr=$name ready=$st sts=$sts"
+              [[ "$st" == "True" ]] && ok=$((ok+1))
+            done
+            echo "ready_queues=$ok"
+            if [[ "$ok" -ge 5 ]]; then
+              echo "Queues OK"
+              break
+            fi
+            sleep 15
+          done
+
+      - name: Final report
+        if: always()
+        run: |
+          set -euo pipefail
+          echo "======== FINAL REPORT ========"
+          kubectl get nodes || true
+          echo "--- NATS hub ---"
+          kubectl get hr,sts,pods,svc,pdb -n queue-system || true
+          kubectl exec -n queue-system deploy/queue-system-queue-box -- \
+            wget -q -O- http://account-jwt-server.queue-system.svc:9090/healthz 2>&1 || true
+          echo
+          echo "--- CNPG ---"
+          kubectl get hr,pods -n cnpg-system || true
+          kubectl get cluster.postgresql.cnpg.io -A -o wide || true
+          kubectl get pods -A -l cnpg.io/cluster || true
+          kubectl get pooler -A || true
+          echo "--- per-ns ---"
+          for ns in identity platform finance communications operations product-opportunities product-seed product-stawi; do
+            echo "==== $ns ===="
+            kubectl get cluster.postgresql.cnpg.io,hr,sts,pods -n "$ns" 2>&1 | head -25 || true
+          done
+          echo "--- streams/accounts ---"
+          kubectl get natsclusters,accounts.jetstream.nats.io,streams.jetstream.nats.io -A 2>&1 || true
+          echo "--- ESO secrets sample ---"
+          kubectl get externalsecret -A 2>&1 | grep -iE 'NAME|nats|operator|postgres|db' | head -40 || true
