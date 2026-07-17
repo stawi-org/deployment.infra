@@ -70,6 +70,27 @@ tenancy — that is 4 OCPU / 24 GB total. Omni currently runs on Contabo
 | `validate-oci-free-tier.py` | Inventory (R2 `nodes.yaml`) preflight / CI check |
 | `reconcile-oci-free-tier.yml` | Rewrite inventory shapes to free-tier-safe packs |
 | `audit-oci-live-free-tier.yml` | Live API audit per tenancy (instances, volumes, VCNs, object storage, reserved IPs, LBs, ADBs) |
+| `ensure-oci-free-tier-capacity.yml` | Seed empty accounts with 1×2/12/100; reconcile sizes on existing inventory |
+| `prune-oci-free-tier-violators.yml` | Terminate live VMs that exceed free caps; optional orphan VCN cleanup |
+
+### Operator loop (keep free capacity filled and clean)
+
+```bash
+# 1. Inventory: fill empty tenancies + fix oversized declared sizes
+gh workflow run ensure-oci-free-tier-capacity.yml -f write=true -f confirm=ENSURE
+
+# 2. Live: terminate free-tier violators / orphan VCNs
+gh workflow run prune-oci-free-tier-violators.yml -f write=true -f confirm=PRUNE
+
+# 3. Provision any new inventory nodes
+gh workflow run tofu-apply.yml
+# or single account:
+# gh workflow run tofu-layer.yml -f layer=02-oracle-infra -f mode=apply -f account=<acct> -f environment=production
+
+# 4. Join machines + verify
+gh workflow run sync-cluster-template.yml
+gh workflow run audit-oci-live-free-tier.yml
+```
 
 ### Live audit
 
