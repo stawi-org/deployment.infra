@@ -762,6 +762,40 @@ jobs:
             echo "bucket=${bucket}"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Preflight custom-image-count service limit
+        # Some Always Free tenancies ship with custom-image-count=0
+        # (hard service limit — not "quota full"). Import cannot succeed
+        # until an operator raises the limit in the OCI Console
+        # (Governance → Limits → custom-image-count → Request).
+        env:
+          PROFILE:     ${{ matrix.account.profile }}
+          COMPARTMENT: ${{ matrix.account.compartment_ocid }}
+        run: |
+          set -euo pipefail
+          avail=$(oci --profile "${PROFILE}" limits resource-availability get \
+            --compartment-id "${COMPARTMENT}" \
+            --service-name compute \
+            --limit-name custom-image-count \
+            --query 'data.available' --raw-output 2>/dev/null || echo "unknown")
+          limit=$(oci --profile "${PROFILE}" limits value list \
+            --compartment-id "${COMPARTMENT}" \
+            --service-name compute \
+            --name custom-image-count --all \
+            --query 'data[0].value' --raw-output 2>/dev/null || echo "unknown")
+          used=$(oci --profile "${PROFILE}" limits resource-availability get \
+            --compartment-id "${COMPARTMENT}" \
+            --service-name compute \
+            --limit-name custom-image-count \
+            --query 'data.used' --raw-output 2>/dev/null || echo "unknown")
+          echo "::notice::${PROFILE}: custom-image-count limit=${limit} used=${used} available=${avail}"
+          if [[ "${limit}" == "0" ]]; then
+            echo "::error::${PROFILE}: service limit custom-image-count=0 — cannot import Talos custom images. Raise the limit in OCI Console (home region) to ≥2, then re-run sync-talos-images."
+            exit 1
+          fi
+          if [[ "${avail}" == "0" && "${used}" != "0" ]]; then
+            echo "::warning::${PROFILE}: custom-image-count available=0 (used=${used}); prune step will free slots before import"
+          fi
+
       - name: Prune old custom Talos images
         # OCI free tenancies often have a tight custom-image-count quota
         # (QuotaExceeded on create_image when full). Always prune down to
