@@ -19,7 +19,7 @@ jobs:
       PROFILE: ${{ inputs.account }}
     steps:
       - uses: actions/checkout@v5
-      - name: WIF
+      - name: WIF + diag + limit request
         run: |
           set -euo pipefail
           pip install --quiet pyyaml oci-cli
@@ -33,37 +33,26 @@ jobs:
           scripts/configure-oci-wif.sh /tmp/auth.json
           TEN=$(jq -r '.[0].tenancy_ocid' /tmp/auth.json)
           REG=$(jq -r '.[0].region' /tmp/auth.json)
-          echo "TEN=$TEN REG=$REG" | tee /tmp/diag.txt
-          echo "==== limits custom-image-count ====" | tee -a /tmp/diag.txt
-          oci --profile "$PROFILE" limits resource-availability get \
-            --compartment-id "$TEN" --service-name compute \
-            --limit-name custom-image-count 2>&1 | tee -a /tmp/diag.txt || true
-          echo "==== limits list (image) ====" | tee -a /tmp/diag.txt
-          oci --profile "$PROFILE" limits value list --compartment-id "$TEN" --service-name compute --all 2>&1 \
-            | jq -r '.data[]? | select(.name|test("image";"i")) | "\(.name) value=\(.value)"' | tee -a /tmp/diag.txt || true
-          echo "==== ALL images with matching compartment (first 50 custom-ish) ====" | tee -a /tmp/diag.txt
-          oci --profile "$PROFILE" compute image list --compartment-id "$TEN" --all --output json 2>&1 \
-            | jq -r --arg t "$TEN" '
-              .data
-              | map(select(."compartment-id"==$t))
-              | length as $n
-              | "total_compartment_id_match=\($n)",
-                (map(select(."base-image-id"!=null)) | "with_base_image_id=\(length)"),
-                (map(select(."operating-system"==null or ."operating-system"=="")) | "empty_os=\(length)"),
-                (.[] | select(."base-image-id"!=null) | "\(.["display-name"])\t\(.["lifecycle-state"])\t\(.id)")
-            ' | head -80 | tee -a /tmp/diag.txt || true
-          echo "==== image list by lifecycle ====" | tee -a /tmp/diag.txt
-          oci --profile "$PROFILE" compute image list --compartment-id "$TEN" --all --output json 2>&1 \
-            | jq -r --arg t "$TEN" '
-              .data | map(select(."compartment-id"==$t))
-              | group_by(."lifecycle-state")
-              | .[] | "\(.[0]."lifecycle-state"): \(length)"
-            ' | tee -a /tmp/diag.txt || true
-          # Also try listing without filter - count data length
-          echo "==== raw image list length ====" | tee -a /tmp/diag.txt
-          oci --profile "$PROFILE" compute image list --compartment-id "$TEN" --all --query 'length(data)' --raw-output 2>&1 | tee -a /tmp/diag.txt || true
-      - name: Upload diag
-        uses: actions/upload-artifact@v6
+          {
+            echo "TEN=$TEN REG=$REG"
+            echo "==== region subscriptions ===="
+            oci --profile "$PROFILE" iam region-subscription list --all 2>&1 | jq -r '.data[]? | "\(.["region-name"]) home=\(.["is-home-region"]) status=\(.status)"'
+            echo "==== custom-image-count availability ===="
+            oci --profile "$PROFILE" limits resource-availability get \
+              --compartment-id "$TEN" --service-name compute --limit-name custom-image-count 2>&1 | jq .
+            echo "==== custom-image-count limit value ===="
+            oci --profile "$PROFILE" limits value list --compartment-id "$TEN" --service-name compute --name custom-image-count --all 2>&1 | jq .
+            echo "==== try service limit increase to 3 ===="
+            # Create a limit increase request if the API allows it
+            oci --profile "$PROFILE" limits quota list --compartment-id "$TEN" --all 2>&1 | head -c 2000 || true
+            echo
+            # Support request path varies; attempt create-limit-request style via limits
+            oci --profile "$PROFILE" support incident-resource-type list --problem-type LIMIT 2>&1 | head -c 1500 || true
+            echo
+            echo "==== tenancy get ===="
+            oci --profile "$PROFILE" iam tenancy get --tenancy-id "$TEN" 2>&1 | jq '{name:.data.name, home:.data["home-region-key"], id:.data.id}'
+          } | tee /tmp/diag.txt
+      - uses: actions/upload-artifact@v6
         with:
           name: diag-image-quota
           path: /tmp/diag.txt
