@@ -1,0 +1,69 @@
+name: diag-oci-image-quota
+on:
+  workflow_dispatch:
+    inputs:
+      account:
+        type: string
+        default: ambetera
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      OCI_CLI_AUTH: security_token
+      PROFILE: ${{ inputs.account }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: WIF
+        run: |
+          set -euo pipefail
+          pip install --quiet pyyaml oci-cli
+          R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          TMP=$(mktemp -d)
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/oracle/${PROFILE}/" \
+            "${TMP}/${PROFILE}/" --endpoint-url "$R2_ENDPOINT" --region us-east-1 \
+            --exclude "*" --include "auth.yaml"
+          AUTH_JSON=$(python3 scripts/build-oci-auth-json.py "$TMP")
+          echo "$AUTH_JSON" > /tmp/auth.json
+          scripts/configure-oci-wif.sh /tmp/auth.json
+          TEN=$(jq -r '.[0].tenancy_ocid' /tmp/auth.json)
+          REG=$(jq -r '.[0].region' /tmp/auth.json)
+          echo "TEN=$TEN REG=$REG" | tee /tmp/diag.txt
+          echo "==== limits custom-image-count ====" | tee -a /tmp/diag.txt
+          oci --profile "$PROFILE" limits resource-availability get \
+            --compartment-id "$TEN" --service-name compute \
+            --limit-name custom-image-count 2>&1 | tee -a /tmp/diag.txt || true
+          echo "==== limits list (image) ====" | tee -a /tmp/diag.txt
+          oci --profile "$PROFILE" limits value list --compartment-id "$TEN" --service-name compute --all 2>&1 \
+            | jq -r '.data[]? | select(.name|test("image";"i")) | "\(.name) value=\(.value)"' | tee -a /tmp/diag.txt || true
+          echo "==== ALL images with matching compartment (first 50 custom-ish) ====" | tee -a /tmp/diag.txt
+          oci --profile "$PROFILE" compute image list --compartment-id "$TEN" --all --output json 2>&1 \
+            | jq -r --arg t "$TEN" '
+              .data
+              | map(select(."compartment-id"==$t))
+              | length as $n
+              | "total_compartment_id_match=\($n)",
+                (map(select(."base-image-id"!=null)) | "with_base_image_id=\(length)"),
+                (map(select(."operating-system"==null or ."operating-system"=="")) | "empty_os=\(length)"),
+                (.[] | select(."base-image-id"!=null) | "\(.["display-name"])\t\(.["lifecycle-state"])\t\(.id)")
+            ' | head -80 | tee -a /tmp/diag.txt || true
+          echo "==== image list by lifecycle ====" | tee -a /tmp/diag.txt
+          oci --profile "$PROFILE" compute image list --compartment-id "$TEN" --all --output json 2>&1 \
+            | jq -r --arg t "$TEN" '
+              .data | map(select(."compartment-id"==$t))
+              | group_by(."lifecycle-state")
+              | .[] | "\(.[0]."lifecycle-state"): \(length)"
+            ' | tee -a /tmp/diag.txt || true
+          # Also try listing without filter - count data length
+          echo "==== raw image list length ====" | tee -a /tmp/diag.txt
+          oci --profile "$PROFILE" compute image list --compartment-id "$TEN" --all --query 'length(data)' --raw-output 2>&1 | tee -a /tmp/diag.txt || true
+      - name: Upload diag
+        uses: actions/upload-artifact@v6
+        with:
+          name: diag-image-quota
+          path: /tmp/diag.txt
