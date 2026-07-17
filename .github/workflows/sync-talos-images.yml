@@ -242,10 +242,16 @@ jobs:
           else
             stored=""
           fi
+          # NOTE: we no longer short-circuit the whole workflow when the
+          # schematic is unchanged. New oracle accounts still need a
+          # per-tenancy custom-image import even if the .oci bytes are
+          # already cached in R2. Only the omnictl download / rebuild
+          # steps below become no-ops when FORCE is false and bytes
+          # already exist under the schematic key (handled by aws s3
+          # upload skips further down). Always set skipped=false so
+          # discover-oracle + oci-import always run.
           if [[ "${stored}" == "${schematic_id}" && "${FORCE}" != "true" ]]; then
-            echo "::notice::schematic unchanged (${stored}); skipping rebuild — pass force=true to override"
-            echo "skipped=true" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "::notice::schematic unchanged (${stored}); will reuse R2-cached archive for per-account import"
           fi
           echo "skipped=false" >> "$GITHUB_OUTPUT"
 
