@@ -92,12 +92,29 @@ for row in "${term_rows[@]:-}"; do
     continue
   fi
   echo "terminating ${id} (${name}) ..."
-  "${OCI[@]}" compute instance terminate \
-    --instance-id "$id" \
-    --preserve-boot-volume false \
-    --force \
-    --wait-for-state TERMINATED \
-    --max-wait-seconds 600 || echo "WARN: terminate failed for ${id}"
+  # instance terminate waits on the *work request* states, not instance lifecycle.
+  if ! "${OCI[@]}" compute instance terminate \
+      --instance-id "$id" \
+      --preserve-boot-volume false \
+      --force \
+      --wait-for-state SUCCEEDED \
+      --max-wait-seconds 600; then
+    # Fallback: fire-and-forget then poll lifecycle
+    if ! "${OCI[@]}" compute instance terminate \
+        --instance-id "$id" \
+        --preserve-boot-volume false \
+        --force; then
+      echo "WARN: terminate failed for ${id}"
+      continue
+    fi
+    for _ in $(seq 1 60); do
+      st=$("${OCI[@]}" compute instance get --instance-id "$id" 2>/dev/null \
+        | jq -r '.data["lifecycle-state"] // "GONE"')
+      echo "  ${id} state=${st}"
+      [[ "$st" == "TERMINATED" || "$st" == "GONE" ]] && break
+      sleep 10
+    done
+  fi
 done
 
 if [[ "$DELETE_ORPHAN_VCNS" == "true" ]]; then
