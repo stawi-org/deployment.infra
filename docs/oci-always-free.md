@@ -67,6 +67,26 @@ tenancy — that is 4 OCPU / 24 GB total. Omni currently runs on Contabo
 | `oracle-account-infra` `check` blocks | Fail plan when sum(ocpus)>2, sum(memory)>12, sum(boot)>200, >2 nodes, or non-A1 shape |
 | `var.enforce_always_free` (default `true`) | Pass `false` only for intentionally paid tenancies |
 | Default `boot_volume_size_gb` | 100 (was 180) |
+| `validate-oci-free-tier.py` | Inventory (R2 `nodes.yaml`) preflight / CI check |
+| `reconcile-oci-free-tier.yml` | Rewrite inventory shapes to free-tier-safe packs |
+| `audit-oci-live-free-tier.yml` | Live API audit per tenancy (instances, volumes, VCNs, object storage, reserved IPs, LBs, ADBs) |
+
+### Live audit
+
+```bash
+gh workflow run audit-oci-live-free-tier.yml
+```
+
+Or against one profile with the OCI CLI already configured:
+
+```bash
+PROFILE=bwire ACCOUNT=bwire \
+  COMPARTMENT_OCID=ocid1.tenancy... TENANCY_OCID=ocid1.tenancy... \
+  scripts/audit-oci-live-free-tier.sh
+```
+
+Free-tier tenancies allow at most **2 VCNs**. Orphan `cluster-vcn-*` leftovers from
+recreates must be deleted (subnet → IGW → custom SL/RT → VCN) or the live audit fails.
 
 ## Object Storage note
 
