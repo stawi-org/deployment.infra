@@ -1,0 +1,131 @@
+# Terminate live OCI instances that exceed Always Free A1 caps, and
+# optionally tear down empty orphan VCNs. Inventory (R2) is left alone —
+# this only fixes live tenancy drift (stale 4/24 VMs left from pre-2026-06).
+name: prune-oci-free-tier-violators
+
+on:
+  workflow_dispatch:
+    inputs:
+      accounts:
+        description: Comma-separated account keys (empty = all oracle accounts)
+        type: string
+        required: false
+        default: ""
+      write:
+        description: Actually terminate (false = dry-run)
+        type: boolean
+        default: false
+      delete_orphan_vcns:
+        description: Also delete empty orphan VCNs
+        type: boolean
+        default: true
+      confirm:
+        description: Type PRUNE when write=true
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: prune-oci-free-tier-violators
+  cancel-in-progress: false
+
+jobs:
+  discover-oracle:
+    runs-on: ubuntu-latest
+    outputs:
+      accounts: ${{ steps.list.outputs.accounts }}
+      count: ${{ steps.list.outputs.count }}
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      FILTER: ${{ inputs.accounts }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Enumerate
+        id: list
+        run: |
+          set -euo pipefail
+          if [[ "${{ inputs.write }}" == "true" && "${{ inputs.confirm }}" != "PRUNE" ]]; then
+            echo "::error::write=true requires confirm=PRUNE"
+            exit 1
+          fi
+          R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          mkdir -p /tmp/oracle-inv
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/oracle/" /tmp/oracle-inv/ \
+            --endpoint-url "$R2_ENDPOINT" --region us-east-1 \
+            --exclude "*" --include "*/auth.yaml"
+          pip install --quiet pyyaml
+          accounts=$(FILTER="$FILTER" python3 - <<'PY'
+          import json, os, yaml
+          base = "/tmp/oracle-inv"
+          filt = {x.strip() for x in os.environ.get("FILTER", "").split(",") if x.strip()}
+          out = []
+          for entry in sorted(os.listdir(base)):
+              if filt and entry not in filt:
+                  continue
+              auth_p = os.path.join(base, entry, "auth.yaml")
+              if not os.path.exists(auth_p):
+                  continue
+              data = yaml.safe_load(open(auth_p)) or {}
+              auth = data.get("auth", data)
+              if not auth.get("region") or not auth.get("tenancy_ocid"):
+                  continue
+              comp = auth.get("compartment_ocid") or auth.get("compartment_id") or auth["tenancy_ocid"]
+              out.append({
+                  "profile": entry,
+                  "region": auth["region"],
+                  "tenancy_ocid": auth["tenancy_ocid"],
+                  "compartment_ocid": comp,
+              })
+          print(json.dumps(out))
+          PY
+          )
+          count=$(jq 'length' <<<"$accounts")
+          echo "::notice::accounts (${count}): ${accounts}"
+          echo "accounts=${accounts}" >> "$GITHUB_OUTPUT"
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+
+  prune:
+    needs: discover-oracle
+    if: needs.discover-oracle.outputs.count != '0'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        account: ${{ fromJson(needs.discover-oracle.outputs.accounts) }}
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      OCI_CLI_AUTH: security_token
+      PROFILE: ${{ matrix.account.profile }}
+      COMPARTMENT_OCID: ${{ matrix.account.compartment_ocid }}
+      DRY_RUN: ${{ inputs.write == true && 'false' || 'true' }}
+      DELETE_ORPHAN_VCNS: ${{ inputs.delete_orphan_vcns == true && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure OCI WIF
+        run: |
+          set -euo pipefail
+          R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          TMPDIR_AUTH=$(mktemp -d)
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/oracle/${PROFILE}/" \
+            "${TMPDIR_AUTH}/${PROFILE}/" \
+            --endpoint-url "$R2_ENDPOINT" --region us-east-1 \
+            --exclude "*" --include "auth.yaml"
+          pip install --quiet pyyaml
+          AUTH_JSON=$(python3 scripts/build-oci-auth-json.py "${TMPDIR_AUTH}")
+          echo "$AUTH_JSON" > /tmp/oci_auth_accounts.json
+          scripts/configure-oci-wif.sh /tmp/oci_auth_accounts.json
+      - name: Install OCI CLI
+        run: pip install --quiet oci-cli
+      - name: Prune
+        run: |
+          set -euo pipefail
+          chmod +x scripts/prune-oci-free-tier-violators.sh
+          scripts/prune-oci-free-tier-violators.sh
