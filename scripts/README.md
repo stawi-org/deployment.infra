@@ -30,6 +30,7 @@ run during account onboarding.
 | `lib/oci_free_tier.py` | Always Free caps (2 OCPU / 12 GB / 200 GB boot) |
 | `validate-oci-free-tier.py` | CI/preflight inventory check |
 | `reconcile-oci-free-tier-inventory.py` | Rewrite inventory to free-tier-safe sizes |
+| `audit-oci-live-free-tier.sh` | Live OCI API free-tier audit (one tenancy); driven by `audit-oci-live-free-tier.yml` |
 
 ```bash
 # Unit tests for free-tier helpers
