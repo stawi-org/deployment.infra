@@ -757,40 +757,35 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Prune old custom Talos images
-        # OCI tenancies have a custom-image-count quota (Always-Free = 25).
-        # Every sync-talos-images publishes a fresh image per account, so
-        # the quota fills up over time. Prune all but the KEEP most-recent
-        # talos-* images in this account's compartment before the import
-        # call below. KEEP=2 = 2 prior images survive pre-import, plus
-        # the new one becomes the third after import → "current + 2
-        # previous" available for rollback. Idempotent: no-op when the
-        # tenancy has ≤ KEEP images. Soft-fail on individual delete (an
-        # image referenced by a live instance can't be deleted; that's
-        # fine — the next sync will retry once the instance moves to
-        # the newer OCID).
+        # OCI free tenancies often have a tight custom-image-count quota
+        # (QuotaExceeded on create_image when full). Always prune down to
+        # KEEP images *before* import so the new image has a free slot.
+        # KEEP=1 leaves one prior for short rollback; the new import is
+        # the second. Soft-fail on individual delete (image in use by a
+        # live instance); next sync retries after the instance moves on.
         env:
           PROFILE:     ${{ matrix.account.profile }}
           COMPARTMENT: ${{ matrix.account.compartment_ocid }}
-          KEEP:        "2"
+          KEEP:        "1"
         run: |
           set -euo pipefail
-          # List talos-* custom images in this compartment, sorted oldest-first.
-          # Delete all but the KEEP most-recent.
+          # List compartment-owned Talos custom images, oldest-first.
+          # Delete all but KEEP most-recent (KEEP=0 deletes all).
           oci --profile "${PROFILE}" compute image list \
             --compartment-id "${COMPARTMENT}" \
             --all \
             --output json 2>/dev/null \
-            | jq -r --arg comp "${COMPARTMENT}" '
+            | jq -r --arg comp "${COMPARTMENT}" --argjson keep "${KEEP}" '
                 .data
                 | map(select(."compartment-id" == $comp
-                           and (."display-name" | startswith("Talos "))))
+                           and (."display-name" | test("^Talos ";"i"))))
                 | sort_by(."time-created")
-                | .[0:-'"${KEEP}"']
+                | if $keep == 0 then . else .[0:-$keep] end
                 | .[]
                 | "\(."time-created")\t\(.id)\t\(."display-name")"' \
             > /tmp/prune-candidates || true
           if [[ ! -s /tmp/prune-candidates ]]; then
-            echo "::notice::no old talos images to prune (under ${KEEP})"
+            echo "::notice::no old talos images to prune (under KEEP=${KEEP})"
           else
             echo "::notice::pruning $(wc -l < /tmp/prune-candidates) old image(s); keeping ${KEEP} most recent"
             while IFS=$'\t' read -r ts ocid name; do
@@ -800,6 +795,33 @@ jobs:
                 || echo "::warning::failed to delete ${ocid} (may have a dependent instance)"
             done < /tmp/prune-candidates
           fi
+          # Free-tier safety: if still ≥2 Talos images remain (in-use ones
+          # blocked delete), force-delete the oldest remaining so import
+          # has a slot. Preferable to hard-fail QuotaExceeded.
+          # Free-tier quota safety net: delete *all* remaining Talos custom
+          # images (oldest first) until at most KEEP remain. Images still
+          # attached to instances fail delete; we keep going.
+          for _ in $(seq 1 20); do
+            mapfile -t leftover < <(oci --profile "${PROFILE}" compute image list \
+              --compartment-id "${COMPARTMENT}" --all --output json 2>/dev/null \
+              | jq -r --arg comp "${COMPARTMENT}" '
+                  .data
+                  | map(select(."compartment-id" == $comp
+                             and (."display-name" | test("Talos";"i"))))
+                  | sort_by(."time-created")
+                  | .[] | .id' || true)
+            count=${#leftover[@]}
+            echo "::notice::talos custom images remaining: ${count}"
+            if (( count <= KEEP )); then
+              break
+            fi
+            victim="${leftover[0]}"
+            echo "::notice::quota safety: deleting leftover ${victim}"
+            oci --profile "${PROFILE}" compute image delete \
+              --image-id "${victim}" --force >/dev/null 2>&1 \
+              || { echo "::warning::could not delete ${victim}"; break; }
+            sleep 2
+          done
 
       - name: Import as custom image
         id: import
