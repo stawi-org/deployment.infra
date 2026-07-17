@@ -804,25 +804,33 @@ jobs:
           # Free-tier safety: if still ≥2 Talos images remain (in-use ones
           # blocked delete), force-delete the oldest remaining so import
           # has a slot. Preferable to hard-fail QuotaExceeded.
-          # Free-tier quota safety net: delete *all* remaining Talos custom
-          # images (oldest first) until at most KEEP remain. Images still
-          # attached to instances fail delete; we keep going.
-          for _ in $(seq 1 20); do
+          # Free-tier quota safety net: custom-image-count includes *all*
+          # compartment-owned custom images (not only Talos). Ambetera hit
+          # QuotaExceeded with zero Talos images remaining because other
+          # custom images filled the quota. Delete oldest compartment-owned
+          # custom images until total custom count is ≤ KEEP.
+          for _ in $(seq 1 40); do
             mapfile -t leftover < <(oci --profile "${PROFILE}" compute image list \
               --compartment-id "${COMPARTMENT}" --all --output json 2>/dev/null \
               | jq -r --arg comp "${COMPARTMENT}" '
                   .data
-                  | map(select(."compartment-id" == $comp
-                             and (."display-name" | test("Talos";"i"))))
+                  | map(select(
+                      ."compartment-id" == $comp
+                      and (."base-image-id" != null or ."create-image-allowed" == true)
+                      and (."lifecycle-state" == "AVAILABLE"
+                           or ."lifecycle-state" == "IMPORTING"
+                           or ."lifecycle-state" == "PROVISIONING"
+                           or ."lifecycle-state" == "DISABLED")
+                    ))
                   | sort_by(."time-created")
-                  | .[] | .id' || true)
+                  | .[] | "\(.id)\t\(."display-name")\t\(."lifecycle-state")"' || true)
             count=${#leftover[@]}
-            echo "::notice::talos custom images remaining: ${count}"
+            echo "::notice::compartment custom images remaining: ${count}"
             if (( count <= KEEP )); then
               break
             fi
-            victim="${leftover[0]}"
-            echo "::notice::quota safety: deleting leftover ${victim}"
+            IFS=$'\t' read -r victim vname vstate <<<"${leftover[0]}"
+            echo "::notice::quota safety: deleting leftover custom image ${vname} state=${vstate} (${victim})"
             oci --profile "${PROFILE}" compute image delete \
               --image-id "${victim}" --force >/dev/null 2>&1 \
               || { echo "::warning::could not delete ${victim}"; break; }
