@@ -31,6 +31,8 @@ run during account onboarding.
 | `validate-oci-free-tier.py` | CI/preflight inventory check |
 | `reconcile-oci-free-tier-inventory.py` | Rewrite inventory to free-tier-safe sizes |
 | `audit-oci-live-free-tier.sh` | Live OCI API free-tier audit (one tenancy); driven by `audit-oci-live-free-tier.yml` |
+| `ensure-oci-free-tier-capacity.py` | Seed empty oracle inventories with max free pack; reconcile sizes |
+| `prune-oci-free-tier-violators.sh` | Terminate live free-tier oversize VMs; optional orphan VCN teardown |
 
 ```bash
 # Unit tests for free-tier helpers

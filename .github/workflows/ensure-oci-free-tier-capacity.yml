@@ -1,0 +1,93 @@
+# Ensure every oracle account in accounts.yaml has free-tier-max
+# inventory capacity (empty → seed 1×2/12/100 worker; existing →
+# reconcile sizes). Does not terminate live VMs; pair with
+# prune-oci-free-tier-violators for live drift and tofu-apply to
+# provision.
+name: ensure-oci-free-tier-capacity
+
+on:
+  workflow_dispatch:
+    inputs:
+      write:
+        description: Write inventory changes to R2
+        type: boolean
+        default: false
+      confirm:
+        description: Type ENSURE when write=true
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ensure-oci-free-tier-capacity
+  cancel-in-progress: false
+
+jobs:
+  ensure:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      WRITE: ${{ inputs.write }}
+      CONFIRM: ${{ inputs.confirm }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Confirm write
+        if: env.WRITE == 'true'
+        run: |
+          set -euo pipefail
+          if [[ "$CONFIRM" != "ENSURE" ]]; then
+            echo "::error::write=true requires confirm=ENSURE"
+            exit 1
+          fi
+
+      - name: Install deps
+        run: pip install --quiet pyyaml
+
+      - name: Sync inventory from R2
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/inventory/oracle
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/oracle/" /tmp/inventory/oracle/ \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --region us-east-1
+
+      - name: Ensure free-tier capacity
+        run: |
+          set -euo pipefail
+          args=(
+            --inventory-dir /tmp/inventory/oracle
+            --accounts-yaml tofu/shared/accounts.yaml
+          )
+          if [[ "$WRITE" == "true" ]]; then
+            args+=(--write)
+          fi
+          set +e
+          python3 scripts/ensure-oci-free-tier-capacity.py "${args[@]}"
+          rc=$?
+          set -e
+          if [[ $rc -eq 2 ]]; then
+            exit 2
+          fi
+          python3 scripts/validate-oci-free-tier.py --inventory-dir /tmp/inventory/oracle --strict-empty
+          if [[ "$WRITE" != "true" && $rc -eq 1 ]]; then
+            echo "::notice::dry-run found accounts needing ensure; re-run with write=true confirm=ENSURE"
+          fi
+          # dry-run needing changes is still a successful job signal
+          exit 0
+
+      - name: Upload inventory to R2
+        if: env.WRITE == 'true'
+        run: |
+          set -euo pipefail
+          aws s3 sync /tmp/inventory/oracle/ "s3://cluster-tofu-state/production/inventory/oracle/" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --region us-east-1 \
+            --exclude "*" --include "*/nodes.yaml"
+          echo "::notice::wrote ensured nodes.yaml files to R2"
