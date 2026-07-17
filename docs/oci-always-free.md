@@ -109,6 +109,31 @@ PROFILE=bwire ACCOUNT=bwire \
 Free-tier tenancies allow at most **2 VCNs**. Orphan `cluster-vcn-*` leftovers from
 recreates must be deleted (subnet → IGW → custom SL/RT → VCN) or the live audit fails.
 
+### Service limit: `custom-image-count`
+
+Talos boots from a **per-tenancy custom image**. If
+`limits value list --name custom-image-count` returns **value=0**, image
+import and node create will always fail with `QuotaExceeded` even when
+zero custom images exist.
+
+| Check | Healthy free tenancy | Blocked (e.g. ambetera 2026-07) |
+|---|---|---|
+| `custom-image-count` limit | typically **25** | **0** |
+| `available` | > 0 | 0 |
+
+**Fix (operator, OCI Console):** Governance → Limits, Quotas and Usage →
+filter `custom-image-count` → Request increase to **≥ 2** in the tenancy
+**home region**. Then:
+
+```bash
+gh workflow run sync-talos-images.yml -f force=true
+gh workflow run tofu-layer.yml -f layer=02-oracle-infra -f mode=apply -f account=<acct> -f environment=production
+gh workflow run sync-cluster-template.yml
+```
+
+`sync-talos-images` preflights this limit and fails the account matrix cell
+with an explicit error when the limit is 0.
+
 ## Object Storage note
 
 `02-oci-storage` keeps image/state/backup buckets in the **bwire**
