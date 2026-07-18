@@ -1,9 +1,10 @@
 """OCI fleet sizing + Always Free block-volume guardrails.
 
 Fleet compute policy (intentional; may use monthly free OCPU-hours then PAYG):
-  - worker:       4 OCPU + 24 GB memory
-  - controlplane: 2 OCPU + 12 GB memory
-  - shape:        VM.Standard.A1.Flex only
+  - single worker:              4 OCPU + 24 GB memory
+  - controlplane (any):         2 OCPU + 12 GB memory
+  - worker sharing with a CP:   2 OCPU + 12 GB (balanced HA; not 4/24)
+  - shape:                      VM.Standard.A1.Flex only
   - ≤2 A1 instances per tenancy
 
 Always Free block volume (hard — never exceed free envelope):
@@ -11,8 +12,9 @@ Always Free block volume (hard — never exceed free envelope):
   - Operational buffer: 4 GB reserved so provisioning never hits the ceiling
   - Usable boot total: 196 GB (split evenly across nodes)
 
-Continuous free A1 compute (2 OCPU / 12 GB) is documented for operators but is
-not the fleet target — workers at 4/24 intentionally sit above continuous free.
+Continuous free A1 compute is 2 OCPU + 12 GB *total* per tenancy. A CP+worker
+pair at 2/12 each (4/24 total) uses free monthly OCPU-hours then may bill.
+Strict continuous-free two-node packs would be 1/6 each — not the fleet default.
 
 Oracle docs (2026-06-15):
   https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm
@@ -85,8 +87,12 @@ def _role_of(node: dict[str, Any]) -> str:
     return "worker"
 
 
-def _target_for_role(role: str) -> dict[str, int]:
+def _target_for_role(role: str, *, shared_tenancy: bool = False) -> dict[str, int]:
+    """Per-role size. Workers sharing a tenancy with a control plane use 2/12."""
     if role == "controlplane":
+        return {"ocpus": CONTROLPLANE_OCPU, "memory_gb": CONTROLPLANE_MEMORY_GB}
+    if shared_tenancy:
+        # Balanced HA with CP: both nodes 2 OCPU / 12 GB (not a solo 4/24 worker).
         return {"ocpus": CONTROLPLANE_OCPU, "memory_gb": CONTROLPLANE_MEMORY_GB}
     return {"ocpus": WORKER_OCPU, "memory_gb": WORKER_MEMORY_GB}
 
@@ -137,7 +143,8 @@ def validate_account(account: str, nodes: dict[str, Any] | None) -> AccountRepor
                 )
             )
         role = _role_of(node)
-        target = _target_for_role(role)
+        # Ceilings stay at solo fleet max (worker ≤4/24, CP ≤2/12).
+        target = _target_for_role(role, shared_tenancy=False)
         ocpus = int(node.get("ocpus") or 0)
         mem = int(node.get("memory_gb") or 0)
         boot = _boot_for_node(node, report.node_count or 1)
@@ -228,10 +235,12 @@ def free_tier_pack(node_count: int, roles: list[str] | None = None) -> list[dict
     if len(roles) != node_count:
         raise ValueError("roles length must match node_count")
 
+    # Worker that shares a tenancy with a control plane is sized 2/12, not 4/24.
+    shared = "controlplane" in roles and "worker" in roles
     boots = _boot_split(node_count)
     packs: list[dict[str, int]] = []
     for role, boot in zip(roles, boots):
-        target = _target_for_role(role)
+        target = _target_for_role(role, shared_tenancy=shared and role == "worker")
         packs.append(
             {
                 "ocpus": target["ocpus"],
@@ -249,8 +258,9 @@ def reconcile_nodes(nodes: dict[str, Any]) -> dict[str, Any]:
     Does not delete nodes; if more than MAX_NODES, raises.
 
     Role → size:
-      controlplane → 2 OCPU / 12 GB
-      worker       → 4 OCPU / 24 GB
+      controlplane              → 2 OCPU / 12 GB
+      worker (solo)             → 4 OCPU / 24 GB
+      worker (with controlplane)→ 2 OCPU / 12 GB  (balanced HA, e.g. bwire)
     Boot volumes share MAX_BOOT_USABLE_GB evenly (4 GB free-tier buffer retained).
     """
     if not nodes:

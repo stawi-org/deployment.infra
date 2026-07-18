@@ -51,7 +51,12 @@ nodes:
     boot_volume_size_gb: 196
 ```
 
-Control plane + worker in one tenancy:
+Control plane + worker in one tenancy (e.g. **bwire** — balanced HA):
+
+Both nodes are **2 OCPU / 12 GB** so neither starves the other. Boot still
+uses the free block envelope with a 4 GB buffer (98 + 98 = 196). Tenancy
+compute total is 4 OCPU / 24 GB (above continuous free 2/12; uses free
+monthly hours then may PAYG).
 
 ```yaml
 nodes:
@@ -64,8 +69,8 @@ nodes:
   oci-<account>-node-2:
     role: worker
     shape: VM.Standard.A1.Flex
-    ocpus: 4
-    memory_gb: 24
+    ocpus: 2
+    memory_gb: 12
     boot_volume_size_gb: 98
 ```
 

@@ -169,12 +169,13 @@ class TestReconcile(unittest.TestCase):
             [{"ocpus": 4, "memory_gb": 24, "boot_volume_size_gb": MAX_BOOT_USABLE_GB}],
         )
 
-    def test_pack_two_roles(self):
+    def test_pack_two_roles_balanced(self):
+        # CP + worker share a tenancy: both 2/12 (not worker 4/24).
         packs = free_tier_pack(2, roles=["controlplane", "worker"])
         self.assertEqual(packs[0]["ocpus"], 2)
         self.assertEqual(packs[0]["memory_gb"], 12)
-        self.assertEqual(packs[1]["ocpus"], 4)
-        self.assertEqual(packs[1]["memory_gb"], 24)
+        self.assertEqual(packs[1]["ocpus"], 2)
+        self.assertEqual(packs[1]["memory_gb"], 12)
         self.assertEqual(sum(p["boot_volume_size_gb"] for p in packs), MAX_BOOT_USABLE_GB)
 
     def test_reconcile_worker_to_4_24(self):
@@ -207,8 +208,9 @@ class TestReconcile(unittest.TestCase):
         out = reconcile_nodes(nodes)
         self.assertEqual(out["a"]["ocpus"], 2)
         self.assertEqual(out["a"]["memory_gb"], 12)
-        self.assertEqual(out["b"]["ocpus"], 4)
-        self.assertEqual(out["b"]["memory_gb"], 24)
+        # Worker sharing with CP is balanced 2/12 (bwire-style free-tier HA).
+        self.assertEqual(out["b"]["ocpus"], 2)
+        self.assertEqual(out["b"]["memory_gb"], 12)
         self.assertEqual(
             out["a"]["boot_volume_size_gb"] + out["b"]["boot_volume_size_gb"],
             MAX_BOOT_USABLE_GB,
