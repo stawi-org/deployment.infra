@@ -76,6 +76,27 @@ use role labels + MachineClass only. After purge, if control planes
 stay at stage 1, soft-reset live CP OCI instances (`oci-soft-reset-instances`)
 then re-check `cluster-health`.
 
+### Service account privileges
+
+`OMNI_SERVICE_ACCOUNT_KEY` must be **Admin** (not Operator-only) for
+twin recovery. Operator can tear down Links/Machines but gets
+`PermissionDenied: only read access is permitted` on
+`ClusterMachines` and related cluster-scoped status resources. Ghost
+control-plane ClusterMachines left behind block etcd bootstrap
+(quorum waits on disconnected members).
+
+If cleanup logs show PermissionDenied on `clustermachines/*`:
+
+1. Rotate the GitHub secret to an **Admin** Omni service-account key, or
+2. In the Omni UI (Admin user), delete the disconnected ClusterMachine
+   rows for the dead UUIDs, then re-run cleanup + soft-reset CPs.
+
+### Finalizer patches
+
+When stripping stuck resources, **only** delete
+`metadata.finalizers`. Broader patches (`version` / `owner` / `phase`)
+are rejected by Omni and leave finalizers intact.
+
 ## What operators should avoid
 
 | Prefer | Avoid |
