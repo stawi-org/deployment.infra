@@ -20,10 +20,14 @@ applied so node-specific values win.
 
 ## Omni control plane
 
-Omni (management plane for Talos) runs on **OCI bwire** as
-`oci-bwire-omni` (Ubuntu + docker-compose), not as a Talos node.
-DNS: `cp.stawi.org` (UI, orange-cloud) and `cpd.stawi.org` (SideroLink /
-machine-api, gray-cloud). Layer: `tofu/layers/00-omni-server`.
+Omni (management plane for Talos) runs on **Contabo** VPS
+`contabo-bwire-node-3` / `202727781` (Ubuntu + docker-compose), not as
+a Talos node. DNS: `cp.stawi.org` (UI, orange-cloud) and
+`cpd.stawi.org` (SideroLink / machine-api, gray-cloud). Layer:
+`tofu/layers/00-omni-server` with `omni_host_provider = "contabo"`.
+
+OCI Omni substrate exists but is **blocked** by eu-frankfurt-1 public
+inbound blackholes (verified 2026-05-24 and 2026-07-18).
 
 ## Kubernetes control-plane boundary
 

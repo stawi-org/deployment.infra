@@ -202,48 +202,36 @@ gh workflow run cluster-provision.yml \
   -f deploy_flux=true
 ```
 
-## Omni host cutover: Contabo → OCI bwire
+## Omni host location (Contabo)
 
-Omni runs on **OCI bwire** (`omni_host_provider = "oci"`, instance
-`oci-bwire-omni` at 1 OCPU / 6 GB). Layer: `tofu/layers/00-omni-server`.
+Omni runs on **Contabo** (`omni_host_provider = "contabo"`, VPS
+`202727781`). OCI dual-substrate code remains in
+`tofu/modules/omni-host-oci` but must stay disabled until inbound
+routing works.
 
-### Prerequisites
+### OCI cutover attempt 2026-07-18 (aborted)
 
-1. Bwire inventory has **no worker** (only Talos CP at 1/6) so free A1
-   headroom remains for Omni.
-2. `versions.auto.tfvars.json` `omni_version` matches workflow
-   `OMNI_VERSION` (currently **v1.9.3**).
-3. Fresh `r2_backup_prefix` for intentional greenfield master keys.
+1. Removed `oci-bwire-node-2` (worker); applied oracle-infra bwire.
+2. Created `oci-bwire-omni` @ `129.159.221.5` (1 OCPU / 6 GB).
+3. **Inbound gate failed:** `No route to host` on :22/:443/:8090/:8100
+   from external probes (repeat of 2026-05-24 eu-frankfurt-1 blackhole).
+4. Rolled DNS + provider back to Contabo; Contabo Omni healthy
+   (`cpd` → `173.249.3.103`, healthz 200).
 
-### Order
+Do **not** re-attempt OCI Omni until multi-region TCP probes to a new
+bwire public IP succeed for 443/8090/8100/50180.
+
+### Full cluster recreate (Contabo Omni)
 
 ```bash
-# A. Free capacity: delete worker from inventory, apply oracle infra
-gh workflow run patch-inventory-node.yml \
-  -f provider=oracle -f account=bwire \
-  -f node=oci-bwire-node-2 -f delete_node=true
-gh workflow run tofu-layer.yml \
-  -f layer=02-oracle-infra -f account=bwire -f mode=apply
-
-# B. Stand up Omni on OCI (updates cp/cpd DNS)
-gh workflow run tofu-omni-host.yml -f mode=apply
-
-# C. INBOUND GATE (must pass before wiping old Omni / fleet)
-#    TCP connect to public IP :443 :8090 :8100 — not "No route to host"
-#    https://cp.stawi.org health after DNS propagates
-#    Historical failure (2026-05-24): OCI public IPs blackholed inbound
-
-# D. Rotate OMNI_SERVICE_ACCOUNT_KEY (Admin) against the new Omni
-
-# E. Clean slate + full provision
 gh workflow run cluster-clean-slate.yml -f confirm=CLEAN-SLATE -f clear_oci_images=true
 gh workflow run clear-oci-image-buckets.yml -f confirm=DELETE
+# force_reinstall_generation already bumped (Contabo 26 / Oracle 21)
 gh workflow run cluster-provision.yml \
   -f mode=full -f force_image_sync=true -f deploy_flux=true
 ```
 
-If the inbound gate fails, set `omni_host_provider = "contabo"`, re-apply
-`tofu-omni-host`, and do **not** greenfield-wipe Contabo Omni.
+Omni/omnictl pin: **v1.9.3**. Talos **v1.13.6** / k8s **v1.36.0**.
 
 Legacy multi-step (still works):
 

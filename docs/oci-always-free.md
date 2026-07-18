@@ -54,23 +54,22 @@ nodes:
     boot_volume_size_gb: 98
 ```
 
-### Exception: bwire Omni host
+### Omni host: Contabo (not free-tier A1)
 
-Account **bwire** runs Omni on OCI (`oci-bwire-omni`) at **1 OCPU / 6 GB**
-and keeps one Talos control plane at **1 OCPU / 6 GB**. The Talos **worker
-is not scheduled** on bwire (capacity is Omni + CP only).
+Omni runs on **Contabo** VPS `202727781` (`contabo-bwire-node-3`),
+**not** on OCI Always Free A1. Layer: `00-omni-server` with
+`omni_host_provider = "contabo"`.
 
-| Resource | Size |
-|---|---|
-| `oci-bwire-omni` (Ubuntu / docker-compose) | 1 OCPU / 6 GB / ≤50–100 GB boot |
-| `oci-bwire-node-1` (Talos controlplane) | 1 OCPU / 6 GB / 98 GB boot |
-| Sum | **2 OCPU / 12 GB** (Always Free continuous) |
+**2026-07-18 OCI attempt (failed):** `oci-bwire-omni` was created at
+public IP `129.159.221.5` (1 OCPU / 6 GB) after removing the bwire
+worker. External probes returned **`No route to host`** on TCP
+22/443/8090/8100 — the same eu-frankfurt-1 inbound blackhole seen
+2026-05-24. Cutover was aborted; DNS restored to Contabo
+(`cpd.stawi.org` → Contabo public IP). Do **not** flip
+`omni_host_provider` to `oci` until multi-region inbound probes pass.
 
-Omni is **outside** R2 `nodes.yaml` inventory (layer `00-omni-server`).
-Free-tier inventory validators only see the Talos CP — operators must
-still keep Omni + Talos nodes ≤ 2/12 on bwire.
-
-Other tenancies should **not** host Omni; they stay pure A1 cluster nodes.
+Bwire free A1 should therefore hold **Talos nodes only** (e.g. CP 1/6
++ worker 1/6, or a single 2/12 worker).
 
 ## Enforcement
 
