@@ -122,16 +122,19 @@ jobs:
             exit 0
           fi
 
+          # Links first (canonical forget path). MachineSetNodes free
+          # MachineClass slots. Controller-owned statuses often reject
+          # delete (PermissionDenied) and GC after Link is gone.
           kinds=(
-            clustermachineconfigstatuses
-            clustermachinestatuses
-            clustermachineconfigpatches
-            clustermachines
             machinesetnodes
             machinelabels
-            machinestatuses
-            machines
             links
+            clustermachines
+            clustermachineconfigpatches
+            clustermachineconfigstatuses
+            clustermachinestatuses
+            machines
+            machinestatuses
           )
 
           # Best-effort purge: never abort the whole job on one kind/id.
@@ -148,9 +151,15 @@ jobs:
                   && echo "  stripped finalizers $kind/$dead" \
                   || echo "  (apply finalizers $kind/$dead rejected)"
                 # Capture stderr once so operators see why delete fails.
+                # "torn down …" is success: delete accepted, GC finishing.
                 if timeout 30 omnictl delete "$kind" "$dead" --force >"$tmp/del.out" 2>&1 \
-                  || timeout 30 omnictl delete "$kind" "$dead" >"$tmp/del.out" 2>&1; then
-                  echo "  deleted $kind/$dead"
+                  || timeout 30 omnictl delete "$kind" "$dead" >"$tmp/del.out" 2>&1 \
+                  || grep -qi 'torn down' "$tmp/del.out" 2>/dev/null; then
+                  if grep -qi 'torn down' "$tmp/del.out" 2>/dev/null; then
+                    echo "  torn down $kind/$dead"
+                  else
+                    echo "  deleted $kind/$dead"
+                  fi
                 else
                   echo "  (delete $kind/$dead skipped: $(head -c 200 "$tmp/del.out" | tr '\n' ' '))"
                 fi
