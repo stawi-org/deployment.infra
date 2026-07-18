@@ -88,10 +88,12 @@ jobs:
             exit 0
           fi
 
+          # MachineSets use automated MachineClass allocation — do NOT
+          # create MachineSetNodes by hand. Free slots by deleting dead
+          # MachineSetNodes, label live machines so selectors match.
           for row in "${ACTIONS[@]}"; do
             IFS=$'\t' read -r host old new mset role <<<"$row"
 
-            # MachineLabels as JSON (COSI-style metadata.labels + empty spec)
             labels_json=$(jq -n --arg id "$new" --arg role "$role" '{
               metadata: {
                 namespace: "default",
@@ -102,26 +104,18 @@ jobs:
               spec: {}
             }')
             printf '%s\n' "$labels_json" > "$tmp/labels-${new}.json"
-            echo "apply labels ${new} role=${role}"
+            echo "apply labels ${new} role=${role} (${host})"
             omnictl apply -f "$tmp/labels-${new}.json"
 
-            echo "delete machinesetnode ${old}"
+            echo "delete machinesetnode ${old} (free slot on ${mset})"
             omnictl delete machinesetnodes "$old" 2>/dev/null || true
-
-            msn_json=$(jq -n --arg id "$new" --arg mset "$mset" '{
-              metadata: {
-                namespace: "default",
-                type: "MachineSetNodes.omni.sidero.dev",
-                id: $id,
-                labels: {
-                  "omni.sidero.dev/cluster": "stawi",
-                  "omni.sidero.dev/machine-set": $mset
-                }
-              },
-              spec: {}
-            }')
-            printf '%s\n' "$msn_json" > "$tmp/msn-${new}.json"
-            echo "apply machinesetnode ${new} -> ${mset} (${host})"
-            omnictl apply -f "$tmp/msn-${new}.json"
+            # Best-effort: drop any stale cluster association on the dead id
+            omnictl delete machinelabels "$old" 2>/dev/null || true
           done
-          echo "rebind apply complete"
+          echo "rebind complete — waiting for MachineClass auto-allocation"
+          sleep 15
+          echo "=== machineset status ==="
+          omnictl get machinesets -o yaml 2>/dev/null | head -80 || true
+          echo "=== clustermachinestatus (sample) ==="
+          omnictl get clustermachinestatus -o json 2>/dev/null \
+            | jq -s '[.[] | {id:.metadata.id, ready:.spec.ready, stage:.spec.stage}] | .[0:15]' || true
