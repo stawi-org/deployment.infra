@@ -7,10 +7,11 @@
 # ocpus=2 would consume the whole free pool.
 #
 # History: 2026-05-24 reverted OCI→Contabo after inbound blackhole on
-# eu-frankfurt-1 public IPs. 2026-07-18 flip back to OCI (bwire worker
-# capacity → Omni) with 1/6+1/6 free-tier split and explicit inbound
-# connectivity gate before retiring Contabo Omni.
-omni_host_provider = "oci"
+# eu-frankfurt-1 public IPs. 2026-07-18 re-attempted OCI (worker→Omni
+# 1/6+1/6): instance created at 129.159.221.5 but global probes got
+# "No route to host" on :22/:443/:8090/:8100 — same failure mode.
+# Rolled back to Contabo; OCI instance left powered for diagnosis.
+omni_host_provider = "contabo"
 
 # Keep in lock-step with tofu/shared/versions.auto.tfvars.json +
 # workflow OMNI_VERSION (omnictl). This layer does not symlink the
