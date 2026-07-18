@@ -154,23 +154,37 @@ jobs:
             echo "::notice::deleted ${#objs[@]} objects from ${bucket}"
           fi
 
+      # Free custom-image-count + stop stale imports holding quota.
+      # Covers AVAILABLE and stuck PROVISIONING/DISABLED/EXPORTING states.
+      # Booted instances keep their boot volumes after image delete.
       - name: Delete every custom image whose display_name starts with talos-v
         run: |
           set -euo pipefail
-          mapfile -t image_ocids < <(oci --profile "${PROFILE}" compute image list \
-            --compartment-id "${COMPARTMENT_OCID}" \
-            --all --lifecycle-state AVAILABLE \
-            --query 'data[?starts_with("display-name", `talos-v`)].id' \
-            --raw-output 2>/dev/null \
-            | jq -r '.[]?' 2>/dev/null || true)
-          if (( ${#image_ocids[@]} == 0 )); then
-            echo "::notice::no talos-* custom images in compartment ${COMPARTMENT_OCID}"
-          else
-            for ocid in "${image_ocids[@]}"; do
+          deleted=0
+          for state in AVAILABLE PROVISIONING DISABLED EXPORTING; do
+            mapfile -t rows < <(oci --profile "${PROFILE}" compute image list \
+              --compartment-id "${COMPARTMENT_OCID}" \
+              --all --lifecycle-state "$state" \
+              --query 'data[?starts_with("display-name", `talos-v`)].["id","display-name","lifecycle-state"]' \
+              --raw-output 2>/dev/null \
+              | jq -r '.[]? | @tsv' 2>/dev/null || true)
+            for row in "${rows[@]:-}"; do
+              [[ -z "$row" ]] && continue
+              ocid=$(cut -f1 <<<"$row")
+              name=$(cut -f2 <<<"$row")
+              st=$(cut -f3 <<<"$row")
               [[ -z "$ocid" ]] && continue
-              echo "  deleting image ${ocid}"
-              oci --profile "${PROFILE}" compute image delete \
-                --image-id "$ocid" --force >/dev/null
+              echo "  deleting image ${name} (${st}) ${ocid}"
+              if oci --profile "${PROFILE}" compute image delete \
+                    --image-id "$ocid" --force >/dev/null 2>&1; then
+                deleted=$((deleted + 1))
+              else
+                echo "  (delete skipped for ${ocid})"
+              fi
             done
-            echo "::notice::deleted ${#image_ocids[@]} custom images"
+          done
+          if (( deleted == 0 )); then
+            echo "::notice::no talos-* custom images to delete in ${COMPARTMENT_OCID}"
+          else
+            echo "::notice::deleted ${deleted} custom images in ${PROFILE}"
           fi
