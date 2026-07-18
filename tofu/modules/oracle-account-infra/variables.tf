@@ -67,14 +67,13 @@ variable "nodes" {
 
 variable "enforce_always_free" {
   type        = bool
-  default     = false
+  default     = true
   description = <<-EOT
-    When true, plan fails if this tenancy's declared nodes would exceed
-    continuous Always Free Ampere A1 compute (2 OCPU, 12 GB memory).
-    Fleet default is false: workers target 4 OCPU / 24 GB (may bill after
-    monthly free hours). Block volume is always limited to 196 GB usable
-    (200 GB free cap − 4 GB buffer) regardless of this flag. Shape A1,
-    ≤2 instances, and role ceilings always apply.
+    When true (fleet default), plan fails if this tenancy's declared nodes
+    would exceed continuous Always Free Ampere A1 compute (2 OCPU, 12 GB
+    memory total). Pack: one 2/12 node or two 1/6 nodes. Block volume is
+    always limited to 196 GB usable (200 GB free − 4 GB buffer). Shape A1
+    and ≤2 instances always apply.
   EOT
 }
 

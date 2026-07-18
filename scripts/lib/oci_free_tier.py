@@ -1,22 +1,20 @@
-"""OCI fleet sizing + Always Free block-volume guardrails.
+"""OCI Always Free continuous fleet sizing + block-volume guardrails.
 
-Fleet compute policy (intentional; may use monthly free OCPU-hours then PAYG):
-  - single worker:              4 OCPU + 24 GB memory
-  - controlplane (any):         2 OCPU + 12 GB memory
-  - worker sharing with a CP:   2 OCPU + 12 GB (balanced HA; not 4/24)
-  - shape:                      VM.Standard.A1.Flex only
-  - ≤2 A1 instances per tenancy
+Continuous free A1 compute (post 2026-06-15, per tenancy):
+  - 2 OCPU + 12 GB memory total (1,500 OCPU-hours + 9,000 GB-hours / month)
+  - ≤2 A1 instances sharing that pool
+  - shape VM.Standard.A1.Flex only
+
+Packs:
+  - 1 node:  2 OCPU / 12 GB / 196 GB boot
+  - 2 nodes: 1 OCPU / 6 GB each / 98 GB boot each (even free split)
 
 Always Free block volume (hard — never exceed free envelope):
   - Oracle cap: 200 GB total boot+data per tenancy
   - Operational buffer: 4 GB reserved so provisioning never hits the ceiling
   - Usable boot total: 196 GB (split evenly across nodes)
 
-Continuous free A1 compute is 2 OCPU + 12 GB *total* per tenancy. A CP+worker
-pair at 2/12 each (4/24 total) uses free monthly OCPU-hours then may bill.
-Strict continuous-free two-node packs would be 1/6 each — not the fleet default.
-
-Oracle docs (2026-06-15):
+Oracle docs:
   https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm
 """
 
@@ -28,11 +26,17 @@ from typing import Any
 A1_SHAPE = "VM.Standard.A1.Flex"
 MAX_NODES = 2
 
-# Role-based fleet targets
-WORKER_OCPU = 4
-WORKER_MEMORY_GB = 24
-CONTROLPLANE_OCPU = 2
-CONTROLPLANE_MEMORY_GB = 12
+# Continuous free A1 pool (tenancy totals)
+CONTINUOUS_FREE_OCPU = 2
+CONTINUOUS_FREE_MEMORY_GB = 12
+MIN_MEMORY_PER_NODE = 6
+
+# Solo full free pack
+SOLO_OCPU = CONTINUOUS_FREE_OCPU
+SOLO_MEMORY_GB = CONTINUOUS_FREE_MEMORY_GB
+# Two-node free split
+SPLIT_OCPU = 1
+SPLIT_MEMORY_GB = 6
 
 # Always Free block volume
 MAX_BOOT_HARD_GB = 200
@@ -40,16 +44,16 @@ BOOT_BUFFER_GB = 4
 MAX_BOOT_USABLE_GB = MAX_BOOT_HARD_GB - BOOT_BUFFER_GB  # 196
 MIN_BOOT_GB = 50
 
-# Continuous free A1 (reporting / optional strict free mode only)
-CONTINUOUS_FREE_OCPU = 2
-CONTINUOUS_FREE_MEMORY_GB = 12
-MIN_MEMORY_PER_NODE = 6
-
-# Backward-compat aliases used by older callers/tests
-MAX_OCPU = WORKER_OCPU  # per-tenancy fleet max when single full worker
-MAX_MEMORY_GB = WORKER_MEMORY_GB
+# Aliases for callers/tests
+MAX_OCPU = CONTINUOUS_FREE_OCPU
+MAX_MEMORY_GB = CONTINUOUS_FREE_MEMORY_GB
 MAX_BOOT_GB = MAX_BOOT_USABLE_GB
 DEFAULT_BOOT_GB = MAX_BOOT_USABLE_GB
+# Backward-compat names (solo free pack is the per-node ceiling)
+WORKER_OCPU = SOLO_OCPU
+WORKER_MEMORY_GB = SOLO_MEMORY_GB
+CONTROLPLANE_OCPU = SOLO_OCPU
+CONTROLPLANE_MEMORY_GB = SOLO_MEMORY_GB
 
 
 @dataclass
@@ -87,23 +91,12 @@ def _role_of(node: dict[str, Any]) -> str:
     return "worker"
 
 
-def _target_for_role(role: str, *, shared_tenancy: bool = False) -> dict[str, int]:
-    """Per-role size. Workers sharing a tenancy with a control plane use 2/12."""
-    if role == "controlplane":
-        return {"ocpus": CONTROLPLANE_OCPU, "memory_gb": CONTROLPLANE_MEMORY_GB}
-    if shared_tenancy:
-        # Balanced HA with CP: both nodes 2 OCPU / 12 GB (not a solo 4/24 worker).
-        return {"ocpus": CONTROLPLANE_OCPU, "memory_gb": CONTROLPLANE_MEMORY_GB}
-    return {"ocpus": WORKER_OCPU, "memory_gb": WORKER_MEMORY_GB}
-
-
 def _boot_split(node_count: int) -> list[int]:
     """Even split of usable boot budget; remainder GB goes to the first nodes."""
     if node_count <= 0:
         return []
     base = MAX_BOOT_USABLE_GB // node_count
     rem = MAX_BOOT_USABLE_GB % node_count
-    # Floor per node must still meet Talos QCOW2 minimum.
     if base < MIN_BOOT_GB:
         raise ValueError(
             f"cannot split {MAX_BOOT_USABLE_GB} GB usable boot across "
@@ -113,7 +106,7 @@ def _boot_split(node_count: int) -> list[int]:
 
 
 def validate_account(account: str, nodes: dict[str, Any] | None) -> AccountReport:
-    """Validate one tenancy's nodes map from R2 nodes.yaml against fleet policy."""
+    """Validate one tenancy's nodes map against continuous Always Free caps."""
     report = AccountReport(account=account)
     nodes = nodes or {}
     report.node_count = len(nodes)
@@ -123,7 +116,7 @@ def validate_account(account: str, nodes: dict[str, Any] | None) -> AccountRepor
             Violation(
                 account,
                 "node_count",
-                f"{report.node_count} nodes exceeds max of {MAX_NODES}",
+                f"{report.node_count} nodes exceeds Always Free max of {MAX_NODES}",
             )
         )
 
@@ -139,12 +132,9 @@ def validate_account(account: str, nodes: dict[str, Any] | None) -> AccountRepor
                 Violation(
                     account,
                     "shape",
-                    f"{name}: shape {shape!r} is not A1 ({A1_SHAPE})",
+                    f"{name}: shape {shape!r} is not Always Free A1 ({A1_SHAPE})",
                 )
             )
-        role = _role_of(node)
-        # Ceilings stay at solo fleet max (worker ≤4/24, CP ≤2/12).
-        target = _target_for_role(role, shared_tenancy=False)
         ocpus = int(node.get("ocpus") or 0)
         mem = int(node.get("memory_gb") or 0)
         boot = _boot_for_node(node, report.node_count or 1)
@@ -172,25 +162,44 @@ def validate_account(account: str, nodes: dict[str, Any] | None) -> AccountRepor
                     f"[{MIN_BOOT_GB},{MAX_BOOT_HARD_GB}]",
                 )
             )
-        if ocpus > target["ocpus"]:
+        # Per-node must not exceed the full continuous free pool alone.
+        if ocpus > CONTINUOUS_FREE_OCPU:
             report.violations.append(
                 Violation(
                     account,
-                    "ocpus_role",
-                    f"{name}: role={role} ocpus={ocpus} exceeds fleet target "
-                    f"{target['ocpus']}",
+                    "ocpus_node",
+                    f"{name}: ocpus={ocpus} exceeds continuous free pool "
+                    f"{CONTINUOUS_FREE_OCPU}",
                 )
             )
-        if mem > target["memory_gb"]:
+        if mem > CONTINUOUS_FREE_MEMORY_GB:
             report.violations.append(
                 Violation(
                     account,
-                    "memory_role",
-                    f"{name}: role={role} memory_gb={mem} exceeds fleet target "
-                    f"{target['memory_gb']}",
+                    "memory_node",
+                    f"{name}: memory_gb={mem} exceeds continuous free pool "
+                    f"{CONTINUOUS_FREE_MEMORY_GB}",
                 )
             )
 
+    if report.ocpus > CONTINUOUS_FREE_OCPU:
+        report.violations.append(
+            Violation(
+                account,
+                "ocpu_total",
+                f"sum(ocpus)={report.ocpus} exceeds Always Free cap "
+                f"{CONTINUOUS_FREE_OCPU}",
+            )
+        )
+    if report.memory_gb > CONTINUOUS_FREE_MEMORY_GB:
+        report.violations.append(
+            Violation(
+                account,
+                "memory_total",
+                f"sum(memory_gb)={report.memory_gb} exceeds Always Free cap "
+                f"{CONTINUOUS_FREE_MEMORY_GB}",
+            )
+        )
     if report.boot_gb > MAX_BOOT_USABLE_GB:
         report.violations.append(
             Violation(
@@ -216,52 +225,57 @@ def validate_inventory_tree(accounts: dict[str, dict[str, Any]]) -> list[Account
 
 
 def free_tier_pack(node_count: int, roles: list[str] | None = None) -> list[dict[str, int]]:
-    """Return per-node {ocpus, memory_gb, boot_volume_size_gb} for fleet pack.
+    """Return per-node continuous free packs.
 
-    When roles is provided (len == node_count), sizes follow each role.
-    Otherwise defaults: one worker, or worker+controlplane for two nodes.
+    1 node  → 2/12/196
+    2 nodes → 1/6/98 each (roles preserved by caller; sizes equal split)
     """
     if node_count <= 0:
         return []
     if node_count > MAX_NODES:
-        raise ValueError(f"cannot pack {node_count} nodes into fleet envelope (max {MAX_NODES})")
+        raise ValueError(
+            f"cannot pack {node_count} nodes into Always Free envelope (max {MAX_NODES})"
+        )
 
     if roles is None:
         if node_count == 1:
             roles = ["worker"]
         else:
-            # Two-node default preserves a control plane + worker split.
             roles = ["controlplane", "worker"]
     if len(roles) != node_count:
         raise ValueError("roles length must match node_count")
 
-    # Worker that shares a tenancy with a control plane is sized 2/12, not 4/24.
-    shared = "controlplane" in roles and "worker" in roles
     boots = _boot_split(node_count)
     packs: list[dict[str, int]] = []
-    for role, boot in zip(roles, boots):
-        target = _target_for_role(role, shared_tenancy=shared and role == "worker")
+    if node_count == 1:
         packs.append(
             {
-                "ocpus": target["ocpus"],
-                "memory_gb": target["memory_gb"],
-                "boot_volume_size_gb": boot,
+                "ocpus": SOLO_OCPU,
+                "memory_gb": SOLO_MEMORY_GB,
+                "boot_volume_size_gb": boots[0],
             }
         )
+    else:
+        for boot in boots:
+            packs.append(
+                {
+                    "ocpus": SPLIT_OCPU,
+                    "memory_gb": SPLIT_MEMORY_GB,
+                    "boot_volume_size_gb": boot,
+                }
+            )
     return packs
 
 
 def reconcile_nodes(nodes: dict[str, Any]) -> dict[str, Any]:
-    """Return a copy of nodes with fleet-target compute/boot sizes.
+    """Return a copy of nodes with continuous free compute/boot sizes.
 
     Preserves all other fields (role, labels, annotations, provider_data, …).
     Does not delete nodes; if more than MAX_NODES, raises.
 
-    Role → size:
-      controlplane              → 2 OCPU / 12 GB
-      worker (solo)             → 4 OCPU / 24 GB
-      worker (with controlplane)→ 2 OCPU / 12 GB  (balanced HA, e.g. bwire)
-    Boot volumes share MAX_BOOT_USABLE_GB evenly (4 GB free-tier buffer retained).
+    Sizes:
+      1 node  → 2 OCPU / 12 GB / 196 GB boot
+      2 nodes → 1 OCPU / 6 GB / 98 GB boot each
     """
     if not nodes:
         return {}

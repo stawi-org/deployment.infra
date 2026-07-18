@@ -96,7 +96,7 @@ module "oracle_account" {
   shared_patches_dir                   = "${path.module}/../../shared/patches"
   omni_siderolink_url                  = var.omni_siderolink_url
   force_reinstall_generation           = var.force_reinstall_generation
-  # Continuous free A1 compute (2/12) only when true. Fleet default false
-  # so workers can be 4/24. Boot always capped at 196 GB (4 GB buffer).
+  # Continuous free A1 compute (≤2 OCPU / ≤12 GB). Default true.
+  # Boot always capped at 196 GB (4 GB buffer under free 200).
   enforce_always_free = var.enforce_always_free
 }

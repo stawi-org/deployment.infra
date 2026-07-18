@@ -1,4 +1,4 @@
-"""Unit tests for oci_free_tier helpers. Run: python3 -m pytest scripts/lib/test_oci_free_tier.py -q"""
+"""Unit tests for oci_free_tier helpers. Run: python3 -m unittest test_oci_free_tier.py -q"""
 
 from __future__ import annotations
 
@@ -15,7 +15,25 @@ from oci_free_tier import (
 
 
 class TestValidateAccount(unittest.TestCase):
-    def test_single_worker_target_ok(self):
+    def test_single_worker_free_ok(self):
+        r = validate_account(
+            "a",
+            {
+                "n1": {
+                    "role": "worker",
+                    "shape": "VM.Standard.A1.Flex",
+                    "ocpus": 2,
+                    "memory_gb": 12,
+                    "boot_volume_size_gb": MAX_BOOT_USABLE_GB,
+                }
+            },
+        )
+        self.assertTrue(r.ok, r.violations)
+        self.assertEqual(r.ocpus, 2)
+        self.assertEqual(r.memory_gb, 12)
+        self.assertEqual(r.boot_gb, MAX_BOOT_USABLE_GB)
+
+    def test_legacy_4_24_over(self):
         r = validate_account(
             "a",
             {
@@ -24,34 +42,42 @@ class TestValidateAccount(unittest.TestCase):
                     "shape": "VM.Standard.A1.Flex",
                     "ocpus": 4,
                     "memory_gb": 24,
-                    "boot_volume_size_gb": MAX_BOOT_USABLE_GB,
-                }
-            },
-        )
-        self.assertTrue(r.ok, r.violations)
-        self.assertEqual(r.ocpus, 4)
-        self.assertEqual(r.memory_gb, 24)
-        self.assertEqual(r.boot_gb, MAX_BOOT_USABLE_GB)
-
-    def test_worker_over_role_target(self):
-        r = validate_account(
-            "a",
-            {
-                "n1": {
-                    "role": "worker",
-                    "shape": "VM.Standard.A1.Flex",
-                    "ocpus": 8,
-                    "memory_gb": 48,
-                    "boot_volume_size_gb": 100,
+                    "boot_volume_size_gb": 180,
                 }
             },
         )
         self.assertFalse(r.ok)
         codes = {v.code for v in r.violations}
-        self.assertIn("ocpus_role", codes)
-        self.assertIn("memory_role", codes)
+        self.assertIn("ocpu_total", codes)
+        self.assertIn("memory_total", codes)
 
-    def test_two_nodes_at_usable_boot_ok(self):
+    def test_two_nodes_free_split_ok(self):
+        half = MAX_BOOT_USABLE_GB // 2
+        r = validate_account(
+            "a",
+            {
+                "n1": {
+                    "role": "controlplane",
+                    "shape": "VM.Standard.A1.Flex",
+                    "ocpus": 1,
+                    "memory_gb": 6,
+                    "boot_volume_size_gb": half,
+                },
+                "n2": {
+                    "role": "worker",
+                    "shape": "VM.Standard.A1.Flex",
+                    "ocpus": 1,
+                    "memory_gb": 6,
+                    "boot_volume_size_gb": half,
+                },
+            },
+        )
+        self.assertTrue(r.ok, r.violations)
+        self.assertEqual(r.ocpus, 2)
+        self.assertEqual(r.memory_gb, 12)
+        self.assertEqual(r.boot_gb, half * 2)
+
+    def test_two_nodes_2_12_each_over_compute(self):
         half = MAX_BOOT_USABLE_GB // 2
         r = validate_account(
             "a",
@@ -66,32 +92,33 @@ class TestValidateAccount(unittest.TestCase):
                 "n2": {
                     "role": "worker",
                     "shape": "VM.Standard.A1.Flex",
-                    "ocpus": 4,
-                    "memory_gb": 24,
+                    "ocpus": 2,
+                    "memory_gb": 12,
                     "boot_volume_size_gb": half,
                 },
             },
         )
-        self.assertTrue(r.ok, r.violations)
-        self.assertEqual(r.boot_gb, half * 2)
+        self.assertFalse(r.ok)
+        codes = {v.code for v in r.violations}
+        self.assertIn("ocpu_total", codes)
+        self.assertIn("memory_total", codes)
 
     def test_boot_hits_hard_cap_without_buffer_fails(self):
-        # 100+100 = 200 uses full free tier with zero buffer → reject
         r = validate_account(
             "a",
             {
                 "n1": {
                     "role": "controlplane",
                     "shape": "VM.Standard.A1.Flex",
-                    "ocpus": 2,
-                    "memory_gb": 12,
+                    "ocpus": 1,
+                    "memory_gb": 6,
                     "boot_volume_size_gb": 100,
                 },
                 "n2": {
                     "role": "worker",
                     "shape": "VM.Standard.A1.Flex",
-                    "ocpus": 4,
-                    "memory_gb": 24,
+                    "ocpus": 1,
+                    "memory_gb": 6,
                     "boot_volume_size_gb": 100,
                 },
             },
@@ -166,31 +193,30 @@ class TestReconcile(unittest.TestCase):
     def test_pack_one_worker(self):
         self.assertEqual(
             free_tier_pack(1),
-            [{"ocpus": 4, "memory_gb": 24, "boot_volume_size_gb": MAX_BOOT_USABLE_GB}],
+            [{"ocpus": 2, "memory_gb": 12, "boot_volume_size_gb": MAX_BOOT_USABLE_GB}],
         )
 
-    def test_pack_two_roles_balanced(self):
-        # CP + worker share a tenancy: both 2/12 (not worker 4/24).
+    def test_pack_two_roles_free_split(self):
         packs = free_tier_pack(2, roles=["controlplane", "worker"])
-        self.assertEqual(packs[0]["ocpus"], 2)
-        self.assertEqual(packs[0]["memory_gb"], 12)
-        self.assertEqual(packs[1]["ocpus"], 2)
-        self.assertEqual(packs[1]["memory_gb"], 12)
+        self.assertEqual(sum(p["ocpus"] for p in packs), 2)
+        self.assertEqual(sum(p["memory_gb"] for p in packs), 12)
+        self.assertEqual(packs[0]["ocpus"], 1)
+        self.assertEqual(packs[1]["ocpus"], 1)
         self.assertEqual(sum(p["boot_volume_size_gb"] for p in packs), MAX_BOOT_USABLE_GB)
 
-    def test_reconcile_worker_to_4_24(self):
+    def test_reconcile_worker_to_2_12(self):
         nodes = {
             "oci-x-node-1": {
                 "role": "worker",
-                "ocpus": 2,
-                "memory_gb": 12,
+                "ocpus": 4,
+                "memory_gb": 24,
                 "labels": {"node.stawi.org/external-load-balancer": "true"},
                 "provider_data": {"status": "running"},
             }
         }
         out = reconcile_nodes(nodes)
-        self.assertEqual(out["oci-x-node-1"]["ocpus"], 4)
-        self.assertEqual(out["oci-x-node-1"]["memory_gb"], 24)
+        self.assertEqual(out["oci-x-node-1"]["ocpus"], 2)
+        self.assertEqual(out["oci-x-node-1"]["memory_gb"], 12)
         self.assertEqual(out["oci-x-node-1"]["boot_volume_size_gb"], MAX_BOOT_USABLE_GB)
         self.assertEqual(
             out["oci-x-node-1"]["labels"]["node.stawi.org/external-load-balancer"],
@@ -200,17 +226,16 @@ class TestReconcile(unittest.TestCase):
         r = validate_account("x", out)
         self.assertTrue(r.ok, r.violations)
 
-    def test_reconcile_two_nodes_role_aware(self):
+    def test_reconcile_two_nodes_free_split(self):
         nodes = {
-            "a": {"role": "controlplane", "ocpus": 1, "memory_gb": 6},
-            "b": {"role": "worker", "ocpus": 1, "memory_gb": 6},
+            "a": {"role": "controlplane", "ocpus": 2, "memory_gb": 12},
+            "b": {"role": "worker", "ocpus": 2, "memory_gb": 12},
         }
         out = reconcile_nodes(nodes)
-        self.assertEqual(out["a"]["ocpus"], 2)
-        self.assertEqual(out["a"]["memory_gb"], 12)
-        # Worker sharing with CP is balanced 2/12 (bwire-style free-tier HA).
-        self.assertEqual(out["b"]["ocpus"], 2)
-        self.assertEqual(out["b"]["memory_gb"], 12)
+        self.assertEqual(out["a"]["ocpus"], 1)
+        self.assertEqual(out["a"]["memory_gb"], 6)
+        self.assertEqual(out["b"]["ocpus"], 1)
+        self.assertEqual(out["b"]["memory_gb"], 6)
         self.assertEqual(
             out["a"]["boot_volume_size_gb"] + out["b"]["boot_volume_size_gb"],
             MAX_BOOT_USABLE_GB,
@@ -220,14 +245,14 @@ class TestReconcile(unittest.TestCase):
 
     def test_reconcile_two_controlplanes(self):
         nodes = {
-            "a": {"role": "controlplane", "ocpus": 1, "memory_gb": 6},
-            "b": {"role": "controlplane", "ocpus": 1, "memory_gb": 6},
+            "a": {"role": "controlplane", "ocpus": 2, "memory_gb": 12},
+            "b": {"role": "controlplane", "ocpus": 2, "memory_gb": 12},
         }
         out = reconcile_nodes(nodes)
-        self.assertEqual(out["a"]["ocpus"], 2)
-        self.assertEqual(out["b"]["ocpus"], 2)
-        self.assertEqual(out["a"]["memory_gb"], 12)
-        self.assertEqual(out["b"]["memory_gb"], 12)
+        self.assertEqual(out["a"]["ocpus"], 1)
+        self.assertEqual(out["b"]["ocpus"], 1)
+        self.assertEqual(out["a"]["memory_gb"], 6)
+        self.assertEqual(out["b"]["memory_gb"], 6)
         r = validate_account("x", out)
         self.assertTrue(r.ok, r.violations)
 
@@ -239,8 +264,8 @@ class TestReconcile(unittest.TestCase):
                         "n1": {
                             "role": "worker",
                             "shape": "VM.Standard.A1.Flex",
-                            "ocpus": 4,
-                            "memory_gb": 24,
+                            "ocpus": 2,
+                            "memory_gb": 12,
                             "boot_volume_size_gb": MAX_BOOT_USABLE_GB,
                         }
                     }
@@ -250,8 +275,8 @@ class TestReconcile(unittest.TestCase):
                         "n1": {
                             "role": "worker",
                             "shape": "VM.Standard.A1.Flex",
-                            "ocpus": 8,
-                            "memory_gb": 48,
+                            "ocpus": 4,
+                            "memory_gb": 24,
                             "boot_volume_size_gb": 100,
                         }
                     }

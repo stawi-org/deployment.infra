@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Rewrite OCI nodes.yaml files to fleet role packs + free block buffer.
+"""Rewrite OCI nodes.yaml files to continuous Always Free packs.
 
 Preserves roles, labels, annotations, provider_data. Only rewrites
 shape / ocpus / memory_gb / boot_volume_size_gb.
 
-  worker       → 4 OCPU / 24 GB
-  controlplane → 2 OCPU / 12 GB
-  boot sum     → ≤ 196 GB (200 free − 4 GB buffer)
+  1 node  → 2 OCPU / 12 GB / 196 GB boot
+  2 nodes → 1 OCPU / 6 GB / 98 GB boot each
 
 
 Usage:
@@ -88,7 +87,7 @@ def main() -> int:
             for k, v in sorted(new_nodes.items())
         }
         if before == after:
-            print(f"{entry.name}: already at fleet target pack")
+            print(f"{entry.name}: already continuous free pack")
             continue
 
         print(f"{entry.name}: would update")
@@ -106,7 +105,7 @@ def main() -> int:
         print(f"\n{changed} account(s) need reconcile; re-run with --write")
         return 1
     if changed:
-        print(f"\nreconciled {changed} account(s) to fleet role packs")
+        print(f"\nreconciled {changed} account(s) to continuous free packs")
     return 0
 
 

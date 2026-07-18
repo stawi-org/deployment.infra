@@ -1,23 +1,19 @@
 # tofu/modules/oracle-account-infra/free-tier.tf
 #
-# Guardrails for OCI Ampere A1 fleet + Always Free block volume.
+# Always Free continuous A1 + block volume guardrails.
 #
-# Fleet compute targets (intentional; may bill after monthly free hours):
-#   worker:       4 OCPU + 24 GB
-#   controlplane: 2 OCPU + 12 GB
+# Continuous free Ampere A1 (post 2026-06-15, per tenancy):
+#   2 OCPU + 12 GB memory total (1,500 OCPU-hours + 9,000 GB-hours / month)
 #   ≤2 A1 instances, shape VM.Standard.A1.Flex only
 #
-# Always Free block volume (hard — never exceed free envelope):
-#   Oracle cap: 200 GB total boot+data per tenancy
-#   Operational buffer: 4 GB so we never land on the ceiling
-#   Usable boot total enforced here: 196 GB
+# Always Free block volume:
+#   Oracle cap: 200 GB total boot+data
+#   Operational buffer: 4 GB → usable 196 GB
 #
-# Continuous free A1 compute is 2 OCPU + 12 GB. When
-# enforce_always_free=true, plan also fails if tenancy totals exceed that
-# continuous free compute envelope. Fleet default is false so workers can
-# be 4/24 as inventory policy requires.
+# enforce_always_free=true (fleet default): fail plan on continuous free
+# compute overage. Block buffer is always enforced.
 #
-# Official Always Free (home region), as of 2026-06-15 docs:
+# Official docs:
 #   https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm
 
 locals {
@@ -26,7 +22,6 @@ locals {
   free_tier_boot_hard_gb    = 200
   free_tier_boot_usable_gb  = local.free_tier_boot_hard_gb - local.free_tier_boot_buffer_gb
 
-  # sum([]) is invalid in OpenTofu — guard empty node maps (empty account).
   free_tier_ocpus_total = length(var.nodes) == 0 ? 0 : sum([
     for _, n in var.nodes : n.ocpus
   ])
@@ -48,7 +43,7 @@ check "always_free_shape_is_a1_flex" {
   assert {
     condition     = length(local.free_tier_non_a1) == 0
     error_message = <<-EOT
-      account ${var.account_key}: fleet only allows shape VM.Standard.A1.Flex.
+      account ${var.account_key}: Always Free only allows shape VM.Standard.A1.Flex.
       Non-A1 nodes: ${join(", ", local.free_tier_non_a1)}.
     EOT
   }
@@ -59,7 +54,7 @@ check "always_free_instance_count" {
     condition     = local.free_tier_node_count <= 2
     error_message = <<-EOT
       account ${var.account_key}: ${local.free_tier_node_count} A1 instances declared;
-      fleet policy allows at most 2 Ampere A1 VMs per tenancy.
+      Always Free allows at most 2 Ampere A1 VMs per tenancy.
     EOT
   }
 }
@@ -70,8 +65,7 @@ check "always_free_ocpu_cap" {
     error_message = <<-EOT
       account ${var.account_key}: sum(ocpus)=${local.free_tier_ocpus_total} exceeds continuous
       Always Free Ampere A1 cap of 2 OCPU (1,500 OCPU-hours/month).
-      Set enforce_always_free=false for intentional paid A1 hours (fleet workers are 4/24),
-      or resize nodes.yaml so tenancy totals ≤ 2 OCPU.
+      Resize nodes.yaml: one 2/12 node, or two 1/6 nodes.
     EOT
   }
 }
@@ -82,13 +76,11 @@ check "always_free_memory_cap" {
     error_message = <<-EOT
       account ${var.account_key}: sum(memory_gb)=${local.free_tier_memory_total} exceeds continuous
       Always Free Ampere A1 cap of 12 GB (9,000 GB-hours/month).
-      Set enforce_always_free=false for intentional paid A1 hours, or resize nodes.yaml.
+      Resize nodes.yaml: one 2/12 node, or two 1/6 nodes.
     EOT
   }
 }
 
-# Boot volume: ALWAYS enforced with 4 GB buffer under the 200 GB free cap,
-# regardless of enforce_always_free. Never provision into the free ceiling.
 check "always_free_block_volume_cap" {
   assert {
     condition     = local.free_tier_boot_total <= local.free_tier_boot_usable_gb
@@ -109,24 +101,21 @@ check "always_free_per_node_minimums" {
     ])
     error_message = <<-EOT
       account ${var.account_key}: each A1 node needs ocpus >= 1, memory_gb >= 6
-      (Oracle A1 flex floor for usable Talos/Ubuntu), boot_volume_size_gb >= 50
-      (Talos QCOW2 floor). Check nodes.yaml for undersized entries.
+      (Oracle A1 flex floor), boot_volume_size_gb >= 50 (Talos QCOW2 floor).
     EOT
   }
 }
 
-# Fleet role ceilings (always on): worker ≤4/24, controlplane ≤2/12
-check "fleet_role_size_ceilings" {
+# Per-node must not exceed continuous free pool alone.
+check "always_free_per_node_ceilings" {
   assert {
     condition = alltrue([
       for _, n in var.nodes :
-      n.role == "controlplane"
-      ? (n.ocpus <= 2 && n.memory_gb <= 12)
-      : (n.ocpus <= 4 && n.memory_gb <= 24)
+      n.ocpus <= 2 && n.memory_gb <= 12
     ])
     error_message = <<-EOT
-      account ${var.account_key}: node exceeds fleet role ceiling
-      (controlplane ≤ 2 OCPU / 12 GB, worker ≤ 4 OCPU / 24 GB).
+      account ${var.account_key}: each node must be ≤ 2 OCPU / 12 GB
+      (continuous Always Free pool). Prefer solo 2/12 or two 1/6.
     EOT
   }
 }

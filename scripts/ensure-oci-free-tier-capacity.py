@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
-"""Ensure every oracle account inventory uses fleet target capacity.
+"""Ensure every oracle account inventory fits continuous Always Free.
 
-Policy:
-  - worker:       4 OCPU / 24 GB
-  - controlplane: 2 OCPU / 12 GB
-  - boot:         sum ≤ 196 GB (Always Free 200 GB − 4 GB buffer)
-  - Empty accounts: seed one worker at free_tier_pack(1) = 4/24/196
-  - Non-empty accounts: reconcile shape/ocpus/memory/boot to role pack
-    without deleting nodes (caller must drop nodes >2 first)
+Policy (post 2026-06-15):
+  - Empty accounts: seed one worker at free_tier_pack(1) = 2/12/196
+  - Non-empty: reconcile to free pack (1 node → 2/12/196; 2 nodes → 1/6/98 each)
+  - Boot sum ≤ 196 GB (Always Free 200 − 4 GB buffer)
   - Does NOT destroy live VMs; only rewrites R2 inventory YAML
 
 Usage:
@@ -51,8 +48,8 @@ def _default_worker(name: str, pack: dict) -> dict:
         },
         "annotations": {
             "node.stawi.org/operator-note": (
-                f"fleet pack {pack['ocpus']}/{pack['memory_gb']}/"
-                f"{pack['boot_volume_size_gb']} worker"
+                f"always-free pack {pack['ocpus']}/{pack['memory_gb']}/"
+                f"{pack['boot_volume_size_gb']}"
             ),
         },
     }
@@ -91,7 +88,6 @@ def ensure_account(account: str, path: Path, write: bool) -> tuple[str, bool]:
             new_nodes = reconcile_nodes(nodes)
         except ValueError as e:
             return (f"{account}: ERROR {e}", False)
-        # Detect size field drift only
         before = {
             k: (v.get("ocpus"), v.get("memory_gb"), v.get("boot_volume_size_gb"), v.get("shape"))
             for k, v in sorted(nodes.items())
@@ -104,9 +100,9 @@ def ensure_account(account: str, path: Path, write: bool) -> tuple[str, bool]:
             doc["nodes"] = new_nodes
             nodes = new_nodes
             changed = True
-            action = "reconciled sizes to fleet role pack"
+            action = "reconciled sizes to continuous free pack"
         else:
-            action = "already at fleet target pack"
+            action = "already continuous free pack"
 
     report = validate_account(account, nodes)
     if not report.ok:
@@ -155,9 +151,9 @@ def main() -> int:
         print("\nchanges needed; re-run with --write")
         return 1
     if any_change:
-        print(f"\nensured fleet capacity for inventory under {args.inventory_dir}")
+        print(f"\nensured continuous free capacity under {args.inventory_dir}")
     else:
-        print("\nall accounts already at fleet target pack")
+        print("\nall accounts already at continuous free pack")
     return 0
 
 

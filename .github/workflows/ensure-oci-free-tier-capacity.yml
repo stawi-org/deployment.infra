@@ -1,8 +1,6 @@
-# Ensure every oracle account in accounts.yaml has fleet-target
-# inventory capacity (empty → seed 1×4/24/196 worker; existing →
-# role pack: worker 4/24, CP 2/12, boot sum ≤196). Does not terminate
-# live VMs; pair with prune-oci-free-tier-violators for live drift and
-# tofu-apply for in-place shape_config resize.
+# Ensure every oracle account fits continuous Always Free
+# (empty → seed 1×2/12/196; existing → solo 2/12 or two 1/6, boot ≤196).
+# Does not terminate live VMs; pair with prune + tofu-layer apply.
 name: ensure-oci-free-tier-capacity
 
 on:

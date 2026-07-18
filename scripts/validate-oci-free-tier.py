@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate OCI inventory under fleet sizing + free block buffer caps.
+"""Validate OCI inventory under continuous Always Free caps.
 
 Usage:
   # Local tree of per-account nodes.yaml files:
@@ -72,12 +72,12 @@ def main() -> int:
 
     if failed:
         print(
-            f"\n{len(failed)} account(s) exceed fleet / free-block caps. "
+            f"\n{len(failed)} account(s) exceed continuous Always Free caps. "
             "See docs/oci-always-free.md",
             file=sys.stderr,
         )
         return 1
-    print("\nAll accounts within fleet targets (boot ≤196 GB usable).")
+    print("\nAll accounts within continuous Always Free (≤2 OCPU / ≤12 GB / boot ≤196).")
     return 0
 
 

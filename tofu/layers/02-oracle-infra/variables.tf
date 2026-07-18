@@ -74,16 +74,14 @@ variable "force_reinstall_generation" {
 
 variable "enforce_always_free" {
   type        = bool
-  default     = false
+  default     = true
   description = <<-EOT
-    Pass-through to oracle-account-infra. When true, plan fails if
-    inventory would exceed continuous Always Free Ampere A1 compute
-    (≤2 OCPU, ≤12 GB memory). Fleet default is false so workers can be
-    4 OCPU / 24 GB (uses monthly free OCPU-hours then PAYG).
+    Pass-through to oracle-account-infra. When true (fleet default), plan
+    fails if inventory would exceed continuous Always Free Ampere A1
+    compute (≤2 OCPU, ≤12 GB memory total). Pack: solo 2/12 or two 1/6.
 
-    Block volume is always capped at 196 GB usable (200 − 4 GB buffer)
-    regardless of this flag. Shape A1.Flex, ≤2 instances, and role
-    ceilings (worker ≤4/24, controlplane ≤2/12) are always enforced.
+    Block volume is always capped at 196 GB usable (200 − 4 GB buffer).
+    Shape A1.Flex and ≤2 instances always apply.
     See modules/oracle-account-infra/free-tier.tf.
   EOT
 }
