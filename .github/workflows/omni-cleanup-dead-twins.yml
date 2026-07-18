@@ -134,20 +134,30 @@ jobs:
             links
           )
 
+          # Best-effort purge: never abort the whole job on one kind/id.
+          set +e
           for row in "${TWINS[@]}"; do
             IFS=$'\t' read -r dead host live role <<<"$row"
             echo "::group::purge dead twin $dead ($host)"
             for kind in "${kinds[@]}"; do
               if timeout 20 omnictl get "$kind" "$dead" -o yaml > "$tmp/r.yaml" 2>/dev/null; then
+                # Only finalizers — Omni rejects broader metadata patches
+                # on tearing-down / controller-owned resources.
                 yq -i 'del(.metadata.finalizers)' "$tmp/r.yaml" 2>/dev/null || true
-                timeout 20 omnictl apply -f "$tmp/r.yaml" >/dev/null 2>&1 || true
-                timeout 30 omnictl delete "$kind" "$dead" >/dev/null 2>&1 \
-                  && echo "  deleted $kind/$dead" \
-                  || echo "  (delete $kind/$dead skipped)"
+                timeout 20 omnictl apply -f "$tmp/r.yaml" >/dev/null 2>&1 \
+                  && echo "  stripped finalizers $kind/$dead" \
+                  || echo "  (apply finalizers $kind/$dead rejected)"
+                # Capture stderr once so operators see why delete fails.
+                if timeout 30 omnictl delete "$kind" "$dead" --force >"$tmp/del.out" 2>&1 \
+                  || timeout 30 omnictl delete "$kind" "$dead" >"$tmp/del.out" 2>&1; then
+                  echo "  deleted $kind/$dead"
+                else
+                  echo "  (delete $kind/$dead skipped: $(head -c 200 "$tmp/del.out" | tr '\n' ' '))"
+                fi
               fi
             done
             # Ensure live twin keeps role label for MachineClass
-            labels_json=$(jq -n --arg id "$live" --arg role "$role" '{
+            labels_json=$(jq -n --arg id "$live" --arg role "$role" --arg host "$host" '{
               metadata: {
                 namespace: "default",
                 type: "MachineLabels.omni.sidero.dev",
@@ -157,11 +167,14 @@ jobs:
               spec: {}
             }')
             printf '%s\n' "$labels_json" > "$tmp/labels.json"
-            omnictl apply -f "$tmp/labels.json" \
-              && echo "  labeled live $live role=$role" \
-              || echo "  (label live failed)"
+            if timeout 30 omnictl apply -f "$tmp/labels.json"; then
+              echo "  labeled live $live role=$role"
+            else
+              echo "  (label live failed)"
+            fi
             echo "::endgroup::"
           done
+          set -e
           echo "cleanup complete"
 
       - name: Pin live UUIDs in inventory

@@ -87,24 +87,20 @@ jobs:
                 echo "  $kind/$id: not present (skipping)"
                 continue
               fi
-              yq -i '
-                del(.metadata.finalizers) |
-                del(.metadata.version) |
-                del(.metadata.created) |
-                del(.metadata.updated) |
-                del(.metadata.phase) |
-                del(.metadata.owner)
-              ' /tmp/r.yaml
+              # Only finalizers — broader metadata patches are rejected
+              # by Omni on tearing-down / controller-owned resources
+              # (see omni-force-cluster-clear).
+              yq -i 'del(.metadata.finalizers)' /tmp/r.yaml
               if timeout 45 omnictl apply -f /tmp/r.yaml >/dev/null 2>&1; then
                 echo "  $kind/$id: finalizers stripped"
               else
                 echo "::warning::  $kind/$id: apply rejected"
               fi
-              if timeout 45 omnictl delete "$kind" "$id" --force >/dev/null 2>&1 \
-                || timeout 45 omnictl delete "$kind" "$id" >/dev/null 2>&1; then
+              if timeout 45 omnictl delete "$kind" "$id" --force > /tmp/del.out 2>&1 \
+                || timeout 45 omnictl delete "$kind" "$id" > /tmp/del.out 2>&1; then
                 echo "  $kind/$id: deleted"
               else
-                echo "  $kind/$id: delete returned non-zero / timed out"
+                echo "  $kind/$id: delete failed: $(head -c 200 /tmp/del.out | tr '\n' ' ')"
               fi
             done
             echo "::endgroup::"

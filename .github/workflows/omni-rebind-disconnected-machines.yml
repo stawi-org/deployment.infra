@@ -130,7 +130,8 @@ jobs:
 
             for kind in "${kinds[@]}"; do
               if timeout 20 omnictl get "$kind" "$old" -o yaml > "$tmp/r.yaml" 2>/dev/null; then
-                yq -i 'del(.metadata.finalizers) | del(.metadata.version) | del(.metadata.created) | del(.metadata.updated) | del(.metadata.phase) | del(.metadata.owner)' "$tmp/r.yaml" 2>/dev/null || true
+                # Only finalizers — broader metadata patches rejected by Omni.
+                yq -i 'del(.metadata.finalizers)' "$tmp/r.yaml" 2>/dev/null || true
                 timeout 20 omnictl apply -f "$tmp/r.yaml" >/dev/null 2>&1 || true
                 if timeout 30 omnictl delete "$kind" "$old" --force >/dev/null 2>&1 \
                   || timeout 30 omnictl delete "$kind" "$old" >/dev/null 2>&1; then
