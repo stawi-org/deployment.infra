@@ -55,8 +55,12 @@ readonly REGISTRATION_TIMEOUT_SECS="${REGISTRATION_TIMEOUT_SECS:-900}"
 readonly REGISTRATION_POLL_SECS="${REGISTRATION_POLL_SECS:-15}"
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-# tofu/layers/03-talos/scripts → repo root
-REPO_ROOT=$(cd "$SCRIPT_DIR/../../.." && pwd)
+# scripts/ is four levels above this file. Prefer git root when available.
+if REPO_ROOT=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null); then
+  :
+else
+  REPO_ROOT=$(cd "$SCRIPT_DIR/../../../.." && pwd)
+fi
 MATCH_PY="$REPO_ROOT/scripts/lib/omni_machine_match.py"
 [[ -f "$MATCH_PY" ]] || { echo "[sync-machine-label] missing $MATCH_PY" >&2; exit 1; }
 

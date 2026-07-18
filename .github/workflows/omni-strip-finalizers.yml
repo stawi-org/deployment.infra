@@ -67,13 +67,18 @@ jobs:
         timeout-minutes: 20
         run: |
           set -uo pipefail
+          # Include MachineSetNodes + Links so dead twins release
+          # MachineClass slots and SideroLink state, not only Machine.
           kinds=(
             "clustermachineconfigstatuses"
             "clustermachinestatuses"
             "clustermachineconfigpatches"
             "clustermachines"
+            "machinesetnodes"
+            "machinelabels"
             "machinestatuses"
             "machines"
+            "links"
           )
           for id in $MACHINE_IDS; do
             echo "::group::strip finalizers for machine $id"

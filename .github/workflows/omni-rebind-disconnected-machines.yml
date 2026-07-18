@@ -1,5 +1,9 @@
 # Recovery: rebind live Omni machine UUIDs when cluster still references
 # disconnected UUIDs for the same hostname.
+#
+# Prefer omni-cleanup-dead-twins for full dead-UUID purge (finalizers +
+# all cluster machine kinds). This workflow labels live twins and
+# purges dead cluster resources so MachineClass can allocate cleanly.
 name: omni-rebind-disconnected-machines
 on:
   workflow_dispatch:
@@ -28,7 +32,7 @@ jobs:
       OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
       DRY_RUN: ${{ inputs.dry_run }}
     steps:
-      - name: Install omnictl + jq
+      - name: Install omnictl + jq + yq
         run: |
           set -euo pipefail
           curl -fsSL -o /usr/local/bin/omnictl.real \
@@ -39,8 +43,12 @@ jobs:
           exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
           WRAP
           chmod +x /usr/local/bin/omnictl
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.44.6/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
 
       - name: Plan and rebind
+        timeout-minutes: 20
         run: |
           set -euo pipefail
           tmp=$(mktemp -d)
@@ -48,8 +56,9 @@ jobs:
           omnictl get machinestatus -o json | jq -cs 'flatten' > "$tmp/ms.json"
 
           dry="${DRY_RUN:-true}"
-          mapfile -t ACTIONS < <(jq -r --arg dry "$dry" '
-            # group by hostname
+          # Live twin = any connected peer with same hostname (already
+          # cluster-bound or unbound). Dead = disconnected + cluster.
+          mapfile -t ACTIONS < <(jq -r '
             [ .[]
               | {
                   id: .metadata.id,
@@ -61,17 +70,16 @@ jobs:
               | select(.host != "")
             ]
             | group_by(.host)
-            | map({
-                host: .[0].host,
-                dead: ([.[] | select(.cluster == "stawi" and .connected == false)] | first),
-                live: ([.[] | select((.cluster == "" or .cluster == null) and .connected == true)] | first)
-              })
-            | map(select(.dead != null and .live != null))
             | .[]
-            | . as $a
-            | (if $a.dead.role == 1 then "stawi-control-planes" else "stawi-workers" end) as $mset
-            | (if $a.dead.role == 1 then "controlplane" else "worker" end) as $role
-            | "\($a.host)\t\($a.dead.id)\t\($a.live.id)\t\($mset)\t\($role)"
+            | . as $g
+            | ($g | map(select(.cluster == "stawi" and .connected == false))) as $dead
+            | ($g | map(select(.connected == true))) as $live
+            | select(($dead | length) > 0 and ($live | length) > 0)
+            | $dead[] as $d
+            | ($live | sort_by(.id) | .[0]) as $l
+            | (if $d.role == 1 then "stawi-control-planes" else "stawi-workers" end) as $mset
+            | (if $d.role == 1 then "controlplane" else "worker" end) as $role
+            | "\($d.host)\t\($d.id)\t\($l.id)\t\($mset)\t\($role)"
           ' "$tmp/ms.json")
 
           echo "dry_run=${dry} candidates=${#ACTIONS[@]}"
@@ -89,28 +97,50 @@ jobs:
           fi
 
           # MachineSets use automated MachineClass allocation — do NOT
-          # create MachineSetNodes by hand. Free slots by deleting dead
-          # MachineSetNodes, label live machines so selectors match.
+          # create MachineSetNodes by hand. Purge dead twin resources
+          # (with finalizer strip + timeouts) and label live twins.
+          kinds=(
+            clustermachineconfigstatuses
+            clustermachinestatuses
+            clustermachineconfigpatches
+            clustermachines
+            machinesetnodes
+            machinelabels
+            machinestatuses
+            machines
+            links
+          )
+
           for row in "${ACTIONS[@]}"; do
             IFS=$'\t' read -r host old new mset role <<<"$row"
+            echo "::group::purge dead $old ($host) / label live $new"
 
-            labels_json=$(jq -n --arg id "$new" --arg role "$role" '{
+            labels_json=$(jq -n --arg id "$new" --arg role "$role" --arg host "$host" '{
               metadata: {
                 namespace: "default",
                 type: "MachineLabels.omni.sidero.dev",
                 id: $id,
-                labels: { "node.stawi.org/role": $role }
+                labels: { "node.stawi.org/role": $role, "node.stawi.org/name": $host }
               },
               spec: {}
             }')
             printf '%s\n' "$labels_json" > "$tmp/labels-${new}.json"
             echo "apply labels ${new} role=${role} (${host})"
-            omnictl apply -f "$tmp/labels-${new}.json"
+            timeout 30 omnictl apply -f "$tmp/labels-${new}.json" || true
 
-            echo "delete machinesetnode ${old} (free slot on ${mset})"
-            omnictl delete machinesetnodes "$old" 2>/dev/null || true
-            # Best-effort: drop any stale cluster association on the dead id
-            omnictl delete machinelabels "$old" 2>/dev/null || true
+            for kind in "${kinds[@]}"; do
+              if timeout 20 omnictl get "$kind" "$old" -o yaml > "$tmp/r.yaml" 2>/dev/null; then
+                yq -i 'del(.metadata.finalizers) | del(.metadata.version) | del(.metadata.created) | del(.metadata.updated) | del(.metadata.phase) | del(.metadata.owner)' "$tmp/r.yaml" 2>/dev/null || true
+                timeout 20 omnictl apply -f "$tmp/r.yaml" >/dev/null 2>&1 || true
+                if timeout 30 omnictl delete "$kind" "$old" --force >/dev/null 2>&1 \
+                  || timeout 30 omnictl delete "$kind" "$old" >/dev/null 2>&1; then
+                  echo "  deleted $kind/$old"
+                else
+                  echo "  (delete $kind/$old skipped)"
+                fi
+              fi
+            done
+            echo "::endgroup::"
           done
           echo "rebind complete — waiting for MachineClass auto-allocation"
           sleep 15
@@ -120,3 +150,4 @@ jobs:
           omnictl get clustermachinestatus -o json 2>/dev/null \
             | jq -s '[.[] | {id:.metadata.id, ready:.spec.ready, stage:.spec.stage}] | .[0:15]' || true
           echo "::notice::Next: gh workflow run reconcile-omni-machine-ids.yml -f write=true -f confirm=RECONCILE to pin live UUIDs in inventory"
+          echo "::notice::If ghosts remain: gh workflow run omni-cleanup-dead-twins.yml -f dry_run=false -f confirm=CLEANUP"

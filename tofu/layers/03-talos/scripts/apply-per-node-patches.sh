@@ -45,7 +45,13 @@ command -v jq      >/dev/null || { echo "[apply-per-node-patches] jq not in PATH
 readonly R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-REPO_ROOT=$(cd "$SCRIPT_DIR/../../.." && pwd)
+# scripts/ lives four levels above this file (tofu/layers/03-talos/scripts → repo root).
+# Prefer git root when available so layout refactors don't silently break matching.
+if REPO_ROOT=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null); then
+  :
+else
+  REPO_ROOT=$(cd "$SCRIPT_DIR/../../../.." && pwd)
+fi
 MATCH_PY="$REPO_ROOT/scripts/lib/omni_machine_match.py"
 [[ -f "$MATCH_PY" ]] || { echo "[apply-per-node-patches] missing $MATCH_PY" >&2; exit 1; }
 command -v python3 >/dev/null || { echo "[apply-per-node-patches] python3 not in PATH" >&2; exit 1; }

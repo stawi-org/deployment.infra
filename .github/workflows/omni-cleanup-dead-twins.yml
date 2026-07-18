@@ -1,0 +1,192 @@
+# Detect and remove disconnected Omni machine twins that still claim
+# cluster membership while a live connected twin owns the same hostname.
+#
+# Sequence:
+#   1. Discover dead twins (disconnected + cluster=stawi + live twin)
+#   2. Strip finalizers on cluster/machine resources for dead UUIDs
+#   3. Delete Links + MachineStatuses for dead UUIDs
+#   4. Re-label live twins (role) so MachineClass can allocate
+#   5. Optionally pin live UUIDs into inventory (write_pins=true)
+#
+# Safe: never deletes a connected machine. Dry-run by default.
+name: omni-cleanup-dead-twins
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type CLEANUP to mutate Omni (required when dry_run=false)
+        type: string
+        required: false
+        default: ""
+      dry_run:
+        description: Plan only — list twins, do not delete
+        type: boolean
+        default: true
+      write_pins:
+        description: After cleanup, write omni_machine_id pins to R2
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: omni-cleanup-dead-twins
+  cancel-in-progress: false
+
+env:
+  OMNI_VERSION: v1.7.1
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+      DRY_RUN: ${{ inputs.dry_run }}
+      CONFIRM: ${{ inputs.confirm }}
+      WRITE_PINS: ${{ inputs.write_pins }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Guard write path
+        run: |
+          set -euo pipefail
+          if [[ "$DRY_RUN" != "true" && "$CONFIRM" != "CLEANUP" ]]; then
+            echo "::error::dry_run=false requires confirm=CLEANUP"
+            exit 1
+          fi
+
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          cat > /usr/local/bin/omnictl <<'WRAP'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /usr/local/bin/omnictl
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.44.6/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          pip install --quiet pyyaml
+
+      - name: Discover + clean dead twins
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+          omnictl get machinestatus -o json | jq -cs 'flatten' > "$tmp/ms.json"
+
+          # dead_id host live_id role_name
+          mapfile -t TWINS < <(jq -r '
+            [ .[]
+              | {
+                  id: .metadata.id,
+                  host: (.spec.network.hostname // ""),
+                  connected: (.spec.connected // false),
+                  cluster: (.spec.cluster // ""),
+                  role: (.spec.role // 0)
+                }
+              | select(.host != "")
+            ]
+            | group_by(.host)
+            | .[]
+            | . as $g
+            | ($g | map(select(.connected == false and .cluster == "stawi"))) as $dead
+            | ($g | map(select(.connected == true))) as $live
+            | select(($dead | length) > 0 and ($live | length) > 0)
+            | $dead[] as $d
+            | ($live | sort_by(.id) | .[0]) as $l
+            | (if $d.role == 1 then "controlplane" else "worker" end) as $role
+            | "\($d.id)\t\($d.host)\t\($l.id)\t\($role)"
+          ' "$tmp/ms.json")
+
+          echo "dry_run=${DRY_RUN} dead_twins=${#TWINS[@]}"
+          for row in "${TWINS[@]:-}"; do
+            IFS=$'\t' read -r dead host live role <<<"$row"
+            echo "  DEAD $dead ($host)  LIVE $live role=$role"
+          done
+          if [[ ${#TWINS[@]} -eq 0 ]]; then
+            echo "no dead twins found"
+            exit 0
+          fi
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "dry-run only; re-run with dry_run=false confirm=CLEANUP"
+            exit 0
+          fi
+
+          kinds=(
+            clustermachineconfigstatuses
+            clustermachinestatuses
+            clustermachineconfigpatches
+            clustermachines
+            machinesetnodes
+            machinelabels
+            machinestatuses
+            machines
+            links
+          )
+
+          for row in "${TWINS[@]}"; do
+            IFS=$'\t' read -r dead host live role <<<"$row"
+            echo "::group::purge dead twin $dead ($host)"
+            for kind in "${kinds[@]}"; do
+              if timeout 20 omnictl get "$kind" "$dead" -o yaml > "$tmp/r.yaml" 2>/dev/null; then
+                yq -i 'del(.metadata.finalizers)' "$tmp/r.yaml" 2>/dev/null || true
+                timeout 20 omnictl apply -f "$tmp/r.yaml" >/dev/null 2>&1 || true
+                timeout 30 omnictl delete "$kind" "$dead" >/dev/null 2>&1 \
+                  && echo "  deleted $kind/$dead" \
+                  || echo "  (delete $kind/$dead skipped)"
+              fi
+            done
+            # Ensure live twin keeps role label for MachineClass
+            labels_json=$(jq -n --arg id "$live" --arg role "$role" '{
+              metadata: {
+                namespace: "default",
+                type: "MachineLabels.omni.sidero.dev",
+                id: $id,
+                labels: { "node.stawi.org/role": $role, "node.stawi.org/name": $host }
+              },
+              spec: {}
+            }')
+            printf '%s\n' "$labels_json" > "$tmp/labels.json"
+            omnictl apply -f "$tmp/labels.json" \
+              && echo "  labeled live $live role=$role" \
+              || echo "  (label live failed)"
+            echo "::endgroup::"
+          done
+          echo "cleanup complete"
+
+      - name: Pin live UUIDs in inventory
+        if: env.DRY_RUN != 'true' && env.WRITE_PINS == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/inventory
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/" /tmp/inventory/ \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --region us-east-1 \
+            --exclude "*" --include "*/nodes.yaml"
+          omnictl get machinestatus -o json | jq -cs 'flatten' > /tmp/ms.json
+          python3 scripts/reconcile-omni-machine-ids.py \
+            --inventory-dir /tmp/inventory \
+            --machines-file /tmp/ms.json \
+            --write
+          aws s3 sync /tmp/inventory/ "s3://cluster-tofu-state/production/inventory/" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --region us-east-1 \
+            --exclude "*" --include "*/nodes.yaml"
+          echo "::notice::pinned omni_machine_id after twin cleanup"
+
+      - name: Cluster status snapshot
+        if: always()
+        run: |
+          set -euo pipefail
+          omnictl get clusterstatus stawi -o yaml 2>/dev/null | head -40 || true
+          omnictl get clustermachinestatus -o table 2>/dev/null | head -40 || true

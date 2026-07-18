@@ -55,17 +55,26 @@ python3 scripts/reconcile-omni-machine-ids.py \
 
 ## Twin / rebind recovery
 
-When free-tier resize or hangs produce a **disconnected cluster-bound
-UUID** and a **connected unbound twin** under the same hostname:
+When free-tier resize or soft-reset produce a **disconnected
+cluster-bound UUID** and a **connected twin** under the same hostname
+(ghost etcd members / stage-1 control planes):
 
 ```bash
-gh workflow run omni-rebind-disconnected-machines.yml -f confirm=REBIND -f dry_run=true
+# Preferred: discover + strip finalizers + delete dead twins + relabel + pin
+gh workflow run omni-cleanup-dead-twins.yml -f dry_run=true
+gh workflow run omni-cleanup-dead-twins.yml -f dry_run=false -f confirm=CLEANUP
+
+# Or: rebind (same purge + label path, no pin write)
 gh workflow run omni-rebind-disconnected-machines.yml -f confirm=REBIND -f dry_run=false
+
+# Pin live UUIDs into inventory (cleanup does this when write_pins=true)
 gh workflow run reconcile-omni-machine-ids.yml -f write=true -f confirm=RECONCILE
 ```
 
-Rebind labels live machines and frees dead MachineSetNode slots so
-MachineClass auto-allocation can pick them up. Then re-pin UUIDs.
+**Never** manually create MachineSetNodes on automated MachineSets —
+use role labels + MachineClass only. After purge, if control planes
+stay at stage 1, soft-reset live CP OCI instances (`oci-soft-reset-instances`)
+then re-check `cluster-health`.
 
 ## What operators should avoid
 

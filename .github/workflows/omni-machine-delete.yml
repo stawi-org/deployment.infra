@@ -37,34 +37,66 @@ jobs:
       OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
       MACHINE_IDS: ${{ inputs.machine_ids }}
     steps:
-      - name: Install omnictl
+      - name: Install omnictl + yq
         run: |
           set -euo pipefail
           curl -fsSL -o /tmp/omnictl \
             "https://github.com/siderolabs/omni/releases/download/$OMNI_VERSION/omnictl-linux-amd64"
           chmod +x /tmp/omnictl
           sudo install -m 0755 /tmp/omnictl /usr/local/bin/omnictl
+          # yq used to strip finalizers before delete (avoids hang)
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.44.6/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
           omnictl --version
 
       - name: Verify auth
-        run: omnictl get user --output json | head -20
+        run: timeout 30 omnictl get user --output json | head -20
 
       # We try deleting the underlying Link (the Machine resource is
       # derived from it; deleting Link is the canonical "forget this
       # node" path). MachineLabels and other operator-set attributes
       # are also cleared so the node re-registers as a clean slate.
+      # Per-op timeouts: without them omnictl can hang forever on
+      # finalizer-stuck Links after destroy/resize (seen 2026-07).
       - name: Delete Machines and friends
+        timeout-minutes: 15
         run: |
-          set -euo pipefail
+          set -uo pipefail
           IFS=',' read -ra IDS <<< "$MACHINE_IDS"
+          kinds=(
+            clustermachineconfigstatuses
+            clustermachinestatuses
+            clustermachineconfigpatches
+            clustermachines
+            machinesetnodes
+            machinelabels
+            machinestatuses
+            machines
+            links
+          )
           for id in "${IDS[@]}"; do
             id=$(echo "$id" | tr -d ' ')
             [[ -z "$id" ]] && continue
-            for kind in Links.omni.sidero.dev MachineLabels.omni.sidero.dev MachineStatuses.omni.sidero.dev; do
-              echo "::group::deleting $kind/$id"
-              omnictl delete "$kind" "$id" || echo "(delete failed or already absent)"
-              echo "::endgroup::"
+            echo "::group::deleting resources for $id"
+            for kind in "${kinds[@]}"; do
+              if timeout 20 omnictl get "$kind" "$id" -o yaml >/tmp/r.yaml 2>/dev/null; then
+                # Best-effort finalizer strip before delete
+                if command -v yq >/dev/null 2>&1; then
+                  yq -i 'del(.metadata.finalizers) | del(.metadata.version) | del(.metadata.created) | del(.metadata.updated) | del(.metadata.phase) | del(.metadata.owner)' /tmp/r.yaml 2>/dev/null || true
+                  timeout 20 omnictl apply -f /tmp/r.yaml >/dev/null 2>&1 || true
+                fi
+                if timeout 30 omnictl delete "$kind" "$id" --force >/dev/null 2>&1 \
+                  || timeout 30 omnictl delete "$kind" "$id" >/dev/null 2>&1; then
+                  echo "  deleted $kind/$id"
+                else
+                  echo "  (delete $kind/$id skipped/timed out)"
+                fi
+              else
+                echo "  $kind/$id not present"
+              fi
             done
+            echo "::endgroup::"
           done
 
       - name: Show remaining MachineStatus list
