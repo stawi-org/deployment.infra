@@ -1,9 +1,5 @@
 # Recovery: rebind live Omni machine UUIDs when cluster still references
-# disconnected UUIDs for the same hostname (common after hang/re-register).
-#
-# For each hostname with a disconnected cluster member AND a connected
-# unbound twin: delete old MachineSetNode, create MachineSetNode for the
-# live id on the same MachineSet, label role on the live machine.
+# disconnected UUIDs for the same hostname.
 name: omni-rebind-disconnected-machines
 on:
   workflow_dispatch:
@@ -32,7 +28,7 @@ jobs:
       OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
       DRY_RUN: ${{ inputs.dry_run }}
     steps:
-      - name: Install omnictl + jq + pyyaml
+      - name: Install omnictl + jq
         run: |
           set -euo pipefail
           curl -fsSL -o /usr/local/bin/omnictl.real \
@@ -43,108 +39,89 @@ jobs:
           exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
           WRAP
           chmod +x /usr/local/bin/omnictl
-          pip install --quiet pyyaml
 
       - name: Plan and rebind
         run: |
           set -euo pipefail
           tmp=$(mktemp -d)
           trap 'rm -rf "$tmp"' EXIT
+          omnictl get machinestatus -o json | jq -cs 'flatten' > "$tmp/ms.json"
 
-          omnictl get machinestatus -o json | jq -s 'flatten' > "$tmp/ms.json"
-          export MS_JSON="$tmp/ms.json"
-          export WORK_TMP="$tmp"
-          python3 - <<'PY'
-          import json, os, sys, subprocess
-          tmp = os.environ["WORK_TMP"]
-          dry = os.environ.get("DRY_RUN", "true").lower() in ("1", "true", "yes")
-          statuses = json.load(open(os.environ["MS_JSON"]))
-          by_host = {}
-          for s in statuses:
-              meta = s.get("metadata") or {}
-              spec = s.get("spec") or {}
-              host = ((spec.get("network") or {}).get("hostname") or "").strip()
-              if not host:
-                  continue
-              by_host.setdefault(host, []).append({
-                  "id": meta.get("id"),
-                  "connected": bool(spec.get("connected")),
-                  "cluster": (spec.get("cluster") or "").strip(),
-                  "role": spec.get("role"),
+          dry="${DRY_RUN:-true}"
+          mapfile -t ACTIONS < <(jq -r --arg dry "$dry" '
+            # group by hostname
+            [ .[]
+              | {
+                  id: .metadata.id,
+                  host: (.spec.network.hostname // ""),
+                  connected: (.spec.connected // false),
+                  cluster: (.spec.cluster // ""),
+                  role: (.spec.role // 0)
+                }
+              | select(.host != "")
+            ]
+            | group_by(.host)
+            | map({
+                host: .[0].host,
+                dead: ([.[] | select(.cluster == "stawi" and .connected == false)] | first),
+                live: ([.[] | select((.cluster == "" or .cluster == null) and .connected == true)] | first)
               })
+            | map(select(.dead != null and .live != null))
+            | .[]
+            | . as $a
+            | (if $a.dead.role == 1 then "stawi-control-planes" else "stawi-workers" end) as $mset
+            | (if $a.dead.role == 1 then "controlplane" else "worker" end) as $role
+            | "\($a.host)\t\($a.dead.id)\t\($a.live.id)\t\($mset)\t\($role)"
+          ' "$tmp/ms.json")
 
-          actions = []
-          for host, entries in sorted(by_host.items()):
-              dead = [e for e in entries if e["cluster"] == "stawi" and not e["connected"]]
-              live = [e for e in entries if e["connected"] and not e["cluster"]]
-              if not dead or not live:
-                  continue
-              d, l = dead[0], live[0]
-              # role: 1 controlplane, 2 worker (Omni enum)
-              if d["role"] == 1:
-                  mset, role_name = "stawi-control-planes", "controlplane"
-              else:
-                  mset, role_name = "stawi-workers", "worker"
-              actions.append({
-                  "host": host,
-                  "old_id": d["id"],
-                  "new_id": l["id"],
-                  "mset": mset,
-                  "role_name": role_name,
-              })
+          echo "dry_run=${dry} candidates=${#ACTIONS[@]}"
+          for row in "${ACTIONS[@]:-}"; do
+            IFS=$'\t' read -r host old new mset role <<<"$row"
+            echo "  ${host}: ${old} (${role}/dead) -> ${new} (live) on ${mset}"
+          done
+          if [[ ${#ACTIONS[@]} -eq 0 ]]; then
+            echo "nothing to rebind"
+            exit 0
+          fi
+          if [[ "$dry" == "true" ]]; then
+            echo "dry-run only; re-run with dry_run=false"
+            exit 0
+          fi
 
-          print(f"dry_run={dry} candidates={len(actions)}")
-          for a in actions:
-              print(
-                  f"  {a['host']}: {a['old_id']} ({a['role_name']}/dead)"
-                  f" -> {a['new_id']} (live) on {a['mset']}"
-              )
-          if not actions:
-              print("nothing to rebind")
-              sys.exit(0)
-          if dry:
-              print("dry-run only; re-run with dry_run=false")
-              sys.exit(0)
+          for row in "${ACTIONS[@]}"; do
+            IFS=$'\t' read -r host old new mset role <<<"$row"
 
-          for a in actions:
-              old, new, mset, role_name, host = (
-                  a["old_id"], a["new_id"], a["mset"], a["role_name"], a["host"]
-              )
-              # Label live machine for role (MachineLabels resource)
-              labels_path = f"{tmp}/labels-{new}.yaml"
-              with open(labels_path, "w") as f:
-                  f.write(
-                      "metadata:\n"
-                      "  namespace: default\n"
-                      "  type: MachineLabels.omni.sidero.dev\n"
-                      f"  id: {new}\n"
-                      "  labels:\n"
-                      f"    node.stawi.org/role: {role_name}\n"
-                  )
-              print(f"apply labels {new} role={role_name}")
-              subprocess.check_call(["omnictl", "apply", "-f", labels_path])
+            # MachineLabels as JSON (COSI-style metadata.labels + empty spec)
+            labels_json=$(jq -n --arg id "$new" --arg role "$role" '{
+              metadata: {
+                namespace: "default",
+                type: "MachineLabels.omni.sidero.dev",
+                id: $id,
+                labels: { "node.stawi.org/role": $role }
+              },
+              spec: {}
+            }')
+            printf '%s\n' "$labels_json" > "$tmp/labels-${new}.json"
+            echo "apply labels ${new} role=${role}"
+            omnictl apply -f "$tmp/labels-${new}.json"
 
-              print(f"delete machinesetnode {old}")
-              subprocess.call(
-                  ["omnictl", "delete", "machinesetnodes", old],
-                  stdout=subprocess.DEVNULL,
-                  stderr=subprocess.DEVNULL,
-              )
+            echo "delete machinesetnode ${old}"
+            omnictl delete machinesetnodes "$old" 2>/dev/null || true
 
-              msn_path = f"{tmp}/msn-{new}.yaml"
-              with open(msn_path, "w") as f:
-                  f.write(
-                      "metadata:\n"
-                      "  namespace: default\n"
-                      "  type: MachineSetNodes.omni.sidero.dev\n"
-                      f"  id: {new}\n"
-                      "  labels:\n"
-                      "    omni.sidero.dev/cluster: stawi\n"
-                      f"    omni.sidero.dev/machine-set: {mset}\n"
-                  )
-              print(f"apply machinesetnode {new} -> {mset} ({host})")
-              subprocess.check_call(["omnictl", "apply", "-f", msn_path])
-
-          print("rebind apply complete")
-          PY
-          "$tmp"
+            msn_json=$(jq -n --arg id "$new" --arg mset "$mset" '{
+              metadata: {
+                namespace: "default",
+                type: "MachineSetNodes.omni.sidero.dev",
+                id: $id,
+                labels: {
+                  "omni.sidero.dev/cluster": "stawi",
+                  "omni.sidero.dev/machine-set": $mset
+                }
+              },
+              spec: {}
+            }')
+            printf '%s\n' "$msn_json" > "$tmp/msn-${new}.json"
+            echo "apply machinesetnode ${new} -> ${mset} (${host})"
+            omnictl apply -f "$tmp/msn-${new}.json"
+          done
+          echo "rebind apply complete"
