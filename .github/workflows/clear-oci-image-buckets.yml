@@ -155,9 +155,12 @@ jobs:
           fi
 
       # Free custom-image-count + stop stale imports holding quota.
-      # Covers AVAILABLE and stuck PROVISIONING/DISABLED/EXPORTING states.
+      # Display names from sync-talos-images:
+      #   "Talos ${version} arm64 ${schematic} ${sha12}"
+      # Match case-insensitively on "Talos " (not "talos-v").
+      # Covers AVAILABLE + stuck PROVISIONING/DISABLED/EXPORTING.
       # Booted instances keep their boot volumes after image delete.
-      - name: Delete every custom image whose display_name starts with talos-v
+      - name: Delete every custom Talos image (all lifecycle states)
         run: |
           set -euo pipefail
           deleted=0
@@ -165,7 +168,7 @@ jobs:
             mapfile -t rows < <(oci --profile "${PROFILE}" compute image list \
               --compartment-id "${COMPARTMENT_OCID}" \
               --all --lifecycle-state "$state" \
-              --query 'data[?starts_with("display-name", `talos-v`)].["id","display-name","lifecycle-state"]' \
+              --query 'data[].["id","display-name","lifecycle-state"]' \
               --raw-output 2>/dev/null \
               | jq -r '.[]? | @tsv' 2>/dev/null || true)
             for row in "${rows[@]:-}"; do
@@ -173,7 +176,11 @@ jobs:
               ocid=$(cut -f1 <<<"$row")
               name=$(cut -f2 <<<"$row")
               st=$(cut -f3 <<<"$row")
-              [[ -z "$ocid" ]] && continue
+              [[ -z "$ocid" || -z "$name" ]] && continue
+              # Case-insensitive prefix match: "Talos " / "talos "
+              if ! [[ "${name,,}" == talos\ * ]]; then
+                continue
+              fi
               echo "  deleting image ${name} (${st}) ${ocid}"
               if oci --profile "${PROFILE}" compute image delete \
                     --image-id "$ocid" --force >/dev/null 2>&1; then
@@ -184,7 +191,7 @@ jobs:
             done
           done
           if (( deleted == 0 )); then
-            echo "::notice::no talos-* custom images to delete in ${COMPARTMENT_OCID}"
+            echo "::notice::no Talos custom images to delete in ${COMPARTMENT_OCID}"
           else
-            echo "::notice::deleted ${deleted} custom images in ${PROFILE}"
+            echo "::notice::deleted ${deleted} Talos custom images in ${PROFILE}"
           fi
