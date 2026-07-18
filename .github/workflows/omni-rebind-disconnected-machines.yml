@@ -1,0 +1,150 @@
+# Recovery: rebind live Omni machine UUIDs when cluster still references
+# disconnected UUIDs for the same hostname (common after hang/re-register).
+#
+# For each hostname with a disconnected cluster member AND a connected
+# unbound twin: delete old MachineSetNode, create MachineSetNode for the
+# live id on the same MachineSet, label role on the live machine.
+name: omni-rebind-disconnected-machines
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type REBIND to proceed
+        type: string
+        required: true
+      dry_run:
+        description: Plan only
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  OMNI_VERSION: v1.7.1
+
+jobs:
+  rebind:
+    if: inputs.confirm == 'REBIND'
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+      DRY_RUN: ${{ inputs.dry_run }}
+    steps:
+      - name: Install omnictl + jq + pyyaml
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          cat > /usr/local/bin/omnictl <<'WRAP'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /usr/local/bin/omnictl
+          pip install --quiet pyyaml
+
+      - name: Plan and rebind
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          trap 'rm -rf "$tmp"' EXIT
+
+          omnictl get machinestatus -o json | jq -s 'flatten' > "$tmp/ms.json"
+          export MS_JSON="$tmp/ms.json"
+          export WORK_TMP="$tmp"
+          python3 - <<'PY'
+          import json, os, sys, subprocess
+          tmp = os.environ["WORK_TMP"]
+          dry = os.environ.get("DRY_RUN", "true").lower() in ("1", "true", "yes")
+          statuses = json.load(open(os.environ["MS_JSON"]))
+          by_host = {}
+          for s in statuses:
+              meta = s.get("metadata") or {}
+              spec = s.get("spec") or {}
+              host = ((spec.get("network") or {}).get("hostname") or "").strip()
+              if not host:
+                  continue
+              by_host.setdefault(host, []).append({
+                  "id": meta.get("id"),
+                  "connected": bool(spec.get("connected")),
+                  "cluster": (spec.get("cluster") or "").strip(),
+                  "role": spec.get("role"),
+              })
+
+          actions = []
+          for host, entries in sorted(by_host.items()):
+              dead = [e for e in entries if e["cluster"] == "stawi" and not e["connected"]]
+              live = [e for e in entries if e["connected"] and not e["cluster"]]
+              if not dead or not live:
+                  continue
+              d, l = dead[0], live[0]
+              # role: 1 controlplane, 2 worker (Omni enum)
+              if d["role"] == 1:
+                  mset, role_name = "stawi-control-planes", "controlplane"
+              else:
+                  mset, role_name = "stawi-workers", "worker"
+              actions.append({
+                  "host": host,
+                  "old_id": d["id"],
+                  "new_id": l["id"],
+                  "mset": mset,
+                  "role_name": role_name,
+              })
+
+          print(f"dry_run={dry} candidates={len(actions)}")
+          for a in actions:
+              print(
+                  f"  {a['host']}: {a['old_id']} ({a['role_name']}/dead)"
+                  f" -> {a['new_id']} (live) on {a['mset']}"
+              )
+          if not actions:
+              print("nothing to rebind")
+              sys.exit(0)
+          if dry:
+              print("dry-run only; re-run with dry_run=false")
+              sys.exit(0)
+
+          for a in actions:
+              old, new, mset, role_name, host = (
+                  a["old_id"], a["new_id"], a["mset"], a["role_name"], a["host"]
+              )
+              # Label live machine for role (MachineLabels resource)
+              labels_path = f"{tmp}/labels-{new}.yaml"
+              with open(labels_path, "w") as f:
+                  f.write(
+                      "metadata:\n"
+                      "  namespace: default\n"
+                      "  type: MachineLabels.omni.sidero.dev\n"
+                      f"  id: {new}\n"
+                      "  labels:\n"
+                      f"    node.stawi.org/role: {role_name}\n"
+                  )
+              print(f"apply labels {new} role={role_name}")
+              subprocess.check_call(["omnictl", "apply", "-f", labels_path])
+
+              print(f"delete machinesetnode {old}")
+              subprocess.call(
+                  ["omnictl", "delete", "machinesetnodes", old],
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+              )
+
+              msn_path = f"{tmp}/msn-{new}.yaml"
+              with open(msn_path, "w") as f:
+                  f.write(
+                      "metadata:\n"
+                      "  namespace: default\n"
+                      "  type: MachineSetNodes.omni.sidero.dev\n"
+                      f"  id: {new}\n"
+                      "  labels:\n"
+                      "    omni.sidero.dev/cluster: stawi\n"
+                      f"    omni.sidero.dev/machine-set: {mset}\n"
+                  )
+              print(f"apply machinesetnode {new} -> {mset} ({host})")
+              subprocess.check_call(["omnictl", "apply", "-f", msn_path])
+
+          print("rebind apply complete")
+          PY
+          "$tmp"
