@@ -73,6 +73,10 @@ locals {
         if lv != ""
       }
       ipv4 = try(v.ipv4, null)
+      # Preferred Omni Machine UUID pin from inventory provider_data
+      # (written by scripts/reconcile-omni-machine-ids.py). Empty when
+      # unknown — matcher falls back to hostname/ipv4.
+      omni_machine_id = try(v.omni_machine_id, try(v.provider_data.omni_machine_id, ""))
     }
   }
 }
@@ -99,23 +103,25 @@ resource "null_resource" "omnictl_machine_label" {
   for_each = local.omni_machine_apply_per_node
 
   triggers = {
-    labels_sha  = sha256(jsonencode(each.value.labels))
-    ipv4        = try(each.value.ipv4, "")
-    script_sha  = filesha256(local.sync_machine_label_path)
-    endpoint    = var.omni_endpoint
-    cluster     = var.cluster_name
-    retry_token = var.label_sync_retry_token
+    labels_sha      = sha256(jsonencode(each.value.labels))
+    ipv4            = try(each.value.ipv4, "")
+    omni_machine_id = try(each.value.omni_machine_id, "")
+    script_sha      = filesha256(local.sync_machine_label_path)
+    endpoint        = var.omni_endpoint
+    cluster         = var.cluster_name
+    retry_token     = var.label_sync_retry_token
   }
 
   provisioner "local-exec" {
     interpreter = ["bash", "-c"]
     environment = {
-      OMNI_ENDPOINT     = var.omni_endpoint
-      OMNI_CLUSTER      = var.cluster_name
-      NODE_NAME         = each.key
-      NODE_LABELS_JSON  = jsonencode(each.value.labels)
-      NODE_IPV4         = try(each.value.ipv4, "")
-      SYNC_LABEL_SCRIPT = local.sync_machine_label_path
+      OMNI_ENDPOINT        = var.omni_endpoint
+      OMNI_CLUSTER         = var.cluster_name
+      NODE_NAME            = each.key
+      NODE_LABELS_JSON     = jsonencode(each.value.labels)
+      NODE_IPV4            = try(each.value.ipv4, "")
+      NODE_OMNI_MACHINE_ID = try(each.value.omni_machine_id, "")
+      SYNC_LABEL_SCRIPT    = local.sync_machine_label_path
     }
     command = <<-EOT
       set -euo pipefail

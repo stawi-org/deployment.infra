@@ -1,0 +1,110 @@
+# Persist Omni Machine UUIDs into R2 inventory provider_data.omni_machine_id.
+#
+# Run after nodes register (or after twin rebind recovery) so label/patch
+# matchers can prefer a stable UUID pin over hostname. Safe, idempotent.
+#
+# Does not mutate Omni — inventory write only.
+name: reconcile-omni-machine-ids
+on:
+  workflow_dispatch:
+    inputs:
+      write:
+        description: Write provider_data.omni_machine_id updates to R2
+        type: boolean
+        default: false
+      confirm:
+        description: Type RECONCILE when write=true
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reconcile-omni-machine-ids
+  cancel-in-progress: false
+
+env:
+  OMNI_VERSION: v1.7.1
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+      WRITE: ${{ inputs.write }}
+      CONFIRM: ${{ inputs.confirm }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Confirm write
+        if: env.WRITE == 'true'
+        run: |
+          set -euo pipefail
+          if [[ "$CONFIRM" != "RECONCILE" ]]; then
+            echo "::error::write=true requires confirm=RECONCILE"
+            exit 1
+          fi
+
+      - name: Install omnictl + deps
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          cat > /usr/local/bin/omnictl <<'WRAP'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /usr/local/bin/omnictl
+          pip install --quiet pyyaml
+
+      - name: Sync inventory + dump Omni machines
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/inventory
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/" /tmp/inventory/ \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --region us-east-1 \
+            --exclude "*" --include "*/nodes.yaml"
+          omnictl get machinestatus -o json | jq -cs 'flatten' > /tmp/ms.json
+          echo "machines=$(jq 'length' /tmp/ms.json) inventory_accounts=$(find /tmp/inventory -name nodes.yaml | wc -l)"
+
+      - name: Reconcile omni_machine_id pins
+        run: |
+          set -euo pipefail
+          args=(
+            --inventory-dir /tmp/inventory
+            --machines-file /tmp/ms.json
+          )
+          if [[ "$WRITE" == "true" ]]; then
+            args+=(--write)
+          fi
+          set +e
+          python3 scripts/reconcile-omni-machine-ids.py "${args[@]}"
+          rc=$?
+          set -e
+          if [[ $rc -eq 2 ]]; then
+            exit 2
+          fi
+          # dry-run needing changes is a successful job with notice
+          if [[ "$WRITE" != "true" && $rc -eq 1 ]]; then
+            echo "::notice::dry-run found pins to update; re-run with write=true confirm=RECONCILE"
+          fi
+          exit 0
+
+      - name: Upload inventory to R2
+        if: env.WRITE == 'true'
+        run: |
+          set -euo pipefail
+          aws s3 sync /tmp/inventory/ "s3://cluster-tofu-state/production/inventory/" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --region us-east-1 \
+            --exclude "*" --include "*/nodes.yaml"
+          echo "::notice::wrote omni_machine_id pins to R2 inventory"

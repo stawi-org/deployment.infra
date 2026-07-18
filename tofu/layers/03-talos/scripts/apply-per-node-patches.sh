@@ -8,17 +8,16 @@
 # applies via omnictl. Idempotent — re-running with no change is a
 # no-op apply per Omni's resource semantics.
 #
-# Sibling to sync-machine-label.sh; reuses the same hostname-then-
-# ipv4 matching logic to map node names to Omni machine IDs.
+# Sibling to sync-machine-label.sh; uses the shared omni_machine_match
+# library (preferred Omni UUID → hostname prefer-connected → ipv4).
 #
 # Inputs:
 #   $1                            R2 prefix to read patches from
 #                                  (e.g. production/per-node-patches/v1.13.0).
 #   $NODES_JSON                    Path to JSON file mapping node-name →
-#                                    { "ipv4": "1.2.3.4" | null }, written
-#                                    by tofu (same shape as sync-machine-
-#                                    labels.sh's NODE_LABELS_JSON.ipv4 sub-
-#                                    field).
+#                                    { "ipv4": "...", "omni_machine_id": "..." }.
+#                                    omni_machine_id is optional preferred pin
+#                                    from inventory provider_data.
 #   $OMNI_CLUSTER                  Cluster name (logging only).
 #   $OMNI_ENDPOINT                 omnictl reads from env.
 #   $OMNI_SERVICE_ACCOUNT_KEY      omnictl reads from env.
@@ -44,6 +43,12 @@ command -v jq      >/dev/null || { echo "[apply-per-node-patches] jq not in PATH
 [[ -n "${R2_ACCOUNT_ID:-}" ]]            || { echo "[apply-per-node-patches] R2_ACCOUNT_ID unset" >&2; exit 1; }
 
 readonly R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd "$SCRIPT_DIR/../../.." && pwd)
+MATCH_PY="$REPO_ROOT/scripts/lib/omni_machine_match.py"
+[[ -f "$MATCH_PY" ]] || { echo "[apply-per-node-patches] missing $MATCH_PY" >&2; exit 1; }
+command -v python3 >/dev/null || { echo "[apply-per-node-patches] python3 not in PATH" >&2; exit 1; }
 
 # Stage R2 patches into a workspace tempdir.
 workdir=$(mktemp -d)
@@ -89,9 +94,14 @@ applied=0
 skipped=0
 errored=0
 
+ms_file=$(mktemp -t omni-ms-XXXXXX.json)
+printf '%s' "$machines_arr" >"$ms_file"
+trap 'rm -rf "$workdir" "$ms_file"' EXIT
+
 while IFS= read -r entry; do
   node_name=$(jq -r '.key' <<<"$entry")
   ipv4=$(jq -r '.value.ipv4 // ""' <<<"$entry")
+  preferred=$(jq -r '.value.omni_machine_id // ""' <<<"$entry")
 
   patch_file="$workdir/${node_name}.yaml"
   if [[ ! -s "$patch_file" ]]; then
@@ -100,23 +110,22 @@ while IFS= read -r entry; do
     continue
   fi
 
-  # Match by hostname first, then by any-address-matches-ipv4.
-  # Identical logic to sync-machine-label.sh.
-  machine_id=$(jq -r --arg n "$node_name" --arg ip "$ipv4" '
-    (.[] | select((.spec.network.hostname // "") == $n) | .metadata.id),
-    (.[] | select(
-       ($ip != "") and (
-         any(.spec.network.addresses // [] | .[];
-             (split("/")[0]) == $ip)
-       )
-     ) | .metadata.id)
-  ' <<<"$machines_arr" | head -n1)
+  # Shared match: preferred Omni UUID → hostname (connected preferred) → ipv4.
+  match_line=$(python3 "$MATCH_PY" \
+    --machines-file "$ms_file" \
+    --preferred-id "$preferred" \
+    --hostname "$node_name" \
+    --ipv4 "$ipv4" \
+    --print-reason || true)
+  machine_id="${match_line%%$'\t'*}"
+  match_reason="${match_line#*$'\t'}"
 
   if [[ -z "$machine_id" ]]; then
-    echo "[apply-per-node-patches] WARN $node_name (ipv4=$ipv4): no matching Omni machine — skipping"
+    echo "[apply-per-node-patches] WARN $node_name (ipv4=$ipv4 preferred=${preferred:-none}): no matching Omni machine — skipping"
     skipped=$((skipped + 1))
     continue
   fi
+  echo "[apply-per-node-patches] $node_name: matched id=$machine_id reason=$match_reason"
 
   # Wrap the entire (possibly multi-doc) rendered YAML in a SINGLE
   # ConfigPatch envelope. Omni delegates the multi-doc parsing to

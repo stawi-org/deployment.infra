@@ -111,11 +111,27 @@ locals {
   # renderer from failing the precondition. The 01-contabo-infra
   # layer's nodes-writer.tf is what writes provider_data on every
   # apply, so steady-state both sources agree.
-  contabo_inventory_provider_data = merge([
-    for acct in yamldecode(file("${path.module}/../../shared/accounts.yaml")).contabo : try(
+  # R2 inventory provider_data per node (all providers). Used as a
+  # FALLBACK under tfstate outputs so:
+  #   - pre-schema tfstate still renders patches
+  #   - omni_machine_id pins written by reconcile-omni-machine-ids
+  #     are visible to layer-03 label/patch matching without waiting
+  #     for the next infra-layer apply
+  _inventory_account_pairs = flatten([
+    for provider, accts in {
+      contabo = try(yamldecode(file("${path.module}/../../shared/accounts.yaml")).contabo, [])
+      oracle  = try(yamldecode(file("${path.module}/../../shared/accounts.yaml")).oracle, [])
+      onprem  = try(yamldecode(file("${path.module}/../../shared/accounts.yaml")).onprem, [])
+      } : [
+      for acct in accts : { provider = provider, account = acct }
+    ]
+  ])
+
+  inventory_provider_data = merge([
+    for pair in local._inventory_account_pairs : try(
       {
         for node_name, node_decl in try(
-          yamldecode(file("${var.local_inventory_dir}/contabo/${acct}/nodes.yaml")).nodes,
+          yamldecode(file("${var.local_inventory_dir}/${pair.provider}/${pair.account}/nodes.yaml")).nodes,
           {},
         ) : node_name => try(node_decl.provider_data, {})
       },
@@ -128,15 +144,24 @@ locals {
   # output already contains provider, role, ipv4, ipv6, image_apply_generation
   # and derived labels/annotations with the cross-layer contract shape.
   # Per-node, fall back to R2 inventory provider_data so a stale
-  # tfstate doesn't break the per-node-patch render.
+  # tfstate doesn't break the per-node-patch render, and so
+  # omni_machine_id pins surface into matching.
   _raw_nodes = {
     for k, v in merge(
       local.contabo_outputs_nodes,
       local.oracle_outputs_nodes,
       local.onprem_outputs_nodes,
       ) : k => merge(
-      try(local.contabo_inventory_provider_data[k], {}),
+      try(local.inventory_provider_data[k], {}),
       v,
+      # Explicit top-level pin for scripts that read omni_machine_id
+      # without digging into provider_data.
+      {
+        omni_machine_id = try(
+          v.omni_machine_id,
+          try(local.inventory_provider_data[k].omni_machine_id, ""),
+        )
+      },
     )
   }
 

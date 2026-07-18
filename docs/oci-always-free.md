@@ -87,3 +87,6 @@ import fails. Raise to ≥2 in the Console (home region), then
 - **OCPU / memory**: in-place via `shape_config` (no disk wipe).
 - **Boot size**: `source_details` ignore_changes — declared boot applies on
   create/reinstall only.
+- **Omni identity**: prefer identity pins — see [omni-machine-identity.md](omni-machine-identity.md).
+  After resize recovery, run `reconcile-omni-machine-ids` so inventory keeps
+  the live Omni UUID.

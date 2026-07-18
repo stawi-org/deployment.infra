@@ -520,15 +520,10 @@ jobs:
           set -euo pipefail
           ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
-          # Build NODES_JSON ({name: {ipv4}}) directly from the R2
-          # inventory's per-account nodes.yaml files — the operator-
-          # managed source of truth. This decouples the sync from
-          # layer-03's tfstate-internal resource shape, which was
-          # `local_sensitive_file.node_labels_json` pre-#254 and became
-          # `null_resource.omnictl_machine_label` after the refactor;
-          # the workflow's old jq path silently matched no resources
-          # post-refactor, so apply skipped on every run while still
-          # passing green.
+          # Build NODES_JSON ({name: {ipv4, omni_machine_id}}) from R2
+          # inventory. omni_machine_id is the preferred Omni UUID pin
+          # (scripts/reconcile-omni-machine-ids.py); matchers fall back
+          # to hostname/ipv4 when unset.
           nodes_json=$(mktemp -p "${RUNNER_TEMP:-/tmp}" nodes-XXXXXX.json)
           inv_dir=$(mktemp -d)
           trap 'rm -rf "$nodes_json" "$inv_dir"' EXIT
@@ -544,8 +539,12 @@ jobs:
           for f in sorted(glob.glob(f"{inv_root}/*/*/nodes.yaml")):
               data = yaml.safe_load(open(f)) or {}
               for name, node in (data.get("nodes") or {}).items():
-                  ipv4 = (node.get("provider_data") or {}).get("ipv4") or node.get("ipv4")
-                  result[name] = {"ipv4": ipv4 or ""}
+                  pd = node.get("provider_data") or {}
+                  ipv4 = pd.get("ipv4") or node.get("ipv4")
+                  result[name] = {
+                      "ipv4": ipv4 or "",
+                      "omni_machine_id": pd.get("omni_machine_id") or "",
+                  }
           open(out, "w").write(json.dumps(result))
           print(f"[apply-per-node-patches] built NODES_JSON with {len(result)} node(s) from R2 inventory", file=sys.stderr)
           PY

@@ -16,6 +16,11 @@
 #                          match against Omni's spec.network.addresses
 #                          when hostname doesn't match (Contabo case).
 #                          Empty string is OK; IPv4 match is skipped.
+#   NODE_OMNI_MACHINE_ID   Optional preferred Omni Machine UUID from
+#                          inventory provider_data.omni_machine_id. When
+#                          set and still present in Omni (and connected,
+#                          or no connected hostname twin), matching uses
+#                          this id first — avoids twin-UUID thrash.
 #   OMNI_ENDPOINT          omnictl reads this.
 #   OMNI_SERVICE_ACCOUNT_KEY omnictl reads this.
 #   OMNI_CLUSTER           Cluster name (used in log lines).
@@ -31,6 +36,9 @@
 #   - omnictl apply non-zero → log ERROR, exit non-zero (so tofu
 #     marks this one instance's creation failed, and the next apply
 #     retries this one instance only).
+#
+# Machine match priority (scripts/lib/omni_machine_match.py):
+#   preferred_id → hostname (prefer connected) → ipv4 (prefer connected)
 
 set -euo pipefail
 
@@ -39,10 +47,18 @@ set -euo pipefail
 [[ -n "${OMNI_SERVICE_ACCOUNT_KEY:-}" ]] || { echo "[sync-machine-label] OMNI_SERVICE_ACCOUNT_KEY unset" >&2; exit 1; }
 command -v omnictl >/dev/null || { echo "[sync-machine-label] omnictl not in PATH" >&2; exit 1; }
 command -v jq      >/dev/null || { echo "[sync-machine-label] jq not in PATH"      >&2; exit 1; }
+command -v python3 >/dev/null || { echo "[sync-machine-label] python3 not in PATH" >&2; exit 1; }
 
 readonly NODE_IPV4_VAL="${NODE_IPV4:-}"
+readonly NODE_OMNI_MACHINE_ID_VAL="${NODE_OMNI_MACHINE_ID:-}"
 readonly REGISTRATION_TIMEOUT_SECS="${REGISTRATION_TIMEOUT_SECS:-900}"
 readonly REGISTRATION_POLL_SECS="${REGISTRATION_POLL_SECS:-15}"
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# tofu/layers/03-talos/scripts → repo root
+REPO_ROOT=$(cd "$SCRIPT_DIR/../../.." && pwd)
+MATCH_PY="$REPO_ROOT/scripts/lib/omni_machine_match.py"
+[[ -f "$MATCH_PY" ]] || { echo "[sync-machine-label] missing $MATCH_PY" >&2; exit 1; }
 
 # Validate the labels JSON parses, and short-circuit on empty.
 if ! jq -e . >/dev/null 2>&1 <<<"$NODE_LABELS_JSON"; then
@@ -56,8 +72,6 @@ if [[ "$label_count" == "0" ]]; then
 fi
 
 # Fetch one snapshot of Omni machine inventory. NDJSON → array.
-# Hardened against transient non-JSON output from omnictl (same shape
-# as the prior bulk script).
 fetch_machines() {
   local result
   result=$(omnictl get machinestatus --output json 2>/dev/null | jq -cs 'flatten' 2>/dev/null) || result=''
@@ -67,35 +81,36 @@ fetch_machines() {
   printf '%s' "$result"
 }
 
-# Match this one node to a machine ID. Hostname is the primary key
-# (Omni picks up the platform hostname for OCI); IPv4 fallback covers
-# Contabo where the platform hostname is the system UUID.
-machine_id_for() {
+match_machine_id() {
   local machines_json="$1"
-  jq -r --arg n "$NODE_NAME" --arg ip "$NODE_IPV4_VAL" '
-    [
-      (.[] | select((.spec.network.hostname // "") == $n) | .metadata.id),
-      (.[] | select(
-        ($ip != "") and (
-          any(.spec.network.addresses // [] | .[]; (split("/")[0]) == $ip)
-        )
-      ) | .metadata.id)
-    ] | .[0] // ""
-  ' <<<"$machines_json"
+  local ms_file
+  ms_file=$(mktemp -t omni-ms-XXXXXX.json)
+  printf '%s' "$machines_json" >"$ms_file"
+  python3 "$MATCH_PY" \
+    --machines-file "$ms_file" \
+    --preferred-id "$NODE_OMNI_MACHINE_ID_VAL" \
+    --hostname "$NODE_NAME" \
+    --ipv4 "$NODE_IPV4_VAL" \
+    --print-reason
+  rm -f "$ms_file"
 }
 
 deadline=$(( $(date +%s) + REGISTRATION_TIMEOUT_SECS ))
 machine_id=""
+match_reason=""
 
 while :; do
   machines_arr=$(fetch_machines)
-  machine_id=$(machine_id_for "$machines_arr")
+  # match prints "id\treason" or "\treason"
+  match_line=$(match_machine_id "$machines_arr" || true)
+  machine_id="${match_line%%$'\t'*}"
+  match_reason="${match_line#*$'\t'}"
   if [[ -n "$machine_id" ]]; then
-    echo "[sync-machine-label] $NODE_NAME: matched machine id=$machine_id"
+    echo "[sync-machine-label] $NODE_NAME: matched machine id=$machine_id reason=$match_reason"
     break
   fi
   if (( $(date +%s) >= deadline )); then
-    echo "[sync-machine-label] WARN $NODE_NAME (ipv4=$NODE_IPV4_VAL): registration wait timed out after ${REGISTRATION_TIMEOUT_SECS}s — skipping"
+    echo "[sync-machine-label] WARN $NODE_NAME (ipv4=$NODE_IPV4_VAL preferred=${NODE_OMNI_MACHINE_ID_VAL:-none}): registration wait timed out after ${REGISTRATION_TIMEOUT_SECS}s — skipping"
     exit 0
   fi
   echo "[sync-machine-label] $NODE_NAME: not yet registered, polling again in ${REGISTRATION_POLL_SECS}s"

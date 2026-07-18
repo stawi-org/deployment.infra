@@ -119,3 +119,4 @@ jobs:
           echo "=== clustermachinestatus (sample) ==="
           omnictl get clustermachinestatus -o json 2>/dev/null \
             | jq -s '[.[] | {id:.metadata.id, ready:.spec.ready, stage:.spec.stage}] | .[0:15]' || true
+          echo "::notice::Next: gh workflow run reconcile-omni-machine-ids.yml -f write=true -f confirm=RECONCILE to pin live UUIDs in inventory"

@@ -22,10 +22,13 @@ module "onprem_nodes_writer" {
         node_key => merge(
           node,
           {
-            provider_data = {
-              status        = "declared"
-              discovered_at = timestamp()
-            }
+            provider_data = merge(
+              try(node.provider_data, {}),
+              {
+                status        = "declared"
+                discovered_at = timestamp()
+              },
+            )
           },
         )
       }

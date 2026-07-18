@@ -28,6 +28,8 @@ run during account onboarding.
 |---|---|
 | `lib/inventory_yaml.py` | R2 inventory YAML helpers (`seed-inventory`, bootstrap) |
 | `lib/oci_free_tier.py` | Continuous free packs (solo 2/12, two 1/6) + boot ≤196 |
+| `lib/omni_machine_match.py` | Omni UUID match: preferred pin → hostname → ipv4 |
+| `reconcile-omni-machine-ids.py` | Persist `provider_data.omni_machine_id` into inventory |
 | `validate-oci-free-tier.py` | CI/preflight inventory check |
 | `reconcile-oci-free-tier-inventory.py` | Rewrite inventory to continuous free packs |
 | `audit-oci-live-free-tier.sh` | Live OCI API free-tier audit (one tenancy) |

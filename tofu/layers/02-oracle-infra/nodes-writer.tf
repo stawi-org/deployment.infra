@@ -21,18 +21,23 @@ module "oracle_nodes_writer" {
         node_key => merge(
           try(module.oracle_account_state[each.key].nodes.nodes[node_key], {}),
           {
-            provider_data = {
-              oci_instance_ocid      = node.id
-              shape                  = node.shape
-              ocpus                  = node.ocpus
-              memory_gb              = node.memory_gb
-              region                 = node.region
-              ipv4                   = node.ipv4
-              ipv6                   = node.ipv6
-              image_apply_generation = try(module.oracle_account[each.key].nodes[node_key].image_apply_generation, node.id)
-              status                 = "running"
-              discovered_at          = timestamp()
-            }
+            # Merge so out-of-band pins (omni_machine_id from
+            # reconcile-omni-machine-ids) survive tofu rewrites.
+            provider_data = merge(
+              try(module.oracle_account_state[each.key].nodes.nodes[node_key].provider_data, {}),
+              {
+                oci_instance_ocid      = node.id
+                shape                  = node.shape
+                ocpus                  = node.ocpus
+                memory_gb              = node.memory_gb
+                region                 = node.region
+                ipv4                   = node.ipv4
+                ipv6                   = node.ipv6
+                image_apply_generation = try(module.oracle_account[each.key].nodes[node_key].image_apply_generation, node.id)
+                status                 = "running"
+                discovered_at          = timestamp()
+              },
+            )
           },
         )
       }, {})
