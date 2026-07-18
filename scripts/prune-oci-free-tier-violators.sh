@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# Terminate live OCI instances that push a tenancy over Always Free A1 caps.
+# Terminate live OCI instances that violate fleet policy hard limits.
+#
+# Fleet allows intentional paid A1 hours (workers 4/24, CP 2/12). This
+# script no longer kills VMs merely for exceeding continuous free 2/12.
 #
 # Strategy:
-#   1. Prefer keeping instances whose (ocpus, memory) fit a free-tier pack
-#      matching inventory node count when INVENTORY_NODES is set.
-#   2. Otherwise keep the smallest free-tier-legal set (≤2 nodes, ≤2 OCPU, ≤12 GB).
-#   3. Terminate the rest with preserve-boot-volume=false.
-#   4. Optionally delete orphan empty VCNs (DELETE_ORPHAN_VCNS=true).
+#   1. Keep A1 instances within fleet ceilings (≤4 OCPU / ≤24 GB each)
+#      and at most MAX_NODES=2 per tenancy (prefer smaller+newer keepers).
+#   2. Terminate non-A1 shapes, surplus nodes beyond 2, and nodes above
+#      fleet ceilings with preserve-boot-volume=false.
+#   3. Optionally delete orphan empty VCNs (DELETE_ORPHAN_VCNS=true).
 #
 # Env:
 #   PROFILE, COMPARTMENT_OCID (required)
@@ -19,11 +22,13 @@ COMPARTMENT_OCID="${COMPARTMENT_OCID:?}"
 DRY_RUN="${DRY_RUN:-true}"
 DELETE_ORPHAN_VCNS="${DELETE_ORPHAN_VCNS:-false}"
 OCI=(oci --profile "$PROFILE")
-MAX_OCPU=2
-MAX_MEM=12
+# Per-instance fleet ceilings (worker max). Continuous free 2/12 is NOT
+# a prune criterion — inventory targets 4/24 workers intentionally.
+MAX_OCPU_PER_NODE=4
+MAX_MEM_PER_NODE=24
 MAX_NODES=2
 
-echo "======== prune free-tier violators profile=${PROFILE} dry_run=${DRY_RUN} ========"
+echo "======== prune fleet violators profile=${PROFILE} dry_run=${DRY_RUN} ========"
 
 inst_json=$("${OCI[@]}" compute instance list --compartment-id "$COMPARTMENT_OCID" --all)
 # id name state shape ocpus mem created
@@ -69,7 +74,8 @@ for row in "${SORTED[@]:-}"; do
   new_count=$((keep_count + 1))
   new_ocpu=$(python3 -c "print($keep_ocpu + float('$ocpus'))")
   new_mem=$(python3 -c "print($keep_mem + float('$mem'))")
-  fits=$(python3 -c "print(1 if $new_count <= $MAX_NODES and float('$new_ocpu') <= $MAX_OCPU and float('$new_mem') <= $MAX_MEM else 0)")
+  # Keep if under node count and this instance itself is within fleet ceilings.
+  fits=$(python3 -c "print(1 if $new_count <= $MAX_NODES and float('$ocpus') <= $MAX_OCPU_PER_NODE and float('$mem') <= $MAX_MEM_PER_NODE else 0)")
   if [[ "$fits" == "1" ]]; then
     keep_ids+=("$id")
     keep_count=$new_count

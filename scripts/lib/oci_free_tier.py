@@ -1,12 +1,21 @@
-"""OCI Always Free inventory validation and reconciliation helpers.
+"""OCI fleet sizing + Always Free block-volume guardrails.
 
-Caps match Oracle docs as of 2026-06-15:
+Fleet compute policy (intentional; may use monthly free OCPU-hours then PAYG):
+  - worker:       4 OCPU + 24 GB memory
+  - controlplane: 2 OCPU + 12 GB memory
+  - shape:        VM.Standard.A1.Flex only
+  - ≤2 A1 instances per tenancy
+
+Always Free block volume (hard — never exceed free envelope):
+  - Oracle cap: 200 GB total boot+data per tenancy
+  - Operational buffer: 4 GB reserved so provisioning never hits the ceiling
+  - Usable boot total: 196 GB (split evenly across nodes)
+
+Continuous free A1 compute (2 OCPU / 12 GB) is documented for operators but is
+not the fleet target — workers at 4/24 intentionally sit above continuous free.
+
+Oracle docs (2026-06-15):
   https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm
-
-  - Ampere A1: 2 OCPU + 12 GB memory continuous per tenancy
-  - ≤2 A1 instances
-  - Block volume: 200 GB total (boot + data)
-  - Shape: VM.Standard.A1.Flex only
 """
 
 from __future__ import annotations
@@ -15,13 +24,30 @@ from dataclasses import dataclass, field
 from typing import Any
 
 A1_SHAPE = "VM.Standard.A1.Flex"
-MAX_OCPU = 2
-MAX_MEMORY_GB = 12
-MAX_BOOT_GB = 200
 MAX_NODES = 2
-DEFAULT_BOOT_GB = 100
+
+# Role-based fleet targets
+WORKER_OCPU = 4
+WORKER_MEMORY_GB = 24
+CONTROLPLANE_OCPU = 2
+CONTROLPLANE_MEMORY_GB = 12
+
+# Always Free block volume
+MAX_BOOT_HARD_GB = 200
+BOOT_BUFFER_GB = 4
+MAX_BOOT_USABLE_GB = MAX_BOOT_HARD_GB - BOOT_BUFFER_GB  # 196
 MIN_BOOT_GB = 50
+
+# Continuous free A1 (reporting / optional strict free mode only)
+CONTINUOUS_FREE_OCPU = 2
+CONTINUOUS_FREE_MEMORY_GB = 12
 MIN_MEMORY_PER_NODE = 6
+
+# Backward-compat aliases used by older callers/tests
+MAX_OCPU = WORKER_OCPU  # per-tenancy fleet max when single full worker
+MAX_MEMORY_GB = WORKER_MEMORY_GB
+MAX_BOOT_GB = MAX_BOOT_USABLE_GB
+DEFAULT_BOOT_GB = MAX_BOOT_USABLE_GB
 
 
 @dataclass
@@ -45,15 +71,43 @@ class AccountReport:
         return not self.violations
 
 
-def _boot_for_node(node: dict[str, Any]) -> int:
+def _boot_for_node(node: dict[str, Any], node_count: int = 1) -> int:
     raw = node.get("boot_volume_size_gb")
     if raw is None:
-        return DEFAULT_BOOT_GB
+        return _boot_split(node_count)[0] if node_count else DEFAULT_BOOT_GB
     return int(raw)
 
 
+def _role_of(node: dict[str, Any]) -> str:
+    role = str(node.get("role") or "worker").strip().lower()
+    if role in ("controlplane", "control-plane", "cp"):
+        return "controlplane"
+    return "worker"
+
+
+def _target_for_role(role: str) -> dict[str, int]:
+    if role == "controlplane":
+        return {"ocpus": CONTROLPLANE_OCPU, "memory_gb": CONTROLPLANE_MEMORY_GB}
+    return {"ocpus": WORKER_OCPU, "memory_gb": WORKER_MEMORY_GB}
+
+
+def _boot_split(node_count: int) -> list[int]:
+    """Even split of usable boot budget; remainder GB goes to the first nodes."""
+    if node_count <= 0:
+        return []
+    base = MAX_BOOT_USABLE_GB // node_count
+    rem = MAX_BOOT_USABLE_GB % node_count
+    # Floor per node must still meet Talos QCOW2 minimum.
+    if base < MIN_BOOT_GB:
+        raise ValueError(
+            f"cannot split {MAX_BOOT_USABLE_GB} GB usable boot across "
+            f"{node_count} nodes while keeping each ≥ {MIN_BOOT_GB}"
+        )
+    return [base + (1 if i < rem else 0) for i in range(node_count)]
+
+
 def validate_account(account: str, nodes: dict[str, Any] | None) -> AccountReport:
-    """Validate one tenancy's nodes map from R2 nodes.yaml."""
+    """Validate one tenancy's nodes map from R2 nodes.yaml against fleet policy."""
     report = AccountReport(account=account)
     nodes = nodes or {}
     report.node_count = len(nodes)
@@ -63,7 +117,7 @@ def validate_account(account: str, nodes: dict[str, Any] | None) -> AccountRepor
             Violation(
                 account,
                 "node_count",
-                f"{report.node_count} nodes exceeds Always Free max of {MAX_NODES}",
+                f"{report.node_count} nodes exceeds max of {MAX_NODES}",
             )
         )
 
@@ -79,12 +133,14 @@ def validate_account(account: str, nodes: dict[str, Any] | None) -> AccountRepor
                 Violation(
                     account,
                     "shape",
-                    f"{name}: shape {shape!r} is not Always Free A1 ({A1_SHAPE})",
+                    f"{name}: shape {shape!r} is not A1 ({A1_SHAPE})",
                 )
             )
+        role = _role_of(node)
+        target = _target_for_role(role)
         ocpus = int(node.get("ocpus") or 0)
         mem = int(node.get("memory_gb") or 0)
-        boot = _boot_for_node(node)
+        boot = _boot_for_node(node, report.node_count or 1)
         report.ocpus += ocpus
         report.memory_gb += mem
         report.boot_gb += boot
@@ -100,37 +156,42 @@ def validate_account(account: str, nodes: dict[str, Any] | None) -> AccountRepor
                     f"{name}: memory_gb={mem} < {MIN_MEMORY_PER_NODE}",
                 )
             )
-        if boot < MIN_BOOT_GB or boot > MAX_BOOT_GB:
+        if boot < MIN_BOOT_GB or boot > MAX_BOOT_HARD_GB:
             report.violations.append(
                 Violation(
                     account,
                     "boot",
-                    f"{name}: boot_volume_size_gb={boot} out of [{MIN_BOOT_GB},{MAX_BOOT_GB}]",
+                    f"{name}: boot_volume_size_gb={boot} out of "
+                    f"[{MIN_BOOT_GB},{MAX_BOOT_HARD_GB}]",
+                )
+            )
+        if ocpus > target["ocpus"]:
+            report.violations.append(
+                Violation(
+                    account,
+                    "ocpus_role",
+                    f"{name}: role={role} ocpus={ocpus} exceeds fleet target "
+                    f"{target['ocpus']}",
+                )
+            )
+        if mem > target["memory_gb"]:
+            report.violations.append(
+                Violation(
+                    account,
+                    "memory_role",
+                    f"{name}: role={role} memory_gb={mem} exceeds fleet target "
+                    f"{target['memory_gb']}",
                 )
             )
 
-    if report.ocpus > MAX_OCPU:
-        report.violations.append(
-            Violation(
-                account,
-                "ocpu_total",
-                f"sum(ocpus)={report.ocpus} exceeds Always Free cap {MAX_OCPU}",
-            )
-        )
-    if report.memory_gb > MAX_MEMORY_GB:
-        report.violations.append(
-            Violation(
-                account,
-                "memory_total",
-                f"sum(memory_gb)={report.memory_gb} exceeds Always Free cap {MAX_MEMORY_GB}",
-            )
-        )
-    if report.boot_gb > MAX_BOOT_GB:
+    if report.boot_gb > MAX_BOOT_USABLE_GB:
         report.violations.append(
             Violation(
                 account,
                 "boot_total",
-                f"sum(boot)={report.boot_gb} exceeds Always Free block cap {MAX_BOOT_GB}",
+                f"sum(boot)={report.boot_gb} exceeds usable Always Free block "
+                f"budget {MAX_BOOT_USABLE_GB} "
+                f"({MAX_BOOT_HARD_GB} hard cap − {BOOT_BUFFER_GB} GB buffer)",
             )
         )
     return report
@@ -147,28 +208,50 @@ def validate_inventory_tree(accounts: dict[str, dict[str, Any]]) -> list[Account
     return reports
 
 
-def free_tier_pack(node_count: int) -> list[dict[str, int]]:
-    """Return per-node {ocpus, memory_gb, boot_volume_size_gb} for free-tier pack.
+def free_tier_pack(node_count: int, roles: list[str] | None = None) -> list[dict[str, int]]:
+    """Return per-node {ocpus, memory_gb, boot_volume_size_gb} for fleet pack.
 
-    Prefer a single full 2/12/100 node. Two nodes split 1/6/100 each.
+    When roles is provided (len == node_count), sizes follow each role.
+    Otherwise defaults: one worker, or worker+controlplane for two nodes.
     """
     if node_count <= 0:
         return []
-    if node_count == 1:
-        return [{"ocpus": 2, "memory_gb": 12, "boot_volume_size_gb": DEFAULT_BOOT_GB}]
-    if node_count == 2:
-        return [
-            {"ocpus": 1, "memory_gb": 6, "boot_volume_size_gb": DEFAULT_BOOT_GB},
-            {"ocpus": 1, "memory_gb": 6, "boot_volume_size_gb": DEFAULT_BOOT_GB},
-        ]
-    raise ValueError(f"cannot pack {node_count} nodes into Always Free envelope")
+    if node_count > MAX_NODES:
+        raise ValueError(f"cannot pack {node_count} nodes into fleet envelope (max {MAX_NODES})")
+
+    if roles is None:
+        if node_count == 1:
+            roles = ["worker"]
+        else:
+            # Two-node default preserves a control plane + worker split.
+            roles = ["controlplane", "worker"]
+    if len(roles) != node_count:
+        raise ValueError("roles length must match node_count")
+
+    boots = _boot_split(node_count)
+    packs: list[dict[str, int]] = []
+    for role, boot in zip(roles, boots):
+        target = _target_for_role(role)
+        packs.append(
+            {
+                "ocpus": target["ocpus"],
+                "memory_gb": target["memory_gb"],
+                "boot_volume_size_gb": boot,
+            }
+        )
+    return packs
 
 
 def reconcile_nodes(nodes: dict[str, Any]) -> dict[str, Any]:
-    """Return a copy of nodes with free-tier-safe compute/boot sizes.
+    """Return a copy of nodes with fleet-target compute/boot sizes.
 
     Preserves all other fields (role, labels, annotations, provider_data, …).
     Does not delete nodes; if more than MAX_NODES, raises.
+
+    Role → size:
+      controlplane → 2 OCPU / 12 GB
+      worker       → 4 OCPU / 24 GB
+    Boot volumes share MAX_BOOT_USABLE_GB evenly (4 GB free-tier buffer retained).
     """
     if not nodes:
         return {}
@@ -176,9 +259,11 @@ def reconcile_nodes(nodes: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(
             f"account has {len(nodes)} nodes; delete down to ≤{MAX_NODES} before reconcile"
         )
-    packs = free_tier_pack(len(nodes))
+    ordered = sorted(nodes.items())
+    roles = [_role_of(n if isinstance(n, dict) else {}) for _, n in ordered]
+    packs = free_tier_pack(len(ordered), roles=roles)
     out: dict[str, Any] = {}
-    for (name, node), pack in zip(sorted(nodes.items()), packs):
+    for (name, node), pack in zip(ordered, packs):
         n = dict(node) if isinstance(node, dict) else {}
         n["shape"] = A1_SHAPE
         n["ocpus"] = pack["ocpus"]

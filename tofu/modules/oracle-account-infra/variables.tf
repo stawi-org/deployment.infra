@@ -31,11 +31,10 @@ variable "nodes" {
     # to spread off AD-1 once they've confirmed multi-AD access.
     availability_domain_index = optional(number, 0)
     # Per-node boot volume size in GB. Optional; null falls back to
-    # free-tier.tf's default (100 GB). OCI rejects in-place shrink, so
-    # changing this on an existing node forces destroy+create. Floor
-    # 50 (Talos QCOW2 base). Tenancy sum must stay ≤ 200 GB Always Free
-    # Block Volume (see free-tier.tf checks). For two nodes in one
-    # tenancy, set ~100 GB each (or lower).
+    # free-tier.tf's default (196 GB single-node usable). Tenancy sum
+    # must stay ≤ 196 GB (200 Always Free − 4 GB buffer). For two nodes
+    # set ~98 GB each. Floor 50 (Talos QCOW2 base). source_details is
+    # ignore_changes on the instance — size changes apply on reinstall.
     boot_volume_size_gb = optional(number)
   }))
   validation {
@@ -68,13 +67,14 @@ variable "nodes" {
 
 variable "enforce_always_free" {
   type        = bool
-  default     = true
+  default     = false
   description = <<-EOT
-    When true (default), plan fails if this tenancy's declared nodes
-    would exceed OCI Always Free Ampere A1 + block-volume caps
-    (2 OCPU, 12 GB memory, 200 GB boot/block, ≤2 A1 instances, shape
-    VM.Standard.A1.Flex only). Set false only for intentionally paid
-    tenancies — never for the multi-account free-tier fleet.
+    When true, plan fails if this tenancy's declared nodes would exceed
+    continuous Always Free Ampere A1 compute (2 OCPU, 12 GB memory).
+    Fleet default is false: workers target 4 OCPU / 24 GB (may bill after
+    monthly free hours). Block volume is always limited to 196 GB usable
+    (200 GB free cap − 4 GB buffer) regardless of this flag. Shape A1,
+    ≤2 instances, and role ceilings always apply.
   EOT
 }
 

@@ -55,8 +55,8 @@ and pushing, or an image OCID change from step 4.
 
 ## Extensibility
 
-- New OCI free-tier account: add to `accounts.yaml`, seed inventory with
-  `ocpus: 2 / memory_gb: 12 / boot_volume_size_gb: 100`, run
-  `cluster-provision` mode=infra (or full).
+- New OCI account: add to `accounts.yaml`, seed inventory with
+  worker `ocpus: 4 / memory_gb: 24 / boot_volume_size_gb: 196` (or run
+  `ensure-oci-free-tier-capacity`), then `cluster-provision` mode=infra (or full).
 - Plan-time enforcement lives in `tofu/modules/oracle-account-infra/free-tier.tf`
-  and `scripts/lib/oci_free_tier.py`.
+  and `scripts/lib/oci_free_tier.py` (workers 4/24, CP 2/12, boot ≤196).

@@ -40,13 +40,13 @@ variable "force_reinstall_generation" {
 
 variable "boot_volume_size_in_gbs" {
   type        = number
-  default     = 100
+  default     = 196
   description = <<-EOT
     Boot volume size in GB. OCI Always Free gives 200 GB total block
-    volume per tenancy (boot + data combined). Default 100 leaves
-    headroom for a second volume or growth without breaching the
-    200 GB envelope. For two-node tenancies, set boot_volume_size_gb
-    in R2 inventory so the sum is ≤ 200 (e.g. 100 + 100).
+    volume per tenancy (boot + data combined). Default 196 reserves a
+    4 GB buffer under the free ceiling so provisioning never lands on
+    the hard cap. For two-node tenancies, set boot_volume_size_gb in
+    R2 inventory so the sum is ≤ 196 (e.g. 98 + 98).
 
     source_details is in ignore_changes, so changing this value does
     not affect running instances — the new size takes effect only on

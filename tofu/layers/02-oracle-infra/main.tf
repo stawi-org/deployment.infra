@@ -96,7 +96,7 @@ module "oracle_account" {
   shared_patches_dir                   = "${path.module}/../../shared/patches"
   omni_siderolink_url                  = var.omni_siderolink_url
   force_reinstall_generation           = var.force_reinstall_generation
-  # Fail plan if declared nodes would exceed Always Free A1/block caps.
-  # Flip false only for intentionally paid tenancies.
+  # Continuous free A1 compute (2/12) only when true. Fleet default false
+  # so workers can be 4/24. Boot always capped at 196 GB (4 GB buffer).
   enforce_always_free = var.enforce_always_free
 }

@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# Live-audit one OCI tenancy against Always Free caps (post 2026-06-15).
+# Live-audit one OCI tenancy against fleet + Always Free hard caps.
+#
+# Hard failures: non-A1 shape, >2 nodes, block/boot >200 GB (free hard),
+# boot >196 GB (usable with 4 GB buffer), >2 VCNs, object storage, etc.
+# Continuous free compute (2 OCPU / 12 GB) is reported as WARN only —
+# fleet workers intentionally run at 4/24 (paid A1 hours after free monthly).
 #
 # Expects:
 #   PROFILE              OCI CLI config profile (WIF or api_key)
@@ -7,7 +12,7 @@
 #   TENANCY_OCID         tenancy OCID (for limit checks / reporting)
 #   ACCOUNT              logical account key (label only)
 #
-# Exit 0 if within free envelope, 1 if any hard violation.
+# Exit 0 if no hard violations, 1 if any hard violation.
 set -euo pipefail
 
 PROFILE="${PROFILE:?}"
@@ -16,9 +21,15 @@ TENANCY_OCID="${TENANCY_OCID:-$COMPARTMENT_OCID}"
 ACCOUNT="${ACCOUNT:-$PROFILE}"
 OCI=(oci --profile "$PROFILE")
 
-MAX_OCPU=2
-MAX_MEM=12
-MAX_BOOT=200
+# Continuous free A1 (informational / warn only)
+CONTINUOUS_FREE_OCPU=2
+CONTINUOUS_FREE_MEM=12
+# Fleet per-node ceilings
+MAX_OCPU_PER_NODE=4
+MAX_MEM_PER_NODE=24
+MAX_BOOT_HARD=200
+MAX_BOOT_USABLE=196
+BOOT_BUFFER=4
 MAX_NODES=2
 MAX_VCN=2
 MAX_OBJECT_GB=20
@@ -74,15 +85,25 @@ if (( node_count > MAX_NODES )); then
 else
   ok "instance count ${node_count} ≤ ${MAX_NODES}"
 fi
-if python3 -c "import sys; sys.exit(0 if float('$ocpu_total') <= $MAX_OCPU else 1)"; then
-  ok "ocpu total ${ocpu_total} ≤ ${MAX_OCPU}"
+# Per-instance fleet ceilings
+for row in "${rows[@]:-}"; do
+  [ -z "${row:-}" ] && continue
+  IFS=$'\t' read -r name state shape ocpus mem id <<<"$row"
+  if python3 -c "import sys; sys.exit(0 if float('$ocpus') <= $MAX_OCPU_PER_NODE and float('$mem') <= $MAX_MEM_PER_NODE else 1)"; then
+    :
+  else
+    fail "instance ${name} ocpu=${ocpus}/mem=${mem} exceeds fleet ceiling ${MAX_OCPU_PER_NODE}/${MAX_MEM_PER_NODE}"
+  fi
+done
+if python3 -c "import sys; sys.exit(0 if float('$ocpu_total') <= $CONTINUOUS_FREE_OCPU else 1)"; then
+  ok "ocpu total ${ocpu_total} ≤ continuous free ${CONTINUOUS_FREE_OCPU}"
 else
-  fail "ocpu total ${ocpu_total} > ${MAX_OCPU}"
+  note "WARN: ocpu total ${ocpu_total} > continuous free ${CONTINUOUS_FREE_OCPU} (fleet workers may be 4/24; uses free monthly hours then PAYG)"
 fi
-if python3 -c "import sys; sys.exit(0 if float('$mem_total') <= $MAX_MEM else 1)"; then
-  ok "memory total ${mem_total} GB ≤ ${MAX_MEM}"
+if python3 -c "import sys; sys.exit(0 if float('$mem_total') <= $CONTINUOUS_FREE_MEM else 1)"; then
+  ok "memory total ${mem_total} GB ≤ continuous free ${CONTINUOUS_FREE_MEM}"
 else
-  fail "memory total ${mem_total} GB > ${MAX_MEM}"
+  note "WARN: memory total ${mem_total} GB > continuous free ${CONTINUOUS_FREE_MEM} (fleet may bill after free monthly hours)"
 fi
 
 # --- Boot + block volumes across ADs ---
@@ -115,10 +136,12 @@ done < <(echo "$vj" | jq -r '
 ')
 
 vol_total=$((boot_total + block_total))
-if (( vol_total > MAX_BOOT )); then
-  fail "block/boot total ${vol_total} GB > ${MAX_BOOT}"
+if (( vol_total > MAX_BOOT_HARD )); then
+  fail "block/boot total ${vol_total} GB > hard free cap ${MAX_BOOT_HARD}"
+elif (( vol_total > MAX_BOOT_USABLE )); then
+  fail "block/boot total ${vol_total} GB > usable ${MAX_BOOT_USABLE} (${MAX_BOOT_HARD} − ${BOOT_BUFFER} GB buffer)"
 else
-  ok "block/boot total ${vol_total} GB (boot=${boot_total} block=${block_total}) ≤ ${MAX_BOOT}"
+  ok "block/boot total ${vol_total} GB (boot=${boot_total} block=${block_total}) ≤ usable ${MAX_BOOT_USABLE} (buffer ${BOOT_BUFFER} GB under ${MAX_BOOT_HARD})"
 fi
 
 # --- VCNs ---

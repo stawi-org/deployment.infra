@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
-"""Rewrite OCI nodes.yaml files so each tenancy fits Always Free caps.
+"""Rewrite OCI nodes.yaml files to fleet role packs + free block buffer.
 
 Preserves roles, labels, annotations, provider_data. Only rewrites
 shape / ocpus / memory_gb / boot_volume_size_gb.
+
+  worker       → 4 OCPU / 24 GB
+  controlplane → 2 OCPU / 12 GB
+  boot sum     → ≤ 196 GB (200 free − 4 GB buffer)
+
 
 Usage:
   python3 scripts/reconcile-oci-free-tier-inventory.py \\
@@ -83,7 +88,7 @@ def main() -> int:
             for k, v in sorted(new_nodes.items())
         }
         if before == after:
-            print(f"{entry.name}: already free-tier compliant")
+            print(f"{entry.name}: already at fleet target pack")
             continue
 
         print(f"{entry.name}: would update")
@@ -101,7 +106,7 @@ def main() -> int:
         print(f"\n{changed} account(s) need reconcile; re-run with --write")
         return 1
     if changed:
-        print(f"\nreconciled {changed} account(s)")
+        print(f"\nreconciled {changed} account(s) to fleet role packs")
     return 0
 
 

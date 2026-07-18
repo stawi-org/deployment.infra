@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Ensure every oracle account inventory uses free-tier capacity fully.
+"""Ensure every oracle account inventory uses fleet target capacity.
 
-Policy (Always Free post 2026-06-15: 2 OCPU / 12 GB / ≤200 GB boot / ≤2 A1):
-
-  - Empty accounts: seed one worker at free_tier_pack(1) = 2/12/100
-  - Non-empty accounts: reconcile shape/ocpus/memory/boot to free pack
+Policy:
+  - worker:       4 OCPU / 24 GB
+  - controlplane: 2 OCPU / 12 GB
+  - boot:         sum ≤ 196 GB (Always Free 200 GB − 4 GB buffer)
+  - Empty accounts: seed one worker at free_tier_pack(1) = 4/24/196
+  - Non-empty accounts: reconcile shape/ocpus/memory/boot to role pack
     without deleting nodes (caller must drop nodes >2 first)
   - Does NOT destroy live VMs; only rewrites R2 inventory YAML
 
@@ -49,8 +51,8 @@ def _default_worker(name: str, pack: dict) -> dict:
         },
         "annotations": {
             "node.stawi.org/operator-note": (
-                f"free-tier max pack {pack['ocpus']}/{pack['memory_gb']}/"
-                f"{pack['boot_volume_size_gb']}"
+                f"fleet pack {pack['ocpus']}/{pack['memory_gb']}/"
+                f"{pack['boot_volume_size_gb']} worker"
             ),
         },
     }
@@ -80,7 +82,10 @@ def ensure_account(account: str, path: Path, write: bool) -> tuple[str, bool]:
         if "annotations" not in doc:
             doc["annotations"] = {"node.stawi.org/account-owner": "platform"}
         changed = True
-        action = f"seeded {name} as 2/12/{pack['boot_volume_size_gb']}"
+        action = (
+            f"seeded {name} as {pack['ocpus']}/{pack['memory_gb']}/"
+            f"{pack['boot_volume_size_gb']}"
+        )
     else:
         try:
             new_nodes = reconcile_nodes(nodes)
@@ -99,9 +104,9 @@ def ensure_account(account: str, path: Path, write: bool) -> tuple[str, bool]:
             doc["nodes"] = new_nodes
             nodes = new_nodes
             changed = True
-            action = "reconciled sizes to free pack"
+            action = "reconciled sizes to fleet role pack"
         else:
-            action = "already max free-tier pack"
+            action = "already at fleet target pack"
 
     report = validate_account(account, nodes)
     if not report.ok:
@@ -150,9 +155,9 @@ def main() -> int:
         print("\nchanges needed; re-run with --write")
         return 1
     if any_change:
-        print(f"\nensured free-tier capacity for inventory under {args.inventory_dir}")
+        print(f"\nensured fleet capacity for inventory under {args.inventory_dir}")
     else:
-        print("\nall accounts already at free-tier capacity pack")
+        print("\nall accounts already at fleet target pack")
     return 0
 
 

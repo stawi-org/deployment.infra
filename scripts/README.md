@@ -27,12 +27,12 @@ run during account onboarding.
 | Module | Purpose |
 |---|---|
 | `lib/inventory_yaml.py` | R2 inventory YAML helpers (`seed-inventory`, bootstrap) |
-| `lib/oci_free_tier.py` | Always Free caps (2 OCPU / 12 GB / 200 GB boot) |
+| `lib/oci_free_tier.py` | Fleet packs (worker 4/24, CP 2/12) + boot ≤196 (4 GB free buffer) |
 | `validate-oci-free-tier.py` | CI/preflight inventory check |
-| `reconcile-oci-free-tier-inventory.py` | Rewrite inventory to free-tier-safe sizes |
-| `audit-oci-live-free-tier.sh` | Live OCI API free-tier audit (one tenancy); driven by `audit-oci-live-free-tier.yml` |
-| `ensure-oci-free-tier-capacity.py` | Seed empty oracle inventories with max free pack; reconcile sizes |
-| `prune-oci-free-tier-violators.sh` | Terminate live free-tier oversize VMs; optional orphan VCN teardown |
+| `reconcile-oci-free-tier-inventory.py` | Rewrite inventory to fleet role packs |
+| `audit-oci-live-free-tier.sh` | Live OCI API audit (one tenancy); driven by `audit-oci-live-free-tier.yml` |
+| `ensure-oci-free-tier-capacity.py` | Seed empty oracle inventories with 4/24/196 worker; reconcile sizes |
+| `prune-oci-free-tier-violators.sh` | Terminate non-A1 / surplus / over fleet ceilings; optional orphan VCN teardown |
 
 ```bash
 # Unit tests for free-tier helpers

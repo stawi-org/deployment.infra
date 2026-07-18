@@ -198,12 +198,12 @@ oci:
       nodes:
         wk-1:
           role: worker
-          # Always Free A1 caps (per tenancy, post 2026-06-15):
-          # ≤2 OCPU, ≤12 GB RAM, ≤200 GB boot/block, shape A1.Flex only.
+          # Fleet: worker 4/24, CP 2/12; boot sum ≤196 (200 free − 4 GB buffer).
+          # Shape A1.Flex only; ≤2 nodes per tenancy.
           shape: VM.Standard.A1.Flex
-          ocpus: 2
-          memory_gb: 12
-          boot_volume_size_gb: 100
+          ocpus: 4
+          memory_gb: 24
+          boot_volume_size_gb: 196
           labels:
             node.stawi.org/workload-class: edge
           annotations:
