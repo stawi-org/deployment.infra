@@ -8,7 +8,7 @@ on:
 permissions:
   contents: read
 env:
-  OMNI_VERSION: v1.7.1
+  OMNI_VERSION: v1.9.3
 jobs:
   validate:
     runs-on: ubuntu-latest

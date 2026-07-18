@@ -32,7 +32,7 @@ variable "github_oidc_client_secret" {
 
 variable "omni_version" {
   type    = string
-  default = "v1.7.1"
+  default = "v1.9.3"
 }
 
 variable "omni_eula_name" {

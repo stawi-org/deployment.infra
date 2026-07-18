@@ -18,9 +18,19 @@ Node-level `labels` and `annotations` are supported in every inventory file.
 Provider/account defaults are merged first, then the node-level metadata is
 applied so node-specific values win.
 
-## Control-Plane Boundary
+## Omni control plane
 
-The control plane remains intentionally provider-local to Contabo. This is the conservative option for a single Talos cluster because etcd quorum is sensitive to latency, packet loss, asymmetric routing, and correlated WAN failures.
+Omni (management plane for Talos) runs on **OCI bwire** as
+`oci-bwire-omni` (Ubuntu + docker-compose), not as a Talos node.
+DNS: `cp.stawi.org` (UI, orange-cloud) and `cpd.stawi.org` (SideroLink /
+machine-api, gray-cloud). Layer: `tofu/layers/00-omni-server`.
+
+## Kubernetes control-plane boundary
+
+The Kubernetes control plane is intentionally multi-account OCI for
+Always Free packing, with Contabo providing stable worker capacity.
+etcd quorum remains sensitive to latency, packet loss, asymmetric
+routing, and correlated WAN failures.
 
 Do not add unmanaged on-prem or OCI control-plane nodes to this cluster without first introducing:
 

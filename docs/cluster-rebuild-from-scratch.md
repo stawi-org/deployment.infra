@@ -202,6 +202,49 @@ gh workflow run cluster-provision.yml \
   -f deploy_flux=true
 ```
 
+## Omni host cutover: Contabo → OCI bwire
+
+Omni runs on **OCI bwire** (`omni_host_provider = "oci"`, instance
+`oci-bwire-omni` at 1 OCPU / 6 GB). Layer: `tofu/layers/00-omni-server`.
+
+### Prerequisites
+
+1. Bwire inventory has **no worker** (only Talos CP at 1/6) so free A1
+   headroom remains for Omni.
+2. `versions.auto.tfvars.json` `omni_version` matches workflow
+   `OMNI_VERSION` (currently **v1.9.3**).
+3. Fresh `r2_backup_prefix` for intentional greenfield master keys.
+
+### Order
+
+```bash
+# A. Free capacity: delete worker from inventory, apply oracle infra
+gh workflow run patch-inventory-node.yml \
+  -f provider=oracle -f account=bwire \
+  -f node=oci-bwire-node-2 -f delete_node=true
+gh workflow run tofu-layer.yml \
+  -f layer=02-oracle-infra -f account=bwire -f mode=apply
+
+# B. Stand up Omni on OCI (updates cp/cpd DNS)
+gh workflow run tofu-omni-host.yml -f mode=apply
+
+# C. INBOUND GATE (must pass before wiping old Omni / fleet)
+#    TCP connect to public IP :443 :8090 :8100 — not "No route to host"
+#    https://cp.stawi.org health after DNS propagates
+#    Historical failure (2026-05-24): OCI public IPs blackholed inbound
+
+# D. Rotate OMNI_SERVICE_ACCOUNT_KEY (Admin) against the new Omni
+
+# E. Clean slate + full provision
+gh workflow run cluster-clean-slate.yml -f confirm=CLEAN-SLATE -f clear_oci_images=true
+gh workflow run clear-oci-image-buckets.yml -f confirm=DELETE
+gh workflow run cluster-provision.yml \
+  -f mode=full -f force_image_sync=true -f deploy_flux=true
+```
+
+If the inbound gate fails, set `omni_host_provider = "contabo"`, re-apply
+`tofu-omni-host`, and do **not** greenfield-wipe Contabo Omni.
+
 Legacy multi-step (still works):
 
 ```

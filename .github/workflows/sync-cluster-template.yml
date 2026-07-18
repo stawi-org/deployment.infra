@@ -59,7 +59,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  OMNI_VERSION: v1.7.1 # Pinned to match the omnictl used in sync-talos-images.
+  OMNI_VERSION: v1.9.3 # Pinned to match the omnictl used in sync-talos-images.
 
 jobs:
   sync:

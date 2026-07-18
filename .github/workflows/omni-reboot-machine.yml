@@ -29,7 +29,7 @@ permissions:
   contents: read
 
 env:
-  OMNI_VERSION: v1.7.1
+  OMNI_VERSION: v1.9.3
   TALOS_VERSION: v1.13.0
 
 jobs:

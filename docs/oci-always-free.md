@@ -54,7 +54,23 @@ nodes:
     boot_volume_size_gb: 98
 ```
 
-Do **not** put omni-host on these free tenancies. Omni runs on Contabo.
+### Exception: bwire Omni host
+
+Account **bwire** runs Omni on OCI (`oci-bwire-omni`) at **1 OCPU / 6 GB**
+and keeps one Talos control plane at **1 OCPU / 6 GB**. The Talos **worker
+is not scheduled** on bwire (capacity is Omni + CP only).
+
+| Resource | Size |
+|---|---|
+| `oci-bwire-omni` (Ubuntu / docker-compose) | 1 OCPU / 6 GB / ≤50–100 GB boot |
+| `oci-bwire-node-1` (Talos controlplane) | 1 OCPU / 6 GB / 98 GB boot |
+| Sum | **2 OCPU / 12 GB** (Always Free continuous) |
+
+Omni is **outside** R2 `nodes.yaml` inventory (layer `00-omni-server`).
+Free-tier inventory validators only see the Talos CP — operators must
+still keep Omni + Talos nodes ≤ 2/12 on bwire.
+
+Other tenancies should **not** host Omni; they stay pure A1 cluster nodes.
 
 ## Enforcement
 

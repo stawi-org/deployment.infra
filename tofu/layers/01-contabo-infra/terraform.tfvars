@@ -147,4 +147,6 @@ age_recipients = "age1s570flcma83aa5lxzfvgz0y6gh5r3pnfmhlhlxamyux24dsquq7s6zffpt
 #  24 — prior fleet roll.
 #  25 — 2026-07-09: clean-slate rebuild after Always Free resize +
 #                   Talos v1.13.6 pin (cluster-provision path).
-force_reinstall_generation = 25
+#  26 — 2026-07-18: Omni cutover Contabo→OCI bwire (greenfield master
+#                   keys; fleet re-register against new join token).
+force_reinstall_generation = 26

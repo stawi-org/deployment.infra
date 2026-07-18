@@ -1,28 +1,26 @@
 # Substrate hosting omni-host: "contabo" adopts existing VPS 202727781
 # (former bwire-3); "oci" provisions an A1.Flex in OCI bwire.
-# Note: Always Free A1 is 2 OCPU / 12 GB *total* per tenancy
-# (post 2026-06-15). An OCI omni-host at 2/12 leaves zero free A1
-# headroom for cluster nodes in the same tenancy.
 #
-# Reverted to "contabo" 2026-05-24 after OCI eu-frankfurt-1 stopped
-# forwarding inbound public traffic to newly-created VMs in the bwire
-# tenancy — VM RUNNING + instance-agent healthy internally, but every
-# tested public IP (92.5.x ×4 ephemeral, 92.5.69.251 reserved, 89.168.x,
-# 138.2.182.31, 158.180.36.132) returned "No route to host" from 18+/20
-# global probes (check-host.net DE/NL/FR/PT/ES/SG/UK/SI/JP/US/IL/RU/TR/
-# HU/AT/IN/ID nodes). Same break affects the cluster CP nodes in the
-# same tenancy, which is why fleet machines kept disconnecting from
-# Omni — Talos nodes can't reach the SideroLink WG endpoint on the
-# OCI omni-host. Contabo bwire-3's public IP routes globally. OCI CP
-# nodes still reach the Contabo omni-host outbound (egress works),
-# which is sufficient for SideroLink (nodes initiate the WG tunnel).
-omni_host_provider = "contabo"
+# Always Free A1 is 2 OCPU / 12 GB *total* per tenancy (post 2026-06-15).
+# When provider=oci, Omni is sized at 1 OCPU / 6 GB so bwire can keep
+# one Talos control plane at 1/6 (worker removed). Default module
+# ocpus=2 would consume the whole free pool.
+#
+# History: 2026-05-24 reverted OCI→Contabo after inbound blackhole on
+# eu-frankfurt-1 public IPs. 2026-07-18 flip back to OCI (bwire worker
+# capacity → Omni) with 1/6+1/6 free-tier split and explicit inbound
+# connectivity gate before retiring Contabo Omni.
+omni_host_provider = "oci"
 
-# Bumped to 4 (2026-05-24) for clean disk wipe + cloud-init re-delivery
-# on the Contabo reinstall path. Pairs with the r2_backup_prefix flip
-# to a fresh "omni-backups-2026-05-24-contabo" — together they bring
-# the Omni stack up on a clean /var/lib/omni with new master keys.
-force_reinstall_generation = 4
+# Keep in lock-step with tofu/shared/versions.auto.tfvars.json +
+# workflow OMNI_VERSION (omnictl). This layer does not symlink the
+# full versions auto-file (would inject undeclared talos/k8s keys).
+omni_version = "v1.9.3"
+
+# Contabo reinstall marker (only applies when provider=contabo).
+# Bumped for the 2026-07-18 OCI cutover so a future Contabo rollback
+# also gets a clean cloud-init path.
+force_reinstall_generation = 5
 
 # bwire_availability_domain_index defaults to 0 (first AD). The
 # module auto-discovers ADs via oci_identity_availability_domains

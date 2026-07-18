@@ -101,6 +101,11 @@ module "omni_host_oci" {
   vcn_id                    = data.oci_core_vcns.bwire_cluster.virtual_networks[0].id
   subnet_id                 = data.oci_core_subnets.bwire_cluster_public.subnets[0].id
 
+  # Share Always Free A1 with bwire Talos CP (1/6 each). Worker removed.
+  ocpus               = 1
+  memory_gb           = 6
+  boot_volume_size_gb = 50
+
   omni_version                         = var.omni_version
   dex_version                          = var.dex_version
   nginx_version                        = var.nginx_version
@@ -118,19 +123,16 @@ module "omni_host_oci" {
   r2_access_key_id     = var.r2_access_key_id
   r2_secret_access_key = var.r2_secret_access_key
 
-  # Fresh restore namespace for the 2026-05-23 substrate flip back to OCI.
-  # Neither the older OCI snapshots (production/omni-backups/) nor the
-  # Contabo-era snapshots (production/omni-backups-2026-05-04/) carry
-  # forward — the new Omni starts on a clean /var/lib/omni and generates
-  # fresh master keys. Greenfield by design.
-  r2_backup_prefix = "production/omni-backups-2026-05-23-oci"
+  # Greenfield 2026-07-18 OCI cutover (worker capacity → Omni). Empty
+  # prefix ⇒ omni-restore finds nothing ⇒ fresh master keys. All Talos
+  # nodes re-register after force_reinstall_generation bumps.
+  r2_backup_prefix = "production/omni-backups-2026-07-18-oci"
 
   etcd_backup_enabled = var.etcd_backup_enabled
 
   vpn_users = var.vpn_users
 
-  # SSH temporarily enabled (2026-05-24) for fleet-connectivity
-  # diagnosis. Revert to [] once the bug is identified.
+  # SSH temporarily enabled for cutover diagnostics; clear after stable.
   ssh_authorized_keys = ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID5xol7Isv6niRCRydIo4LRrKxWD3p8WBMXe/IGYK0JD bwire517@gmail.com"]
 }
 

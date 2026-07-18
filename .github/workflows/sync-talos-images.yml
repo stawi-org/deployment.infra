@@ -98,7 +98,7 @@ env:
   # binding (cluster-image-registry → pkgs.stawi.org).
   R2_IMAGE_BUCKET: ${{ vars.R2_IMAGE_BUCKET || 'cluster-image-registry' }}
   IMAGES_PUBLIC_HOST: ${{ vars.IMAGES_PUBLIC_HOST || 'pkgs.stawi.org' }}
-  OMNI_VERSION: v1.7.1 # Pinned to match the running Omni server.
+  OMNI_VERSION: v1.9.3 # Pinned to match the running Omni server.
   # AWS CLI 2.23+ added mandatory CRC checksums on multipart uploads,
   # which Cloudflare R2 (and OCI Object Storage's S3-compat) reject
   # with `MissingContentLength`. Run #25249802815 surfaced this

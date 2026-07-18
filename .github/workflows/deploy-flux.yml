@@ -54,7 +54,7 @@ jobs:
       OMNI_ENDPOINT:            https://cp.stawi.org
       OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
       CLUSTER_NAME:             ${{ inputs.cluster_name }}
-      OMNI_VERSION:             v1.7.1
+      OMNI_VERSION:             v1.9.3
       FLUX_VERSION_INPUT:       ${{ inputs.flux_version }}
       FLUX_GITHUB_APP_ID:               ${{ secrets.FLUX_GITHUB_APP_ID }}
       FLUX_GITHUB_APP_INSTALLATION_ID:  ${{ secrets.FLUX_GITHUB_APP_INSTALLATION_ID }}
