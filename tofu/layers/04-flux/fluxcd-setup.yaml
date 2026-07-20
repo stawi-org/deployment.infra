@@ -79,6 +79,26 @@ spec:
           - op: add
             path: /spec/template/spec/containers/0/args/-
             value: --requeue-dependency=10s
+
+      # helm-controller copies chart blobs from source-controller over
+      # the cluster network. With control-plane nodes split across
+      # OCI tenancies (SideroLink), that fetch times out
+      # ("failed to copy and verify chart artifact: context deadline
+      # exceeded"). Require helm-controller on the same node as
+      # source-controller so cold-start installs succeed.
+      - target:
+          kind: Deployment
+          name: helm-controller
+        patch: |
+          - op: add
+            path: /spec/template/spec/affinity
+            value:
+              podAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  - labelSelector:
+                      matchLabels:
+                        app: source-controller
+                    topologyKey: kubernetes.io/hostname
   sync:
     kind: GitRepository
     provider: github
