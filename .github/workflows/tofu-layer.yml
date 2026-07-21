@@ -171,22 +171,48 @@ jobs:
         #   - 00-omni-server: provisions the omni-host VM in OCI bwire
         #     (post-PR #156) and needs the bwire profile
         #   - 02-oci-storage: bwire-only buckets + operator CSK
+        #
+        # Auth source of truth is repo SOPS files under
+        # tofu/shared/accounts/oracle/*/auth.yaml (post migrate-auth-to-repo).
+        # R2 plaintext auth.yaml is merged as a legacy fallback for any
+        # account not yet present in the repo.
         if: inputs.layer == '02-oracle-infra' || inputs.layer == '00-omni-server' || inputs.layer == '02-oci-storage'
         env:
           AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           AWS_EC2_METADATA_DISABLED: "true"
           R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
+          SOPS_AGE_KEY:          ${{ secrets.SOPS_AGE_KEY }}
         run: |
           set -euo pipefail
+          if ! command -v sops >/dev/null 2>&1; then
+            curl -fsSL -o /usr/local/bin/sops \
+              "https://github.com/getsops/sops/releases/download/v3.11.0/sops-v3.11.0.linux.amd64"
+            chmod +x /usr/local/bin/sops
+          fi
+          AUTH_MERGED=$(mktemp -d)
+          # Repo-resident encrypted auth (preferred).
+          scripts/stage-oracle-auth-from-repo.sh "$AUTH_MERGED" .
+          # Legacy R2 plaintext: only fill gaps not already staged from repo.
           ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          TMPDIR_AUTH=$(mktemp -d)
-          aws s3 sync "s3://cluster-tofu-state/production/inventory/oracle/" "${TMPDIR_AUTH}/" \
+          R2_AUTH=$(mktemp -d)
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/oracle/" "${R2_AUTH}/" \
             --endpoint-url "$ENDPOINT" --region us-east-1 \
             --exclude "*" --include "*/auth.yaml" || true
-          AUTH_JSON=$(python3 scripts/build-oci-auth-json.py "${TMPDIR_AUTH}")
+          if [[ -d "$R2_AUTH" ]]; then
+            for d in "$R2_AUTH"/*/; do
+              [[ -d "$d" ]] || continue
+              acct=$(basename "$d")
+              if [[ ! -f "$AUTH_MERGED/$acct/auth.yaml" && -f "$d/auth.yaml" ]]; then
+                mkdir -p "$AUTH_MERGED/$acct"
+                cp "$d/auth.yaml" "$AUTH_MERGED/$acct/auth.yaml"
+                echo "::notice::using legacy R2 auth for $acct (not in repo)"
+              fi
+            done
+          fi
+          AUTH_JSON=$(python3 scripts/build-oci-auth-json.py "${AUTH_MERGED}")
           if [[ "$AUTH_JSON" == "[]" ]]; then
-            echo "::notice::no OCI auth profiles in R2 inventory — skipping WIF setup"
+            echo "::notice::no OCI auth profiles (repo SOPS or R2) — skipping WIF setup"
           else
             echo "$AUTH_JSON" > /tmp/oci_auth_accounts.json
             scripts/configure-oci-wif.sh /tmp/oci_auth_accounts.json

@@ -17,23 +17,36 @@
 # Prereqs:
 #   - oci CLI installed and authed (or run from OCI Cloud Shell — most deps
 #     below are pre-installed there)
-#   - jq, curl, python3, git, sops
-#   - A local clone of deployment.infra with .sops.yaml at the root
-#     (auto-detected via `git rev-parse --show-toplevel` from cwd, or
-#     pass --repo-path explicitly).
+#   - jq, curl, python3, git  (no gh CLI required)
+#   - sops: latest release auto-installed/upgraded into ~/.local/bin
+#     (override with SOPS_VERSION=vX.Y.Z)
+#   - PATH auto-includes $HOME/.local/bin
+#   - deployment.infra checkout (auto-detected, --repo-path, or cloned)
+#   - GITHUB_TOKEN or GH_TOKEN (required for all git + PR steps). Fine-grained
+#     PAT on stawi-org/deployment.infra: Contents R/W + Pull requests R/W.
+#     Classic: repo scope. Clone/fetch/push are fully non-interactive (token
+#     via Authorization header — no username/password prompts).
 #
 # Each invocation:
 #   1. Configures the OCI Identity Domain (service user, group, policy,
 #      OAuth app, identity propagation trust, monthly budget) idempotently.
-#   2. Writes a SOPS-encrypted auth.yaml into the local deployment.infra
-#      checkout under tofu/shared/accounts/oracle/<gh-profile>/.
-#   3. Adds the new account name under oracle: in tofu/shared/accounts.yaml
-#      (idempotent — no-op if already listed).
-#   4. Creates a branch (default: onboard-oracle-<gh-profile>), commits
-#      both files, pushes. Prints the GitHub "Create PR" URL.
+#   2. Checks out origin/<base> into an isolated git worktree, writes a
+#      SOPS-encrypted auth.yaml under tofu/shared/accounts/oracle/<gh-profile>/,
+#      and adds the account under oracle: in tofu/shared/accounts.yaml.
+#   3. Commits, pushes branch onboard-oracle-<gh-profile> (or --branch),
+#      and opens a PR via the GitHub REST API (curl + token) unless
+#      --no-push / --no-pr.
+#   4. After the PR merges, workflow onboard-oracle.yml seeds free-tier
+#      nodes.yaml in R2 and runs cluster-provision (images → tofu-apply →
+#      cluster template) so the new tenancy expands the cluster.
 #
-# No `gh` CLI / GITHUB_TOKEN needed. The operator's existing git push
-# credentials are sufficient.
+# Isolation / stability:
+#   - Repo writes touch only oracle/<gh-profile>/auth.yaml + one accounts.yaml
+#     list entry. Other accounts are never rewritten.
+#   - Existing sops auth.yaml is not regenerated unless values actually change
+#     (or client_secret is supplied for a forced update).
+#   - OCI budget is named per account (stawi-<gh-profile>-budget), amount
+#     hard-capped at $2/month, and re-runs do not thrash the amount.
 #
 # Multi-tenancy / multi-profile:
 #   --profile <NAME>     OCI CLI profile from ~/.oci/config. Default "DEFAULT".
@@ -42,19 +55,29 @@
 #                        form of --profile (lowercase alnum).
 #   --tenancy / --region / --compartment auto-detect from the profile when
 #                        omitted.
-#   --repo-path <PATH>   Path to the deployment.infra checkout. Defaults to
-#                        `git rev-parse --show-toplevel` from cwd.
-#   --branch <NAME>      Branch name (default: onboard-oracle-<gh-profile>).
-#   --no-push            Write + commit locally only, skip the push step.
+#   --repo-path <PATH>   Path to the stawi-org/deployment.infra checkout.
+#                        Defaults to `git rev-parse --show-toplevel` from cwd,
+#                        else clones https://github.com/stawi-org/deployment.infra.git
+#   --base-branch <NAME> Branch to open the PR against (default: main).
+#   --branch <NAME>      Feature branch (default: onboard-oracle-<gh-profile>).
+#   --no-push            Write + commit in the worktree only; skip push/PR.
+#   --no-pr              Push the branch but do not open a PR (print compare URL).
 #
 # Usage:
+#   export GITHUB_TOKEN=github_pat_...   # Contents + Pull requests on this repo
 #   ./scripts/bootstrap-oci-oidc.sh --profile tenantA --gh-profile newaccount
 #
 # Re-running is safe. Every OCI resource is looked up by name; missing ones
 # are created, existing ones are updated. The accounts.yaml edit is
-# idempotent. The branch is reused if it already exists locally.
+# idempotent. The branch/PR are reused if they already exist.
 
 set -euo pipefail
+
+# Operator tools (sops, age, sometimes oci) are commonly installed under
+# ~/.local/bin — especially on OCI Cloud Shell after a user-level install.
+# Prepend it so the hard deps check finds them without requiring a manual
+# export PATH=... before every run.
+export PATH="${HOME}/.local/bin${PATH:+:$PATH}"
 
 # -------- defaults --------
 PROFILE="DEFAULT"
@@ -62,27 +85,37 @@ SUFFIX="0"
 TENANCY_OCID=""
 REGION=""
 COMPARTMENT_OCID=""
-# Local deployment.infra checkout where the script writes the encrypted
-# auth.yaml + accounts.yaml edit + pushes the branch. Auto-detected via
-# `git rev-parse --show-toplevel` from cwd when unset.
+# Only this repository is onboarded. Clone / PR / push always target it.
+GH_REPO="stawi-org/deployment.infra"
+DEFAULT_REPO_URL="https://github.com/${GH_REPO}.git"
+GITHUB_API="https://api.github.com"
+# Local checkout where the script writes the encrypted auth.yaml +
+# accounts.yaml edit + opens a PR. Auto-detected via
+# `git rev-parse --show-toplevel` from cwd when unset; otherwise cloned
+# from DEFAULT_REPO_URL into a temp dir.
 REPO_PATH=""
+BASE_BRANCH="${BASE_BRANCH:-main}"
 BRANCH=""
 NO_PUSH="false"
-# Budget guardrail. Tofu provisioning only uses Always-Free A1 compute (cost
-# ~ $0), so the cap itself is mostly symbolic. Default is a random USD value
-# in [1, 20] picked per-run — the OCI Budgets API rounds up so any random
-# value in this range is a meaningful tripwire, and rotating it ensures
-# stale console state from a prior run can't fool the operator into thinking
-# the guardrail is in place when it isn't (every run yields a visible diff
-# in the OCI Console). Override with --budget-amount or env BUDGET_AMOUNT=N
-# when you want a stable, repeatable cap.
-BUDGET_AMOUNT="${BUDGET_AMOUNT:-$(shuf -i 1-20 -n 1)}"
+NO_PR="false"
+# Worktree used for the commit/push so the operator's current branch is
+# left alone. Set during the write phase; cleaned up on exit when we
+# created it.
+ONBOARD_WORKTREE=""
+ONBOARD_WORKTREE_CLEANUP="false"
+# Budget guardrail. Always-Free A1 is ~$0; cap is a tripwire only.
+# Hard ceiling: $2/month. Default $2. Never raise an existing budget above
+# that; re-runs do not randomize or thrash amounts.
+BUDGET_AMOUNT_MAX=2
+BUDGET_AMOUNT="${BUDGET_AMOUNT:-$BUDGET_AMOUNT_MAX}"
 # BUDGET_EMAIL: alert recipient. If unset, defaults to `git config user.email`
 # of the operator running this script (the most common single-operator
 # convention). Override with --budget-email or env BUDGET_EMAIL=...
 # Fallback to empty (no alerts) only if neither is available.
 BUDGET_EMAIL="${BUDGET_EMAIL:-$(git config --global --get user.email 2>/dev/null || git config --get user.email 2>/dev/null || true)}"
-BUDGET_NAME="${BUDGET_NAME:-stawi-cluster-budget}"
+# Per-account budget name is set after GH_PROFILE is known (section 8) so
+# onboarding one tenancy never mutates another account's budget object.
+BUDGET_NAME="${BUDGET_NAME:-}"
 # Tofu/workflow-facing profile name. Defaults to a slugged form of the local
 # OCI CLI profile. It must match the key in the tofu oci_accounts map AND
 # resolve to a valid filesystem name for the ~/.oci/config profile written
@@ -93,10 +126,12 @@ APP_NAME="${APP_NAME:-github-actions-cluster}"
 SERVICE_USER_NAME="${SERVICE_USER_NAME:-cluster-provisioner}"
 GROUP_NAME="${GROUP_NAME:-cluster-provisioners}"
 POLICY_NAME="${POLICY_NAME:-cluster-provisioners-policy}"
-TRUST_NAME="${TRUST_NAME:-github-actions-antinvestor}"
+# Default trust name for this project. Issuer uniqueness still allows
+# reusing an older trust created under a prior name (issuer match fallback).
+TRUST_NAME="${TRUST_NAME:-github-actions-stawi}"
 
 usage() {
-  sed -n '2,50p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,60p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   exit 1
 }
 
@@ -109,8 +144,10 @@ while [[ $# -gt 0 ]]; do
     --region)         REGION="$2"; shift 2 ;;
     --compartment)    COMPARTMENT_OCID="$2"; shift 2 ;;
     --repo-path)      REPO_PATH="$2"; shift 2 ;;
+    --base-branch)    BASE_BRANCH="$2"; shift 2 ;;
     --branch)         BRANCH="$2"; shift 2 ;;
     --no-push)        NO_PUSH="true"; shift ;;
+    --no-pr)          NO_PR="true"; shift ;;
     --budget-amount)  BUDGET_AMOUNT="$2"; shift 2 ;;
     --budget-email)   BUDGET_EMAIL="$2"; shift 2 ;;
     --budget-name)    BUDGET_NAME="$2"; shift 2 ;;
@@ -119,23 +156,233 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-for cmd in oci jq curl python3 git sops ; do
-  command -v "$cmd" >/dev/null 2>&1 || { echo "missing: $cmd" >&2; exit 2; }
-done
-
 say()  { printf '\e[1;34m[%s][%s]\e[0m %s\n' "$(date +%H:%M:%S)" "$PROFILE" "$*"; }
 warn() { printf '\e[1;33m[%s][%s]\e[0m %s\n' "$(date +%H:%M:%S)" "$PROFILE" "$*" >&2; }
 die()  { printf '\e[1;31m[%s][%s]\e[0m %s\n' "$(date +%H:%M:%S)" "$PROFILE" "$*" >&2; exit 1; }
 
+# Ensure sops is on PATH at the latest GitHub release (or SOPS_VERSION if set).
+# Installs/upgrades into ~/.local/bin. Needs curl (checked first).
+# Fallback tag used only if the releases API is unreachable.
+SOPS_VERSION_FALLBACK="v3.13.2"
+ensure_sops() {
+  command -v curl >/dev/null 2>&1 || die "missing: curl (needed to auto-install sops)"
+
+  local want os arch asset dest tmp tag ver_line ver_num want_num
+
+  # Resolve desired version: explicit SOPS_VERSION, else GitHub "latest".
+  if [[ -n "${SOPS_VERSION:-}" ]]; then
+    want="$SOPS_VERSION"
+  else
+    tag=$(curl -fsSL \
+      -H 'Accept: application/vnd.github+json' \
+      -H 'X-GitHub-Api-Version: 2022-11-28' \
+      'https://api.github.com/repos/getsops/sops/releases/latest' 2>/dev/null \
+      | jq -r '.tag_name // empty' 2>/dev/null || true)
+    if [[ -n "$tag" && "$tag" != "null" ]]; then
+      want="$tag"
+    else
+      want="$SOPS_VERSION_FALLBACK"
+      warn "could not resolve latest sops release from GitHub; using fallback ${want}"
+    fi
+  fi
+  # Normalize: accept "3.13.2" or "v3.13.2"
+  [[ "$want" == v* ]] || want="v${want}"
+  want_num="${want#v}"
+
+  if command -v sops >/dev/null 2>&1; then
+    # `sops --version` may print update chatter on stderr; take first version-like token.
+    ver_line=$(sops --version 2>/dev/null | head -1 || true)
+    ver_num=$(printf '%s' "$ver_line" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+    if [[ -n "$ver_num" && "$ver_num" == "$want_num" ]]; then
+      say "sops up to date: $(command -v sops) (v${ver_num})"
+      return 0
+    fi
+    if [[ -n "$ver_num" ]]; then
+      say "sops v${ver_num} on PATH — upgrading to ${want}"
+    else
+      say "sops present but version unreadable — installing ${want}"
+    fi
+  else
+    say "sops not on PATH — installing ${want}"
+  fi
+
+  os=$(uname -s | tr '[:upper:]' '[:lower:]')
+  arch=$(uname -m)
+  case "$arch" in
+    x86_64|amd64) arch=amd64 ;;
+    aarch64|arm64) arch=arm64 ;;
+    *) die "unsupported arch for sops auto-install: $arch (install sops manually)" ;;
+  esac
+  case "$os" in
+    linux|darwin) ;;
+    *) die "unsupported OS for sops auto-install: $os (install sops manually)" ;;
+  esac
+
+  asset="sops-${want}.${os}.${arch}"
+  dest="${HOME}/.local/bin/sops"
+  tmp=$(mktemp)
+  mkdir -p "$(dirname "$dest")"
+  if ! curl -fsSL -o "$tmp" \
+      "https://github.com/getsops/sops/releases/download/${want}/${asset}"; then
+    rm -f "$tmp"
+    die "failed to download sops ${want} (${asset}) from GitHub releases"
+  fi
+  chmod +x "$tmp"
+  mv "$tmp" "$dest"
+  export PATH="${HOME}/.local/bin${PATH:+:$PATH}"
+  command -v sops >/dev/null 2>&1 || die "sops installed to ${dest} but not found on PATH"
+  # Prefer the copy we just installed when an older system sops shadows PATH.
+  if [[ "$(command -v sops)" != "$dest" ]]; then
+    export PATH="$(dirname "$dest"):$PATH"
+  fi
+  say "sops ready: $(command -v sops) ($(sops --version 2>/dev/null | head -1 | tr -d '\n'))"
+}
+
+for cmd in oci jq curl python3 git ; do
+  command -v "$cmd" >/dev/null 2>&1 || { echo "missing: $cmd" >&2; exit 2; }
+done
+ensure_sops
+
+# GitHub auth for this one repo. Prefer GITHUB_TOKEN; accept GH_TOKEN alias.
+# Never print the token. Used for HTTPS git clone/fetch/push and REST PR create.
+github_token() { printf '%s' "${GITHUB_TOKEN:-${GH_TOKEN:-}}"; }
+
+github_require_token() {
+  [[ -n "$(github_token)" ]] || die "GITHUB_TOKEN (or GH_TOKEN) is required for non-interactive git to ${GH_REPO}. Export a PAT with Contents R/W (+ Pull requests R/W to open PRs), then re-run."
+}
+
+# Run git against github.com using the token automatically — no username/password
+# prompts. Uses HTTP Basic via http.extraheader (GitHub's supported PAT form)
+# and disables credential helpers / terminal prompts that would otherwise ask.
+# Origin remotes stay as the public HTTPS URL (token is never stored in config).
+github_git() {
+  local tok basic
+  github_require_token
+  tok=$(github_token)
+  # base64 of "x-access-token:<pat>" — portable (openssl or base64).
+  if command -v openssl >/dev/null 2>&1; then
+    basic=$(printf 'x-access-token:%s' "$tok" | openssl base64 -A 2>/dev/null)
+  fi
+  if [[ -z "${basic:-}" ]]; then
+    basic=$(printf 'x-access-token:%s' "$tok" | base64 | tr -d '\n')
+  fi
+  # GIT_TERMINAL_PROMPT=0: never fall back to interactive askpass.
+  # credential.helper=: empty helper so OS keychain / store cannot override.
+  GIT_TERMINAL_PROMPT=0 \
+    git -c credential.helper= \
+      -c "http.https://github.com/.extraheader=Authorization: Basic ${basic}" \
+      "$@"
+}
+
+# Fetch one or more refs into refs/remotes/origin/* using the token.
+# Usage: github_git_fetch "refs/heads/main:refs/remotes/origin/main" ...
+github_git_fetch() {
+  local ref
+  github_require_token
+  git -C "$REPO_PATH" remote set-url origin "$DEFAULT_REPO_URL" 2>/dev/null || true
+  for ref in "$@"; do
+    github_git -C "$REPO_PATH" fetch --quiet origin "+${ref}" \
+      || return 1
+  done
+  return 0
+}
+
+github_git_clone() {
+  local dest="$1"
+  github_require_token
+  github_git clone --branch "$BASE_BRANCH" --single-branch "$DEFAULT_REPO_URL" "$dest" \
+    || die "git clone failed for ${GH_REPO} (check GITHUB_TOKEN scopes: Contents R/W on this repo)"
+  # Ensure origin has no embedded credentials.
+  git -C "$dest" remote set-url origin "$DEFAULT_REPO_URL"
+}
+
+# POST JSON body from stdin to GitHub REST. Prints response body.
+# Sets _GITHUB_API_CODE. Returns 0 only for HTTP 2xx.
+github_api_json() {
+  local method="$1" path="$2"
+  local tok body_file code
+  tok=$(github_token)
+  [[ -n "$tok" ]] || return 2
+  body_file=$(mktemp)
+  code=$(curl -sS -o "$body_file" -w '%{http_code}' \
+    -X "$method" \
+    -H "Authorization: Bearer ${tok}" \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    -H "Content-Type: application/json" \
+    --data-binary @- \
+    "${GITHUB_API}${path}")
+  _GITHUB_API_CODE=$code
+  cat "$body_file"
+  rm -f "$body_file"
+  [[ "$code" =~ ^2 ]]
+}
+
+# Find open PR URL for head branch → base, or empty.
+github_find_open_pr() {
+  local head="$1" base="$2" tok resp
+  tok=$(github_token)
+  [[ -n "$tok" ]] || return 0
+  # head query is owner:branch; encode colon as %3A
+  resp=$(curl -sS \
+    -H "Authorization: Bearer ${tok}" \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "${GITHUB_API}/repos/${GH_REPO}/pulls?state=open&base=${base}&head=stawi-org%3A${head}" \
+    2>/dev/null) || return 0
+  jq -r 'if type=="array" and length>0 then .[0].html_url else empty end' <<<"$resp" 2>/dev/null || true
+}
+
+# Create PR; print html_url on success.
+github_create_pr() {
+  local title="$1" head="$2" base="$3" body="$4" resp
+  resp=$(jq -n \
+    --arg title "$title" \
+    --arg head "$head" \
+    --arg base "$base" \
+    --arg body "$body" \
+    '{title:$title, head:$head, base:$base, body:$body}' \
+    | github_api_json POST "/repos/${GH_REPO}/pulls") || {
+    warn "GitHub PR create HTTP ${_GITHUB_API_CODE:-?} response: $(printf '%s' "$resp" | head -c 400)"
+    return 1
+  }
+  jq -r '.html_url // empty' <<<"$resp"
+}
+
+cleanup_onboard_worktree() {
+  if [[ "$ONBOARD_WORKTREE_CLEANUP" == "true" && -n "$ONBOARD_WORKTREE" && -d "$ONBOARD_WORKTREE" ]]; then
+    git -C "$REPO_PATH" worktree remove --force "$ONBOARD_WORKTREE" 2>/dev/null || true
+    rm -rf "$ONBOARD_WORKTREE" 2>/dev/null || true
+  fi
+}
+trap cleanup_onboard_worktree EXIT
+
 # Resolve the repo root before any OCI work. We fail fast here so a wrong
-# pwd doesn't burn an entire OCI Identity Domain run before complaining.
+# path doesn't burn an entire OCI Identity Domain run before complaining.
 if [[ -z "$REPO_PATH" ]]; then
   REPO_PATH=$(git rev-parse --show-toplevel 2>/dev/null || true)
-  [[ -z "$REPO_PATH" ]] && die "Not inside a git repo; pass --repo-path PATH explicitly"
 fi
+if [[ -z "$REPO_PATH" ]]; then
+  REPO_PATH="${TMPDIR:-/tmp}/deployment.infra-bootstrap-$$"
+  say "no local checkout; cloning ${DEFAULT_REPO_URL} → $REPO_PATH (token auth, non-interactive)"
+  github_git_clone "$REPO_PATH"
+fi
+REPO_PATH=$(cd "$REPO_PATH" && pwd)
 [[ -f "$REPO_PATH/.sops.yaml" ]] \
   || die "$REPO_PATH has no .sops.yaml — wrong checkout? Aborting before any write."
-say "repo path: $REPO_PATH"
+# Refuse to write into a fork / unrelated clone.
+origin_url=$(git -C "$REPO_PATH" config --get remote.origin.url 2>/dev/null || true)
+case "$origin_url" in
+  *stawi-org/deployment.infra*) ;;
+  *)
+    die "origin is '${origin_url:-unset}' — expected ${GH_REPO} (https://github.com/${GH_REPO}). Pass --repo-path to the correct clone."
+    ;;
+esac
+# Normalize origin to public HTTPS (no credentials in config).
+git -C "$REPO_PATH" remote set-url origin "$DEFAULT_REPO_URL" 2>/dev/null || true
+github_require_token
+say "GitHub auth: token present (non-interactive clone/fetch/push + PR API)"
+say "repo path: $REPO_PATH ($GH_REPO, base: $BASE_BRANCH)"
 
 # Default GH_PROFILE = slug of local PROFILE: lowercase, only a-z0-9, collapsed.
 # e.g. "BWIRE@STAWI.ORG" → "bwirestawiorg". Override with --gh-profile.
@@ -665,7 +912,11 @@ CLIENT_SECRET=$(jq -r '.data."client-secret" // empty' <<<"$APP_DETAIL")
 if [[ -z "$CLIENT_SECRET" ]]; then
   warn "client_secret not returned by API (common after first-read)."
   warn "Regenerate via: Identity Domain → Applications → $APP_NAME → OAuth → Regenerate secret"
-  read -r -p "Paste the client_secret (or press enter to skip GH secret push): " CLIENT_SECRET || true
+  if [[ -t 0 ]]; then
+    read -r -p "Paste the client_secret (empty = keep existing encrypted auth.yaml if present): " CLIENT_SECRET || true
+  else
+    warn "stdin is not a TTY — will keep existing encrypted auth.yaml if present"
+  fi
 fi
 
 say "  app:     $APP_OCID"
@@ -675,27 +926,77 @@ say "  clientID: $CLIENT_ID"
 # 6. IDENTITY PROPAGATION TRUST
 # =========================================================================
 say "Ensuring Identity Propagation Trust '$TRUST_NAME'"
-# First look up by name (normal case)
-TRUST_LIST=$("${OCI_CLI[@]}" identity-domains identity-propagation-trusts list "${ID_ENDPOINT[@]}" \
-  --filter "name eq \"$TRUST_NAME\"" --output json 2>/dev/null || echo '{"data":{"resources":[]}}')
-TRUST_OCID=$(jq -r '.data.resources[0].id // empty' <<<"$TRUST_LIST")
+
+# OCI CLI sometimes prints ServiceError / usage text on stdout with a non-
+# zero exit, or (worse) non-JSON on stdout with exit 0. Under set -e, a
+# bare `jq ... <<<"$out"` then aborts with "parse error: Invalid numeric
+# literal". Always coerce to JSON before jq.
+oci_stdout_json() {
+  # Runs "$@"; prints valid JSON on stdout, or empty string if unusable.
+  local out
+  out=$("$@" 2>/dev/null) || out=""
+  if [[ -n "$out" ]] && printf '%s' "$out" | jq empty 2>/dev/null; then
+    printf '%s' "$out"
+  else
+    printf ''
+  fi
+}
+
+# Identity-domains list payloads use either .data.resources or
+# .data.Resources depending on CLI version / raw vs typed subcommand.
+trust_list_first_id() {
+  jq -r '(.data.resources // .data.Resources // .resources // [])[0].id // empty' 2>/dev/null || true
+}
+trust_list_by_issuer() {
+  # $1 = issuer URL. Prints "id\tname" for first match, or empty.
+  local iss="$1"
+  jq -r --arg iss "$iss" '
+    [ (.data.resources // .data.Resources // .resources // [])[]?
+      | select((.issuer // "") == $iss)
+    ] | (.[0] // empty) | if . == null or . == "" then empty else "\(.id)\t\(.name // .id)" end
+  ' 2>/dev/null || true
+}
+
+# First look up by name (normal case). Also try the legacy trust name so
+# re-runs after the stawi rename still bind the existing object.
+TRUST_LIST=$(oci_stdout_json "${OCI_CLI[@]}" identity-domains identity-propagation-trusts list \
+  "${ID_ENDPOINT[@]}" --filter "name eq \"$TRUST_NAME\"" --output json)
+TRUST_OCID=""
+if [[ -n "$TRUST_LIST" ]]; then
+  TRUST_OCID=$(printf '%s' "$TRUST_LIST" | trust_list_first_id)
+fi
+if [[ -z "$TRUST_OCID" && "$TRUST_NAME" != "github-actions-antinvestor" ]]; then
+  TRUST_LIST=$(oci_stdout_json "${OCI_CLI[@]}" identity-domains identity-propagation-trusts list \
+    "${ID_ENDPOINT[@]}" --filter "name eq \"github-actions-antinvestor\"" --output json)
+  if [[ -n "$TRUST_LIST" ]]; then
+    TRUST_OCID=$(printf '%s' "$TRUST_LIST" | trust_list_first_id)
+    [[ -n "$TRUST_OCID" ]] && say "  found legacy trust name github-actions-antinvestor ($TRUST_OCID)"
+  fi
+fi
 
 # Fall back to issuer match. OCI enforces issuer uniqueness, so a prior
 # failed run may have left a trust with a different name but same issuer.
 if [[ -z "$TRUST_OCID" ]]; then
-  TRUST_ALL=$("${OCI_CLI[@]}" identity-domains identity-propagation-trusts list "${ID_ENDPOINT[@]}" \
-    --all --output json 2>/dev/null || echo '{"data":{"resources":[]}}')
-  EXISTING=$(jq -r --arg iss "https://token.actions.githubusercontent.com" \
-    '.data.resources[]? | select(.issuer==$iss) | {id,name}' <<<"$TRUST_ALL" | head -c 2000)
-  if [[ -n "$EXISTING" ]]; then
-    TRUST_OCID=$(jq -r --arg iss "https://token.actions.githubusercontent.com" \
-      '[.data.resources[]? | select(.issuer==$iss)][0].id // empty' <<<"$TRUST_ALL")
-    EXISTING_NAME=$(jq -r --arg iss "https://token.actions.githubusercontent.com" \
-      '[.data.resources[]? | select(.issuer==$iss)][0].name // empty' <<<"$TRUST_ALL")
-    warn "Trust with GitHub issuer already exists under a different name: '$EXISTING_NAME' ($TRUST_OCID)"
-    warn "Reusing it. If you need the impersonation rule updated, delete it in the UI:"
-    warn "  Identity Domain → Security → Identity Propagation Trusts → $EXISTING_NAME → Delete"
-    warn "  Then re-run this script."
+  TRUST_ALL=$(oci_stdout_json "${OCI_CLI[@]}" identity-domains identity-propagation-trusts list \
+    "${ID_ENDPOINT[@]}" --all --output json)
+  if [[ -z "$TRUST_ALL" ]]; then
+    # Typed subcommand flaky on some CLI builds — fall back to raw SCIM list.
+    TRUST_ALL=$(oci_stdout_json "${OCI_CLI[@]}" raw-request \
+      --target-uri "${DOMAIN_URL}/admin/v1/IdentityPropagationTrusts?count=100" \
+      --http-method GET --output json)
+  fi
+  if [[ -n "$TRUST_ALL" ]]; then
+    trust_hit=$(printf '%s' "$TRUST_ALL" | trust_list_by_issuer "https://token.actions.githubusercontent.com")
+    if [[ -n "$trust_hit" ]]; then
+      TRUST_OCID=$(printf '%s' "$trust_hit" | cut -f1)
+      EXISTING_NAME=$(printf '%s' "$trust_hit" | cut -f2-)
+      warn "Trust with GitHub issuer already exists under a different name: '$EXISTING_NAME' ($TRUST_OCID)"
+      warn "Reusing it. If you need the impersonation rule updated, delete it in the UI:"
+      warn "  Identity Domain → Security → Identity Propagation Trusts → $EXISTING_NAME → Delete"
+      warn "  Then re-run this script."
+    fi
+  else
+    warn "  could not list identity-propagation-trusts as JSON; will attempt create"
   fi
 fi
 
@@ -755,15 +1056,18 @@ if [[ -n "$TRUST_OCID" ]]; then
   # If we find a broken or stale trust, delete + recreate so re-runs self-heal.
   # impersonationServiceUsers has SCIM "returned: request" so default GETs
   # omit it — must pass --attributes to inspect the stored value.
-  TRUST_RAW=$("${OCI_CLI[@]}" raw-request \
+  TRUST_RAW=$(oci_stdout_json "${OCI_CLI[@]}" raw-request \
     --target-uri "${DOMAIN_URL}/admin/v1/IdentityPropagationTrusts/${TRUST_OCID}?attributes=clientClaimName,clientClaimValues,subjectMappingAttribute,impersonationServiceUsers" \
-    --http-method GET --output json 2>/dev/null || echo '{"data":{}}')
+    --http-method GET --output json)
+  if [[ -z "$TRUST_RAW" ]]; then
+    TRUST_RAW='{"data":{}}'
+  fi
 
   has_field() {
     # Top-level normalised field present + non-empty.
     local target="$1"
     jq -r --arg t "$target" '
-      .data | to_entries[]?
+      (.data // .) | to_entries[]?
       | select(.key | ascii_downcase | gsub("[^a-z]"; "") == $t)
       | .value
     ' <<<"$TRUST_RAW" 2>/dev/null \
@@ -776,11 +1080,11 @@ if [[ -n "$TRUST_OCID" ]]; then
   # Targeted: rule + value live ONLY inside impersonationServiceUsers[].
   # Any other "rule" / "value" in the doc is unrelated.
   rule_value=$(jq -r '
-    (.data."impersonation-service-users" // .data.impersonationServiceUsers // [])
+    (.data."impersonation-service-users" // .data.impersonationServiceUsers // .impersonationServiceUsers // [])
     | (.[0] // {}).rule // ""
   ' <<<"$TRUST_RAW" 2>/dev/null || echo "")
   trust_user_value=$(jq -r '
-    (.data."impersonation-service-users" // .data.impersonationServiceUsers // [])
+    (.data."impersonation-service-users" // .data.impersonationServiceUsers // .impersonationServiceUsers // [])
     | (.[0] // {}).value // ""
   ' <<<"$TRUST_RAW" 2>/dev/null || echo "")
 
@@ -823,46 +1127,143 @@ fi
 
 if [[ -z "$TRUST_OCID" ]]; then
   say "  creating"
-  TRUST_OCID=$("${OCI_CLI[@]}" identity-domains identity-propagation-trust create "${ID_ENDPOINT[@]}" \
-    --from-json "$TRUST_PAYLOAD" \
-    --output json | jq -r '.data.id')
+  TRUST_CREATE=$(oci_stdout_json "${OCI_CLI[@]}" identity-domains identity-propagation-trust create \
+    "${ID_ENDPOINT[@]}" --from-json "$TRUST_PAYLOAD" --output json)
+  if [[ -z "$TRUST_CREATE" ]]; then
+    # Typed create can fail/print non-JSON on older CLI — raw SCIM POST.
+    say "  typed create returned no JSON; trying raw SCIM POST"
+    TRUST_CREATE=$(oci_stdout_json "${OCI_CLI[@]}" raw-request \
+      --target-uri "${DOMAIN_URL}/admin/v1/IdentityPropagationTrusts" \
+      --http-method POST \
+      --request-body "$TRUST_PAYLOAD" \
+      --output json)
+  fi
+  TRUST_OCID=$(jq -r '.data.id // .id // empty' <<<"${TRUST_CREATE:-{}}" 2>/dev/null || true)
+  if [[ -z "$TRUST_OCID" ]]; then
+    warn "  trust create response (truncated):"
+    printf '%s\n' "${TRUST_CREATE:-<empty>}" | head -c 800 >&2
+    die "Identity Propagation Trust create failed — see response above."
+  fi
 fi
 say "  trust:   $TRUST_OCID"
 
 # =========================================================================
-# 7. WRITE ENCRYPTED auth.yaml + EDIT accounts.yaml + COMMIT + PUSH
+# 7. WRITE ENCRYPTED auth.yaml + EDIT accounts.yaml + COMMIT + PR
 # =========================================================================
 say ""
 say "=========================================================="
 say "OCI workload identity federation ready for profile [$PROFILE]."
 
 BRANCH="${BRANCH:-onboard-oracle-${GH_PROFILE}}"
-AUTH_DIR="$REPO_PATH/tofu/shared/accounts/oracle/$GH_PROFILE"
-AUTH_FILE="$AUTH_DIR/auth.yaml"
-ACCOUNTS_FILE="$REPO_PATH/tofu/shared/accounts.yaml"
+
+# Isolated worktree from origin/$BASE_BRANCH so we never disturb the
+# operator's current branch / dirty tree. Reuses the branch tip if it
+# already exists on the remote.
+say "preparing worktree for branch '$BRANCH' from origin/$BASE_BRANCH"
+# Authenticated fetch when GITHUB_TOKEN is set (private repo / Cloud Shell).
+github_git_fetch "refs/heads/${BASE_BRANCH}:refs/remotes/origin/${BASE_BRANCH}" \
+  || die "git fetch origin $BASE_BRANCH failed (set GITHUB_TOKEN or git credentials)"
+# Best-effort: also refresh the feature branch tip if it already exists remotely.
+github_git_fetch "refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" 2>/dev/null || true
+
+ONBOARD_WORKTREE="${TMPDIR:-/tmp}/bootstrap-onboard-${GH_PROFILE}-$$"
+rm -rf "$ONBOARD_WORKTREE"
+if git -C "$REPO_PATH" show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
+  git -C "$REPO_PATH" worktree add -B "$BRANCH" "$ONBOARD_WORKTREE" "origin/$BRANCH" \
+    || die "git worktree add (existing branch) failed"
+  # Keep the onboard branch current with main so the PR is mergeable.
+  git -C "$ONBOARD_WORKTREE" merge --ff-only "origin/$BASE_BRANCH" 2>/dev/null \
+    || git -C "$ONBOARD_WORKTREE" rebase "origin/$BASE_BRANCH" 2>/dev/null \
+    || warn "could not fast-forward/rebase onto origin/$BASE_BRANCH; continuing on existing tip"
+else
+  git -C "$REPO_PATH" worktree add -B "$BRANCH" "$ONBOARD_WORKTREE" "origin/$BASE_BRANCH" \
+    || die "git worktree add from origin/$BASE_BRANCH failed"
+fi
+ONBOARD_WORKTREE_CLEANUP="true"
+
+# Paths are strictly scoped to this GH_PROFILE so one account never rewrites
+# another account's auth.yaml (or any other provider tree).
+AUTH_REL="tofu/shared/accounts/oracle/${GH_PROFILE}/auth.yaml"
+AUTH_DIR="$ONBOARD_WORKTREE/tofu/shared/accounts/oracle/$GH_PROFILE"
+AUTH_FILE="$ONBOARD_WORKTREE/$AUTH_REL"
+ACCOUNTS_FILE="$ONBOARD_WORKTREE/tofu/shared/accounts.yaml"
+AUTH_CHANGED="false"
+ACCOUNTS_CHANGED="false"
 
 mkdir -p "$AUTH_DIR"
 
-cat > "$AUTH_FILE" <<EOF
+VCN_CIDR_EFF="${VCN_CIDR:-10.200.0.0/16}"
+auth_is_sops_encrypted() {
+  [[ -f "$1" ]] && grep -qE '^sops:' "$1"
+}
+
+# True when existing encrypted auth decrypts and matches this run's desired
+# values for GH_PROFILE only. Needs age private key (SOPS_AGE_KEY / keys.txt).
+# When CLIENT_SECRET is empty, the secret half of oidc_client_identifier is
+# not compared (so re-runs without the secret can still short-circuit).
+auth_fields_match_existing() {
+  local plain_json oidc want_oidc_prefix
+  plain_json=$(sops -d --input-type yaml --output-type json "$AUTH_FILE" 2>/dev/null) || return 1
+  oidc=$(jq -r '.auth.oidc_client_identifier // .oidc_client_identifier // empty' <<<"$plain_json")
+  [[ -n "$oidc" && "$oidc" == *:* ]] || return 1
+  want_oidc_prefix="${CLIENT_ID}:"
+  [[ "$oidc" == "${want_oidc_prefix}"* ]] || return 1
+  if [[ -n "$CLIENT_SECRET" && "$oidc" != "${CLIENT_ID}:${CLIENT_SECRET}" ]]; then
+    return 1
+  fi
+  jq -e \
+    --arg tenancy "$TENANCY_OCID" \
+    --arg region "$REGION" \
+    --arg compartment "$COMPARTMENT_OCID" \
+    --arg domain "$DOMAIN_BASE_URL" \
+    --arg vcn "$VCN_CIDR_EFF" \
+    '
+      (.auth // .) as $a
+      | ($a.tenancy_ocid // "") == $tenancy
+      and ($a.region // "") == $region
+      and ($a.compartment_ocid // "") == $compartment
+      and (($a.domain_base_url // "") | rtrimstr("/")) == ($domain | rtrimstr("/"))
+      and (($a.vcn_cidr // "10.200.0.0/16") == $vcn)
+      and (($a.auth_method // "SecurityToken") == "SecurityToken")
+    ' <<<"$plain_json" >/dev/null 2>&1
+}
+
+write_encrypted_auth() {
+  [[ -n "$CLIENT_SECRET" ]] || die "client_secret is required to create/update auth.yaml for ${GH_PROFILE}"
+  cat > "$AUTH_FILE" <<EOF
 auth:
   tenancy_ocid: ${TENANCY_OCID}
   region: ${REGION}
   compartment_ocid: ${COMPARTMENT_OCID}
-  vcn_cidr: ${VCN_CIDR:-10.200.0.0/16}
+  vcn_cidr: ${VCN_CIDR_EFF}
   enable_ipv6: true
   auth_method: SecurityToken
   domain_base_url: ${DOMAIN_BASE_URL}
-  oidc_client_identifier: "${CLIENT_ID}:${CLIENT_SECRET:-<PASTE_CLIENT_SECRET>}"
+  oidc_client_identifier: "${CLIENT_ID}:${CLIENT_SECRET}"
 EOF
+  (cd "$ONBOARD_WORKTREE" && sops -e --input-type yaml --output-type yaml -i "$AUTH_REL") \
+    || die "sops encrypt failed for ${AUTH_REL}"
+  AUTH_CHANGED="true"
+  say "wrote encrypted $AUTH_REL (account ${GH_PROFILE} only)"
+}
 
-(cd "$REPO_PATH" && sops -e --input-type yaml --output-type yaml -i \
-  "tofu/shared/accounts/oracle/$GH_PROFILE/auth.yaml")
-say "wrote encrypted $AUTH_FILE"
+if auth_is_sops_encrypted "$AUTH_FILE"; then
+  if auth_fields_match_existing; then
+    say "existing encrypted $AUTH_REL is current — not regenerating"
+  elif [[ -z "$CLIENT_SECRET" ]]; then
+    # Re-run without secret: never clobber a good encrypted file.
+    say "preserving existing encrypted $AUTH_REL (no client_secret this run; leave file unchanged)"
+    warn "  to force rewrite: paste client_secret when prompted or regenerate the OAuth secret"
+  else
+    say "updating encrypted $AUTH_REL (fields or secret changed for ${GH_PROFILE})"
+    write_encrypted_auth
+  fi
+else
+  write_encrypted_auth
+fi
 
-# Idempotent edit of accounts.yaml: append the account under oracle:
-# preserving the file's comments and ordering. Python is used (not yq)
-# because operators don't all have yq on PATH; python3 is already a
-# script-wide hard dep.
+# Idempotent edit of accounts.yaml: append ONLY this account under oracle:.
+# Never rewrites other list entries or other top-level keys.
 if ! grep -qE "^[[:space:]]*-[[:space:]]+${GH_PROFILE}[[:space:]]*\$" "$ACCOUNTS_FILE"; then
   python3 - "$ACCOUNTS_FILE" "$GH_PROFILE" <<'PY'
 import sys, re
@@ -889,43 +1290,129 @@ if in_oracle and not inserted:
     out.append(f"  - {name}")
 open(path, 'w').write('\n'.join(out) + '\n')
 PY
+  ACCOUNTS_CHANGED="true"
   say "added '$GH_PROFILE' to oracle: in tofu/shared/accounts.yaml"
 else
   say "'$GH_PROFILE' already in accounts.yaml — skipping edit"
 fi
 
-# Branch + commit + push. No gh CLI / GitHub token needed — operator's
-# existing git push credentials carry the change.
-cd "$REPO_PATH"
-git checkout -b "$BRANCH" 2>/dev/null || git checkout "$BRANCH"
-git add "tofu/shared/accounts/oracle/$GH_PROFILE/auth.yaml" "tofu/shared/accounts.yaml"
-git commit -m "onboard oracle ${GH_PROFILE}: add to accounts.yaml + encrypted auth"
+cd "$ONBOARD_WORKTREE"
+# Commit identity: prefer repo/global git config, else a non-interactive fallback
+# so Cloud Shell / fresh clones don't fail with "please tell me who you are".
+git_user_name=$(git config user.name 2>/dev/null || true)
+git_user_email=$(git config user.email 2>/dev/null || true)
+[[ -n "$git_user_name" ]] || git_user_name="bootstrap-oci-oidc"
+[[ -n "$git_user_email" ]] || git_user_email="${BUDGET_EMAIL:-bootstrap-oci-oidc@users.noreply.github.com}"
+
+# Stage only this account's auth + accounts.yaml (never other accounts/*).
+git add -- "$AUTH_REL" "tofu/shared/accounts.yaml"
+if git diff --cached --quiet; then
+  say "no file changes to commit for ${GH_PROFILE}"
+else
+  git -c "user.name=${git_user_name}" -c "user.email=${git_user_email}" \
+    commit -m "onboard oracle ${GH_PROFILE}: add to accounts.yaml + encrypted auth"
+  say "committed onboard changes on branch '$BRANCH' (scoped to ${GH_PROFILE})"
+fi
+
+compare_url="https://github.com/${GH_REPO}/compare/${BASE_BRANCH}...${BRANCH}?expand=1"
 
 if [[ "$NO_PUSH" = "true" ]]; then
-  say "branch '$BRANCH' committed locally — skipping push (--no-push)"
+  say "branch '$BRANCH' committed in worktree — skipping push/PR (--no-push)"
+  say "worktree: $ONBOARD_WORKTREE"
+  say "later: push and open $compare_url"
+  ONBOARD_WORKTREE_CLEANUP="false"
 else
-  push_log=$(git push -u origin "$BRANCH" 2>&1)
-  printf '%s\n' "$push_log"
-  pr_url=$(printf '%s\n' "$push_log" | grep -oE 'https://github.com/[^ ]+/pull/new/[^ ]+' | head -1)
-  if [[ -z "$pr_url" ]]; then
-    origin=$(git config --get remote.origin.url)
-    slug=$(printf '%s' "$origin" | sed -E 's#.*[/:]([^/]+/[^/]+)\.git$#\1#')
-    pr_url="https://github.com/${slug}/compare/${BRANCH}?expand=1"
+  say "pushing branch '$BRANCH' → github.com/${GH_REPO} (token auth, non-interactive)"
+  git -C "$ONBOARD_WORKTREE" remote set-url origin "$DEFAULT_REPO_URL" 2>/dev/null || true
+  push_err=$(mktemp)
+  if ! github_git -C "$ONBOARD_WORKTREE" push origin "refs/heads/${BRANCH}:refs/heads/${BRANCH}" 2>"$push_err"; then
+    # Redact anything that might echo the token.
+    sed -E 's#x-access-token:[^@[:space:]]+#x-access-token:***#g; s#[Bb]earer [A-Za-z0-9._-]+#Bearer ***#g' \
+      "$push_err" >&2 || true
+    rm -f "$push_err"
+    die "git push failed — check GITHUB_TOKEN has Contents: R/W on ${GH_REPO}"
+  fi
+  rm -f "$push_err"
+  say "pushed $BRANCH"
+
+  pr_url=""
+  if [[ "$NO_PR" = "true" ]]; then
+    pr_url="$compare_url"
+    say "--no-pr: open manually → $pr_url"
+  elif [[ -z "$(github_token)" ]]; then
+    pr_url="$compare_url"
+    warn "no GITHUB_TOKEN — cannot open PR via API. Open: $pr_url"
+  else
+    existing_pr=$(github_find_open_pr "$BRANCH" "$BASE_BRANCH")
+    if [[ -n "$existing_pr" ]]; then
+      pr_url="$existing_pr"
+      say "existing open PR: $pr_url"
+    else
+      pr_body=$(cat <<PRBODY
+## Summary
+Onboard OCI tenancy / account \`${GH_PROFILE}\` for GitHub Actions WIF.
+
+- Encrypted \`tofu/shared/accounts/oracle/${GH_PROFILE}/auth.yaml\` (OIDC client + tenancy metadata)
+- Listed under \`oracle:\` in \`tofu/shared/accounts.yaml\`
+
+## After merge
+Workflow [\`onboard-oracle\`](https://github.com/${GH_REPO}/actions/workflows/onboard-oracle.yml) runs on push to \`${BASE_BRANCH}\` when these paths change:
+
+1. **Seed free-tier capacity** — empty accounts get a continuous Always Free worker in R2 \`nodes.yaml\`
+2. **cluster-provision (mode=full)** — Talos image import per tenancy → \`tofu-apply\` (new account matrix cell) → Omni cluster template sync
+
+That provisions compute in the new tenancy and expands the cluster machine sets as nodes register.
+
+## Test plan
+- [ ] PR \`tofu-plan\` green for \`02-oracle-infra\` matrix cell \`${GH_PROFILE}\` (may warn if R2 inventory empty until post-merge seed)
+- [ ] Merge to \`${BASE_BRANCH}\`
+- [ ] Confirm \`onboard-oracle\` workflow succeeds
+- [ ] \`omnictl get machines\` shows the new node(s) joining
+
+Generated by \`scripts/bootstrap-oci-oidc.sh\` for OCI profile \`${PROFILE}\`.
+PRBODY
+)
+      pr_url=$(github_create_pr \
+        "onboard oracle ${GH_PROFILE}: WIF auth + accounts.yaml" \
+        "$BRANCH" "$BASE_BRANCH" "$pr_body") \
+        || pr_url=""
+      if [[ -n "$pr_url" ]]; then
+        say "opened PR: $pr_url"
+      else
+        pr_url="$compare_url"
+        warn "PR API create failed — open manually: $pr_url"
+      fi
+    fi
   fi
   say ""
-  say "OPEN: $pr_url"
+  say "PR: $pr_url"
+  say "After merge, CI workflow onboard-oracle expands the cluster for '${GH_PROFILE}'."
 fi
 
 # =========================================================================
 # 8. BUDGET + ALERT (cost guardrail)
 # =========================================================================
-# Budgets MUST be created in the root tenancy compartment regardless of the
-# compartment they target. We target $COMPARTMENT_OCID (the cluster compt)
-# so cost rolls up only from cluster resources, not the whole tenancy.
+# Per-account budget object so onboarding tenancy A never mutates B's cap.
+# Hard ceiling $2/month. Re-runs do not randomize; only create if missing,
+# or clamp down if an existing amount exceeds the max.
+if [[ -z "$BUDGET_NAME" ]]; then
+  BUDGET_NAME="stawi-${GH_PROFILE}-budget"
+fi
+# Clamp to integer 1..BUDGET_AMOUNT_MAX (default max = 2).
+if ! [[ "$BUDGET_AMOUNT" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  warn "BUDGET_AMOUNT='$BUDGET_AMOUNT' not numeric — using ${BUDGET_AMOUNT_MAX}"
+  BUDGET_AMOUNT="$BUDGET_AMOUNT_MAX"
+fi
+BUDGET_AMOUNT=$(awk -v a="$BUDGET_AMOUNT" -v m="$BUDGET_AMOUNT_MAX" 'BEGIN{
+  # floor to int dollars for OCI budget API friendliness
+  v=int(a+0);
+  if (v < 1) v=1;
+  if (v > m) v=m;
+  print v
+}')
 say ""
-say "Ensuring budget '$BUDGET_NAME' (USD ${BUDGET_AMOUNT}/month, target compartment $COMPARTMENT_OCID)"
-# List via raw-request — bypasses oci-cli version differences in the
-# `budgets budget list` subcommand naming.
+say "Ensuring budget '$BUDGET_NAME' (USD ${BUDGET_AMOUNT}/month max ${BUDGET_AMOUNT_MAX}, target compartment $COMPARTMENT_OCID)"
+# Budgets live in the tenancy root compartment; target is the cluster compt.
 BUDGETS_ENDPOINT_LIST="https://usage.${REGION}.oci.oraclecloud.com/20190111/budgets?compartmentId=${TENANCY_OCID}&displayName=${BUDGET_NAME}"
 BUDGET_LIST=$("${OCI_CLI[@]}" raw-request \
   --target-uri "$BUDGETS_ENDPOINT_LIST" --http-method GET --output json 2>/dev/null || echo '{"data":[]}')
@@ -934,12 +1421,13 @@ if ! printf '%s' "$BUDGET_LIST" | jq empty 2>/dev/null; then
   BUDGET_LIST='{"data":[]}'
 fi
 BUDGET_OCID=$(jq -r '.data[0].id // empty' <<<"$BUDGET_LIST")
+EXISTING_BUDGET_AMT=$(jq -r '.data[0].amount // empty' <<<"$BUDGET_LIST")
 
 if [[ -z "$BUDGET_OCID" ]]; then
   say "  creating (via raw-request — older oci-cli versions lack the create subcommand)"
   BUDGETS_ENDPOINT="https://usage.${REGION}.oci.oraclecloud.com/20190111/budgets"
   BUDGET_BODY=$(jq -n \
-    --arg cid "$TENANCY_OCID" --arg name "$BUDGET_NAME" --arg desc "Cluster cost guardrail; tracks $COMPARTMENT_OCID" \
+    --arg cid "$TENANCY_OCID" --arg name "$BUDGET_NAME" --arg desc "Cluster cost guardrail for oracle/${GH_PROFILE}; tracks $COMPARTMENT_OCID" \
     --argjson amt "$BUDGET_AMOUNT" --arg target "$COMPARTMENT_OCID" '{
       compartmentId: $cid,
       displayName:   $name,
@@ -962,12 +1450,23 @@ if [[ -z "$BUDGET_OCID" ]]; then
     warn "  required policy on the admin principal: Allow group <admin> to manage usage-budgets in tenancy"
   fi
 else
-  say "  exists ($BUDGET_OCID); updating amount via raw-request"
-  UPD_BODY=$(jq -n --argjson amt "$BUDGET_AMOUNT" '{amount: $amt}')
-  "${OCI_CLI[@]}" raw-request \
-    --target-uri "https://usage.${REGION}.oci.oraclecloud.com/20190111/budgets/${BUDGET_OCID}" \
-    --http-method PUT --request-body "$UPD_BODY" --output json >/dev/null 2>&1 || \
-    warn "  budget update returned non-zero (often ok — display-name immutable)"
+  # Only update when existing amount exceeds the hard ceiling — never raise
+  # and never thrash a stable ≤$2 budget on re-run.
+  need_clamp="false"
+  if [[ -n "$EXISTING_BUDGET_AMT" ]]; then
+    awk -v a="$EXISTING_BUDGET_AMT" -v m="$BUDGET_AMOUNT_MAX" 'BEGIN{exit !(a+0 > m)}' \
+      && need_clamp="true"
+  fi
+  if [[ "$need_clamp" == "true" ]]; then
+    say "  exists ($BUDGET_OCID) amount=${EXISTING_BUDGET_AMT} > max ${BUDGET_AMOUNT_MAX}; clamping to ${BUDGET_AMOUNT}"
+    UPD_BODY=$(jq -n --argjson amt "$BUDGET_AMOUNT" '{amount: $amt}')
+    "${OCI_CLI[@]}" raw-request \
+      --target-uri "https://usage.${REGION}.oci.oraclecloud.com/20190111/budgets/${BUDGET_OCID}" \
+      --http-method PUT --request-body "$UPD_BODY" --output json >/dev/null 2>&1 || \
+      warn "  budget clamp update returned non-zero"
+  else
+    say "  exists ($BUDGET_OCID) amount=${EXISTING_BUDGET_AMT:-unknown} — leaving unchanged"
+  fi
 fi
 say "  budget:  $BUDGET_OCID"
 

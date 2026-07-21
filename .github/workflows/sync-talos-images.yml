@@ -611,13 +611,35 @@ jobs:
 
       - name: Enumerate oracle accounts
         id: list
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
         run: |
           set -euo pipefail
+          if ! command -v sops >/dev/null 2>&1; then
+            curl -fsSL -o /usr/local/bin/sops \
+              "https://github.com/getsops/sops/releases/download/v3.11.0/sops-v3.11.0.linux.amd64"
+            chmod +x /usr/local/bin/sops
+          fi
+          # Prefer repo SOPS auth (source of truth after migrate-auth-to-repo).
+          # Merge legacy R2 plaintext only for accounts not yet in the repo.
+          AUTH_MERGED=/tmp/oracle-inv
+          scripts/stage-oracle-auth-from-repo.sh "$AUTH_MERGED" .
           R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          mkdir -p /tmp/oracle-inv
-          aws s3 sync "s3://${R2_BUCKET}/production/inventory/oracle/" /tmp/oracle-inv/ \
+          R2_AUTH=$(mktemp -d)
+          aws s3 sync "s3://${R2_BUCKET}/production/inventory/oracle/" "${R2_AUTH}/" \
             --endpoint-url "$R2_ENDPOINT" --region us-east-1 \
             --exclude "*" --include "*/auth.yaml" || true
+          if [[ -d "$R2_AUTH" ]]; then
+            for d in "$R2_AUTH"/*/; do
+              [[ -d "$d" ]] || continue
+              acct=$(basename "$d")
+              if [[ ! -f "$AUTH_MERGED/$acct/auth.yaml" && -f "$d/auth.yaml" ]]; then
+                mkdir -p "$AUTH_MERGED/$acct"
+                cp "$d/auth.yaml" "$AUTH_MERGED/$acct/auth.yaml"
+                echo "::notice::using legacy R2 auth for $acct (not in repo)"
+              fi
+            done
+          fi
           pip install --quiet pyyaml
           python3 - <<'PY' > /tmp/accounts.json
           import json, os

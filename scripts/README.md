@@ -8,7 +8,7 @@ run during account onboarding.
 
 | Script | Purpose |
 |---|---|
-| `bootstrap-oci-oidc.sh` | Idempotently set up an OCI Identity Domain so GitHub Actions can WIF-federate into a new tenancy. Run once per OCI tenancy, usually in OCI Cloud Shell. |
+| `bootstrap-oci-oidc.sh` | Idempotently set up an OCI Identity Domain so GitHub Actions can WIF-federate into a new tenancy. Non-interactive: worktree off `origin/main`, encrypted `auth.yaml` + `accounts.yaml`, push + REST PR (`GITHUB_TOKEN`, no `gh` CLI). After merge, `onboard-oracle.yml` seeds free-tier nodes and runs `cluster-provision`. Usually run from OCI Cloud Shell. |
 | `bootstrap-gcp-wif.sh` | **Once per GCP project:** WIF + SA + SOPS auth + accounts.yaml PR. Capacity defaults live in OpenTofu, not here. |
 | `seed-inventory.sh` | Append a new account stanza to the R2-backed inventory used by tofu's `node-state` module. |
 
@@ -19,6 +19,7 @@ run during account onboarding.
 | `cluster-health.sh` | `cluster-health.yml` |
 | `configure-oci-wif.sh` | `tofu-layer.yml` (OCI auth step) |
 | `build-oci-auth-json.py` | `tofu-layer.yml` |
+| `stage-oracle-auth-from-repo.sh` | `tofu-layer.yml`, `sync-talos-images.yml` (decrypt repo OCI auth for WIF / image import) |
 | `stage-gcp-auth-from-repo.sh` | `tofu-layer.yml`, `sync-talos-images.yml` (decrypt repo GCP auth for WIF ADC) |
 | `prune-stale-oci-instance-ocids.sh` + `.py` | `prune-stale-oci-ocids.yml` |
 | `rename-inventory-accounts.sh` + `rename_inventory_keys.py` + `rename-inventory-keys.sh` | `rename-inventory-{accounts,keys}.yml` |
