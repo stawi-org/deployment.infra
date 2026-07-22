@@ -182,6 +182,10 @@ jobs:
       force: ${{ inputs.force_image_sync }}
     secrets: inherit
 
+  # full|infra mode: tofu-apply matrix includes contabo/oracle/onprem/gcp
+  # (and oci-storage). GCP cells appear only when tofu/shared/accounts.yaml
+  # has non-empty gcp: keys; empty gcp: [] skips that matrix. No GCP
+  # free-tier preflight (paid Spot capacity — OCI Always Free only above).
   infra:
     needs: [preflight, images]
     # images may report failure if a single oci-import matrix cell

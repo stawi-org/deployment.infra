@@ -8,7 +8,7 @@ on:
       mode:             { required: true, type: string, description: "plan | apply" }
       environment:      { required: false, type: string, default: "" }
       extra_plan_args:  { required: false, type: string, default: "", description: "Extra args appended to tofu plan (e.g. -replace=foo.bar). Recovery use only." }
-      account:          { required: false, type: string, default: "", description: "Account key for per-account-state layers (01-contabo-infra, 02-oracle-infra, 02-onprem-infra). When non-empty, the Init step overrides the backend key to production/<layer>-<account>.tfstate and TF_VAR_account_key is exported so the layer's variable validation accepts the run." }
+      account:          { required: false, type: string, default: "", description: "Account key for per-account-state layers (01-contabo-infra, 02-oracle-infra, 02-onprem-infra, 02-gcp-infra). When non-empty, the Init step overrides the backend key to production/<layer>-<account>.tfstate and TF_VAR_account_key is exported so the layer's variable validation accepts the run." }
       pre_apply_state_rm:
         required: false
         type: string
@@ -91,7 +91,7 @@ jobs:
           tofu_version: "1.10.0"
 
       - name: Sync R2 inventory to /tmp/inventory/ (node-state module reads from here)
-        if: inputs.layer == '00-omni-server' || inputs.layer == '01-contabo-infra' || inputs.layer == '02-oci-storage' || inputs.layer == '02-oracle-infra' || inputs.layer == '02-onprem-infra' || inputs.layer == '03-talos'
+        if: inputs.layer == '00-omni-server' || inputs.layer == '01-contabo-infra' || inputs.layer == '02-oci-storage' || inputs.layer == '02-oracle-infra' || inputs.layer == '02-onprem-infra' || inputs.layer == '02-gcp-infra' || inputs.layer == '03-talos'
         env:
           AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -192,6 +192,81 @@ jobs:
             scripts/configure-oci-wif.sh /tmp/oci_auth_accounts.json
           fi
 
+      # GCP WIF: decrypt repo-resident auth.yaml for the matrix account,
+      # then exchange the GitHub OIDC token for a short-lived SA token via
+      # google-github-actions/auth. No long-lived GCP keys in secrets.
+      - name: Stage GCP auth from repo
+        id: gcp_auth
+        if: inputs.layer == '02-gcp-infra'
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+          ACCOUNT:      ${{ inputs.account }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${ACCOUNT}" ]]; then
+            echo "::error::02-gcp-infra requires a non-empty account input (per-account matrix cell)"
+            exit 1
+          fi
+          if ! command -v sops >/dev/null 2>&1; then
+            sudo curl -fsSL -o /usr/local/bin/sops \
+              https://github.com/getsops/sops/releases/download/v3.11.0/sops-v3.11.0.linux.amd64
+            sudo chmod +x /usr/local/bin/sops
+          fi
+          pip install --quiet pyyaml
+          scripts/stage-gcp-auth-from-repo.sh /tmp/gcp-auth .
+          auth_file="/tmp/gcp-auth/${ACCOUNT}/auth.yaml"
+          if [[ ! -f "$auth_file" ]]; then
+            echo "::error::missing staged GCP auth for account=${ACCOUNT} (expected ${auth_file}). Empty gcp matrix should skip this job; onboard via bootstrap-gcp-wif first."
+            exit 1
+          fi
+          # Auth shape: auth.{project_id,region,workload_identity_provider,service_account_email}
+          # Write step outputs + env project for the google provider ADC path.
+          python3 - "$auth_file" <<'PY'
+          import os, sys, yaml
+          path = sys.argv[1]
+          with open(path) as f:
+              doc = yaml.safe_load(f) or {}
+          auth = doc.get("auth") or {}
+          required = (
+              "project_id",
+              "region",
+              "workload_identity_provider",
+              "service_account_email",
+          )
+          missing = [k for k in required if not auth.get(k)]
+          if missing:
+              print(f"::error::GCP auth missing fields: {missing}", file=sys.stderr)
+              sys.exit(1)
+          out = os.environ["GITHUB_OUTPUT"]
+          envf = os.environ["GITHUB_ENV"]
+          mapping = {
+              "project_id": auth["project_id"],
+              "region": auth["region"],
+              "workload_identity_provider": auth["workload_identity_provider"],
+              "service_account": auth["service_account_email"],
+          }
+          with open(out, "a") as f:
+              for k, v in mapping.items():
+                  f.write(f"{k}={v}\n")
+          with open(envf, "a") as f:
+              f.write(f"GOOGLE_CLOUD_PROJECT={mapping['project_id']}\n")
+              f.write(f"CLOUDSDK_CORE_PROJECT={mapping['project_id']}\n")
+              f.write(f"GOOGLE_CLOUD_REGION={mapping['region']}\n")
+          print(
+              f"::notice::staged GCP WIF project={mapping['project_id']} "
+              f"sa={mapping['service_account']}",
+              file=sys.stderr,
+          )
+          PY
+
+      - name: Authenticate to Google Cloud (WIF)
+        if: inputs.layer == '02-gcp-infra'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ steps.gcp_auth.outputs.workload_identity_provider }}
+          service_account: ${{ steps.gcp_auth.outputs.service_account }}
+          project_id: ${{ steps.gcp_auth.outputs.project_id }}
+
       # OCI custom-image build/import is owned exclusively by
       # sync-talos-images.yml (writes OCIDs to R2 talos-images.yaml).
       # oracle-account-infra/image.tf only looks up the OCID — it no
@@ -206,11 +281,11 @@ jobs:
           AWS_EC2_METADATA_DISABLED: "true"
         run: |
           # Per-account-state layers (01-contabo-infra, 02-oracle-infra,
-          # 02-onprem-infra) split state by account. Match the partial-
-          # backend key the Init step builds so we clear the right lock
-          # object.
+          # 02-onprem-infra, 02-gcp-infra) split state by account. Match the
+          # partial-backend key the Init step builds so we clear the right
+          # lock object.
           case "${{ inputs.layer }}" in
-            01-contabo-infra|02-oracle-infra|02-onprem-infra)
+            01-contabo-infra|02-oracle-infra|02-onprem-infra|02-gcp-infra)
               if [[ -n "${{ inputs.account }}" ]]; then
                 LOCK_KEY="production/${{ inputs.layer }}-${{ inputs.account }}.tfstate.tflock"
               else
@@ -233,16 +308,16 @@ jobs:
           AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           # Required at init too — per-account-state layers
-          # (01-contabo-infra, 02-oracle-infra, 02-onprem-infra) have
-          # provider/module for_each blocks that transitively depend
-          # on var.account_key. Tofu evaluates provider configuration
-          # at init to decide which provider plugins to install, so
-          # the variable must be set even though init normally doesn't
-          # read input variables. Without this, init errors with
-          # "Unable to compute static value: local.<provider>_account_keys
-          # depends on var.account_key which is not available".
-          # Harmless on layers that don't declare the variable (Tofu
-          # ignores unrecognized TF_VAR_*).
+          # (01-contabo-infra, 02-oracle-infra, 02-onprem-infra,
+          # 02-gcp-infra) have provider/module for_each blocks that
+          # transitively depend on var.account_key. Tofu evaluates
+          # provider configuration at init to decide which provider
+          # plugins to install, so the variable must be set even though
+          # init normally doesn't read input variables. Without this,
+          # init errors with "Unable to compute static value:
+          # local.<provider>_account_keys depends on var.account_key
+          # which is not available". Harmless on layers that don't
+          # declare the variable (Tofu ignores unrecognized TF_VAR_*).
           TF_VAR_account_key:    ${{ inputs.account }}
         # Retry tofu init up to 3 times — provider signature/checksum
         # fetches from github.com (releases assets) and registry.opentofu.org
@@ -251,18 +326,18 @@ jobs:
         # killed an entire reinstall apply chain. Transient; a retry
         # 30s later succeeds.
         #
-        # 01-contabo-infra, 02-oracle-infra and 02-onprem-infra are
-        # partial backends (no `key` in backend.tf): this step supplies
-        # key=production/<layer>-<account>.tfstate via -backend-config
-        # so each account has its own state file. -reconfigure is
-        # required because the on-runner .terraform/terraform.tfstate
-        # (cached from the previous matrix cell, if any) holds a
-        # different backend key. Other layers fall through to the
-        # original single-key behavior.
+        # 01-contabo-infra, 02-oracle-infra, 02-onprem-infra and
+        # 02-gcp-infra are partial backends (no `key` in backend.tf):
+        # this step supplies key=production/<layer>-<account>.tfstate via
+        # -backend-config so each account has its own state file.
+        # -reconfigure is required because the on-runner
+        # .terraform/terraform.tfstate (cached from the previous matrix
+        # cell, if any) holds a different backend key. Other layers fall
+        # through to the original single-key behavior.
         run: |
           set +e
           case "${{ inputs.layer }}" in
-            01-contabo-infra|02-oracle-infra|02-onprem-infra)
+            01-contabo-infra|02-oracle-infra|02-onprem-infra|02-gcp-infra)
               if [[ -n "${{ inputs.account }}" ]]; then
                 backend_args=(
                   -backend-config="key=production/${{ inputs.layer }}-${{ inputs.account }}.tfstate"
@@ -407,11 +482,12 @@ jobs:
           TF_VAR_r2_access_key_id:               ${{ secrets.R2_ACCESS_KEY_ID }}
           TF_VAR_r2_secret_access_key:           ${{ secrets.R2_SECRET_ACCESS_KEY }}
           # Per-account-state layers (01-contabo-infra, 02-oracle-infra,
-          # 02-onprem-infra) read var.account_key to scope their
-          # for_each maps to a single account; harmless on layers that
-          # don't declare the variable (Terraform ignores unrecognized
-          # TF_VAR_*).
+          # 02-onprem-infra, 02-gcp-infra) read var.account_key to scope
+          # their for_each maps to a single account; harmless on layers
+          # that don't declare the variable (Terraform ignores
+          # unrecognized TF_VAR_*).
           TF_VAR_account_key:                      ${{ inputs.account }}
+          # sops provider (node-state auth decrypt) + any CLI sops use.
           SOPS_AGE_KEY:                            ${{ secrets.SOPS_AGE_KEY }}
           EXTRA_PLAN_ARGS:                         ${{ inputs.extra_plan_args }}
           # Layer-03 cluster.tf null_resources call omnictl to apply
