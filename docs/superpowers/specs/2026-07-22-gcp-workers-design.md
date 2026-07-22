@@ -10,18 +10,19 @@ Add **Google Cloud Platform (GCE)** as a fourth node ownership mode in `deployme
 
 1. Operators onboard a GCP **project** the same way they onboard an OCI tenancy: one bootstrap script → PR → merge → automatic seed + provision.
 2. GitHub Actions authenticates with **Workload Identity Federation** (no long-lived SA JSON keys).
-3. OpenTofu provisions **paid general-purpose** GCE VMs as **Talos workers only**, joined via Omni/SideroLink and KubeSpan.
-4. Inventory, per-account state, image sync, and cluster-provision matrix follow existing patterns so multi-project growth does not require redesign.
+3. OpenTofu provisions **paid Spot/preemptible** GCE VMs as **Talos workers only**, joined via Omni/SideroLink and KubeSpan.
+4. **Default capacity per project:** two Spot workers (seeded when inventory is empty).
+5. Inventory, per-account state, image sync, and cluster-provision matrix follow existing patterns so multi-project growth does not require redesign.
 
 ## Non-goals (v1)
 
 - GCP-hosted control plane / etcd (topology boundary unchanged).
 - Always Free / free-tier guardrails (this is paid capacity; no OCI-style packing validators).
 - GKE, Cloud Run, or managed Kubernetes.
-- Spot/preemptible instances (inventory flag may land later).
 - Dual-stack IPv6 on GCP VPCs (IPv4-first; IPv6 is a follow-up).
 - Shared image project across accounts (per-project custom images first).
 - Multi-arch inventory in v1 (amd64 only; arm64 later if needed).
+- Auto-scaling beyond the inventory-declared node set (operators edit `nodes.yaml` to change count).
 
 ## Why
 
@@ -112,14 +113,27 @@ labels:
   node.stawi.org/capacity-pool: gce-general
 annotations: {}
 nodes:
-  wk-1:
+  gcp-stawi-prod-node-1:
     role: worker
     machine_type: e2-medium
     zone: europe-west1-b
     boot_disk_gb: 50
+    preemptible: true          # default; Spot provisioning_model
+    labels: {}
+    annotations: {}
+  gcp-stawi-prod-node-2:
+    role: worker
+    machine_type: e2-medium
+    zone: europe-west1-b
+    boot_disk_gb: 50
+    preemptible: true
     labels: {}
     annotations: {}
 ```
+
+**Default pack:** every empty account seeds **exactly two** Spot workers (`gcp-<account>-node-1` and `gcp-<account>-node-2`). Both use `preemptible: true` (GCE Spot). Operators may set `preemptible: false` per node for standard VMs, or change `machine_type` / `zone` / count via R2 inventory.
+
+**Spot semantics:** `google_compute_instance.scheduling` uses `provisioning_model = "SPOT"`, `preemptible = true`, `automatic_restart = false`, `on_host_maintenance = "TERMINATE"`, `instance_termination_action = "DELETE"`. Preemption is expected; next tofu apply recreates missing instances from inventory. Workloads on these nodes must tolerate interruption (prefer non-critical / replicated workers).
 
 **Role enforcement:** inventory validators and the OpenTofu module accept only `role: worker` in v1. Control-plane values fail plan/validate.
 
@@ -174,16 +188,25 @@ Re-runs do not thrash other accounts or rewrite unchanged auth.
 
 ### Default seed (empty account)
 
+Exactly **two** Spot workers:
+
 ```yaml
 nodes:
-  wk-1:
+  gcp-<account>-node-1:
     role: worker
     machine_type: e2-medium
     zone: <auth.region>-b
     boot_disk_gb: 50
+    preemptible: true
+  gcp-<account>-node-2:
+    role: worker
+    machine_type: e2-medium
+    zone: <auth.region>-b
+    boot_disk_gb: 50
+    preemptible: true
 ```
 
-Operators may edit R2 inventory before or after first apply to change type, zone, count, or labels.
+Operators may edit R2 inventory before or after first apply to change type, zone, count, preemptible flag, or labels. Non-empty inventories are left unchanged by the seed step (no continuous reconciliation like OCI free-tier).
 
 ## OpenTofu modules and layer
 
@@ -338,7 +361,8 @@ Suggested PR sequence (can be adjusted in the implementation plan):
 | External IP / Flannel public-ip mismatch | `node-gcp.tftpl` annotations; mirror OCI patch lessons |
 | CIDR collision with existing VCNs | Document map; require unique `vpc_cidr` per project |
 | WIF misconfiguration locks CI out | Bootstrap is idempotent; document `gcloud` re-run; keep plan/apply error messages pointing at auth.yaml fields |
-| Cost runaway | Optional budget alert; start seed at one `e2-medium`; no auto-scale in v1 |
+| Cost runaway | Optional budget alert; seed two Spot `e2-medium` only; no auto-scale in v1 |
+| Spot preemption churn | Expected; tofu recreates; label Spot nodes so operators avoid stateful single-replicas |
 | Scope creep into CP-on-GCP | Hard-fail non-worker roles in module + seed validators |
 
 ## Success criteria
@@ -352,7 +376,8 @@ Suggested PR sequence (can be adjusted in the implementation plan):
 
 | Question | Decision |
 |---|---|
-| Capacity type | Paid general-purpose GCE workers |
+| Capacity type | Paid Spot/preemptible GCE workers |
+| Default pack | 2 Spot `e2-medium` workers per empty account |
 | Auth | Workload Identity Federation |
 | Multi-project | Yes, with OCI-like bootstrap PR + onboard workflow |
 | Roles | Workers only |
