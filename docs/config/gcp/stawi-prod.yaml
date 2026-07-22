@@ -5,7 +5,7 @@ gcp:
     stawi-prod:
       project_id: stawi-prod-123456
       region: europe-west1
-      vpc_cidr: 10.210.0.0/16
+      vpc_cidr: 10.210.0.0/24
       labels:
         node.stawi.org/capacity-pool: gce-spot
       nodes:

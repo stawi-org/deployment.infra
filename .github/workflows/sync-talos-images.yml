@@ -1231,6 +1231,39 @@ jobs:
           fi
           echo "::notice::image self_link=${self_link}"
 
+          # Prune old custom images in family stawi-talos: keep the
+          # image we just imported/reused + one previous (KEEP=1 other).
+          # Stale GCE images bill for storage and clutter the catalog;
+          # OCI has an analogous prune before import.
+          KEEP_OTHERS=1
+          mapfile -t family_images < <(gcloud compute images list \
+            --project="${PROJECT_ID}" \
+            --filter="family=${family}" \
+            --sort-by="~creationTimestamp" \
+            --format='value(name)' 2>/dev/null || true)
+          if (( ${#family_images[@]} > KEEP_OTHERS + 1 )); then
+            # First entry is newest; always keep image_name + KEEP_OTHERS others.
+            declare -A keep
+            keep["${image_name}"]=1
+            kept_others=0
+            for n in "${family_images[@]}"; do
+              [[ -n "${keep[$n]:-}" ]] && continue
+              if (( kept_others < KEEP_OTHERS )); then
+                keep["$n"]=1
+                kept_others=$((kept_others + 1))
+              fi
+            done
+            for n in "${family_images[@]}"; do
+              [[ -n "${keep[$n]:-}" ]] && continue
+              echo "::notice::pruning stale GCE image ${n}"
+              gcloud compute images delete "${n}" \
+                --project="${PROJECT_ID}" --quiet \
+                || echo "::warning::failed to delete image ${n}"
+            done
+          else
+            echo "::notice::no GCE image prune needed (count=${#family_images[@]})"
+          fi
+
           {
             echo "self_link=${self_link}"
             echo "image_name=${image_name}"

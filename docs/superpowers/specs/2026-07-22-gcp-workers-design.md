@@ -97,7 +97,7 @@ Path: `tofu/shared/accounts/gcp/<account>/auth.yaml`
 auth:
   project_id: stawi-prod-123456
   region: europe-west1
-  vpc_cidr: 10.210.0.0/16
+  vpc_cidr: 10.210.0.0/24
   workload_identity_provider: projects/123456/locations/global/workloadIdentityPools/github/providers/github-actions
   service_account_email: tofu-gcp@stawi-prod-123456.iam.gserviceaccount.com
 ```
@@ -271,7 +271,7 @@ Document a private range map so GCP VPC CIDRs do not collide with OCI VCNs or Co
 
 | Provider | Example range |
 |---|---|
-| GCP account N | `10.210.0.0/16`, `10.211.0.0/16`, … |
+| GCP account N | `10.210.0.0/24`, `10.210.1.0/24`, … (default /24 per project) |
 | OCI accounts | Existing per-account VCN CIDRs |
 | Cluster pod/service | Existing IPv6-first cluster CIDRs (unchanged) |
 

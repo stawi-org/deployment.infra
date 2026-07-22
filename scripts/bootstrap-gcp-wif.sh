@@ -43,7 +43,7 @@ set -euo pipefail
 # -------- defaults --------
 PROJECT=""
 REGION="europe-west1"
-VPC_CIDR="10.210.0.0/16"
+VPC_CIDR="10.210.0.0/24"
 GH_PROFILE=""
 REPO_PATH=""
 BASE_BRANCH="main"
@@ -72,7 +72,7 @@ Flags:
   --region <REGION>    Default europe-west1
   --gh-profile <NAME>  accounts.yaml key / auth path segment
                        (default: slug of project id last dash segment)
-  --vpc-cidr <CIDR>    Default 10.210.0.0/16
+  --vpc-cidr <CIDR>    Default 10.210.0.0/24
   --repo-path <PATH>   deployment.infra checkout (default: git root)
   --base-branch <NAME> Branch to fork the worktree from (default: main)
   --branch <NAME>      Push branch (default: onboard-gcp-<gh-profile>)
@@ -333,14 +333,63 @@ ensure_project_role() {
   say "  bound $role"
 }
 
+# Least-privilege-ish set for tofu + image import (not full compute.admin):
+#   instanceAdmin.v1 — GCE VMs
+#   networkAdmin     — VPC / subnet / firewall
+#   storageAdmin     — disks + custom images (compute.storageAdmin)
+#   storage.objectAdmin — GCS objects for image staging (bucket is
+#                         created once below so we do not need storage.admin)
 for role in \
-  roles/compute.admin \
+  roles/compute.instanceAdmin.v1 \
   roles/compute.networkAdmin \
-  roles/iam.serviceAccountUser \
-  roles/storage.admin
+  roles/compute.storageAdmin \
+  roles/storage.objectAdmin
 do
   ensure_project_role "$role"
 done
+
+# Pre-create the image-staging bucket so CI never needs storage.admin
+# (bucket create). Object writes use objectAdmin above. Nearline + 30d
+# lifecycle keeps staged .raw.tar.gz from accumulating forever.
+IMAGE_BUCKET="stawi-talos-images-${GH_PROFILE}"
+say "Ensuring image staging bucket gs://${IMAGE_BUCKET}"
+if gcloud storage buckets describe "gs://${IMAGE_BUCKET}" --project="$PROJECT" >/dev/null 2>&1; then
+  say "  bucket exists"
+else
+  if gcloud storage buckets create "gs://${IMAGE_BUCKET}" \
+      --project="$PROJECT" \
+      --location="$REGION" \
+      --uniform-bucket-level-access \
+      --default-storage-class=STANDARD \
+      --quiet 2>/tmp/gcs-boot-create.err; then
+    say "  bucket created"
+  else
+    warn "could not create gs://${IMAGE_BUCKET}: $(head -c 200 /tmp/gcs-boot-create.err 2>/dev/null || true)"
+    warn "CI may fail image import until the bucket exists or a fallback name works"
+  fi
+fi
+# Lifecycle: drop objects older than 30 days (image imports re-upload
+# when schematic/sha changes; stale staging bytes are pure waste).
+if gcloud storage buckets describe "gs://${IMAGE_BUCKET}" --project="$PROJECT" >/dev/null 2>&1; then
+  tmp_lc=$(mktemp)
+  cat >"$tmp_lc" <<'JSON'
+{
+  "rule": [
+    {
+      "action": { "type": "Delete" },
+      "condition": { "age": 30, "matchesPrefix": [] }
+    }
+  ]
+}
+JSON
+  gcloud storage buckets update "gs://${IMAGE_BUCKET}" \
+    --project="$PROJECT" \
+    --lifecycle-file="$tmp_lc" \
+    --quiet >/dev/null 2>&1 \
+    && say "  lifecycle: delete objects after 30d" \
+    || warn "could not set lifecycle on gs://${IMAGE_BUCKET} (non-fatal)"
+  rm -f "$tmp_lc"
+fi
 
 WIF_MEMBER="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${WIF_POOL}/attribute.repository/${GITHUB_REPO}"
 say "Ensuring WIF principal binding on SA"

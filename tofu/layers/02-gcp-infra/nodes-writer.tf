@@ -37,7 +37,12 @@ module "gcp_nodes_writer" {
                 private_ipv4           = node.private_ipv4
                 image_apply_generation = try(module.gcp_account[each.key].nodes[node_key].image_apply_generation, node.id)
                 status                 = "running"
-                discovered_at          = timestamp()
+                # Preserve first-seen timestamp so every apply does not
+                # rewrite nodes.yaml solely for discovered_at churn.
+                discovered_at = try(
+                  module.gcp_account_state[each.key].nodes.nodes[node_key].provider_data.discovered_at,
+                  timestamp(),
+                )
               },
             )
           },

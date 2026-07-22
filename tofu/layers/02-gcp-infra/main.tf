@@ -54,7 +54,7 @@ module "gcp_account" {
   account_key                = each.key
   project_id                 = try(each.value.project_id, "")
   region                     = try(each.value.region, "")
-  vpc_cidr                   = try(each.value.vpc_cidr, "10.210.0.0/16")
+  vpc_cidr                   = try(each.value.vpc_cidr, "10.210.0.0/24")
   nodes                      = try(each.value.nodes, {})
   labels                     = try(each.value.labels, {})
   annotations                = try(each.value.annotations, {})
