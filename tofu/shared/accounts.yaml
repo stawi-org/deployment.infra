@@ -13,3 +13,4 @@ oracle:
   - madiang100
 onprem:
   - tindase
+gcp: []
