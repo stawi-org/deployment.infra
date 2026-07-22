@@ -11,6 +11,16 @@ resource "terraform_data" "force_reinstall" {
   triggers_replace = [var.force_reinstall_generation]
 }
 
+# Image self_link changes whenever sync-talos-images imports a new
+# schematic/sha image. Without an explicit sentinel + ignore_changes
+# on boot_disk, GCE treats initialize_params.image as ForceNew and
+# would destroy+create every Spot worker on every image rebuild.
+# Match node-oracle: ignore boot_disk drift; only reinstall when the
+# image sentinel or force_reinstall generation changes.
+resource "terraform_data" "image_change" {
+  triggers_replace = [var.image]
+}
+
 # Intentional design vs generic GCE CIS/trivy defaults:
 # - public IP + can_ip_forward: cross-cloud KubeSpan/Flannel + CNI (mirrors OCI)
 # - empty metadata / no OS Login / no project SSH keys: Talos has no SSH
@@ -77,10 +87,14 @@ resource "google_compute_instance" "this" {
   lifecycle {
     # Omni / in-guest tools may touch metadata after first boot;
     # never churn the instance for metadata drift.
+    # boot_disk: image self_link / size drift must not recreate the
+    # fleet — intentional reimage is replace_triggered_by only.
     ignore_changes = [
       metadata,
+      boot_disk,
     ]
     replace_triggered_by = [
+      terraform_data.image_change,
       terraform_data.force_reinstall,
     ]
   }

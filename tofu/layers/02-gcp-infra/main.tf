@@ -1,10 +1,11 @@
 # tofu/layers/02-gcp-infra/main.tf
 #
 # This layer provisions GCP infrastructure (VPC, firewall, GCE Spot
-# instances, Talos image). It does NOT generate or push Talos machine
-# configs — GCP nodes boot via Omni siderolink URL in metadata and
-# layer 03 owns cluster-level configuration via machine patches, the
-# same flow Contabo + Oracle + onprem use.
+# instances). It does NOT generate or push Talos machine configs —
+# GCP nodes boot in Talos maintenance mode from an Omni-aware custom
+# image (siderolink.api is baked into the image schematic; instance
+# metadata stays empty). Layer 03 owns cluster-level configuration
+# via machine patches, the same flow Contabo + Oracle + onprem use.
 
 locals {
   accounts_manifest = yamldecode(file("${path.module}/../../shared/accounts.yaml"))
