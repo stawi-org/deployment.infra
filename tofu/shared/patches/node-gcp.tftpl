@@ -1,0 +1,22 @@
+---
+# tofu/shared/patches/node-gcp.tftpl
+#
+# Per-GCP-node Talos patch. GCP platform driver handles addresses
+# from instance metadata; we pin labels/annotations and hostname.
+# Flannel public-ip-overwrite is set via derived_annotations when
+# an external IPv4 is present (see node-gcp module).
+
+machine:
+  nodeLabels:
+%{ for k, v in node_labels ~}
+    ${k}: "${v}"
+%{ endfor ~}
+  nodeAnnotations:
+%{ for k, v in node_annotations ~}
+    ${k}: "${v}"
+%{ endfor ~}
+
+---
+apiVersion: v1alpha1
+kind: HostnameConfig
+hostname: ${hostname}

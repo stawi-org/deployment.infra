@@ -19,6 +19,8 @@
 #              + nodeLabels/Annotations)
 #   - oracle:  render node-oracle.tftpl (HostnameConfig +
 #              nodeLabels/Annotations including flannel overrides)
+#   - gcp:     render node-gcp.tftpl (HostnameConfig +
+#              nodeLabels/Annotations; platform driver handles addresses)
 #   - onprem:  skip (currently out of scope per 2026-05-03 spec)
 
 locals {
@@ -26,7 +28,7 @@ locals {
   # silently skipped — they currently aren't part of the cluster.
   per_node_patch_eligible = {
     for k, v in local.all_nodes_from_state : k => v
-    if contains(["contabo", "oracle"], try(v.provider, ""))
+    if contains(["contabo", "oracle", "gcp"], try(v.provider, ""))
   }
 
   # Render the right template per node based on provider. Each
@@ -67,13 +69,22 @@ locals {
             try(v.ipv6_cidr, 64),
           )
         },
-        ) : templatefile(
-        "${path.module}/../../shared/patches/node-oracle.tftpl",
-        {
-          hostname         = k
-          node_labels      = try(v.derived_labels, {})
-          node_annotations = try(v.derived_annotations, {})
-        },
+        ) : (
+        v.provider == "gcp" ? templatefile(
+          "${path.module}/../../shared/patches/node-gcp.tftpl",
+          {
+            hostname         = k
+            node_labels      = try(v.derived_labels, {})
+            node_annotations = try(v.derived_annotations, {})
+          },
+          ) : templatefile(
+          "${path.module}/../../shared/patches/node-oracle.tftpl",
+          {
+            hostname         = k
+            node_labels      = try(v.derived_labels, {})
+            node_annotations = try(v.derived_annotations, {})
+          },
+        )
       )
     )
   }
