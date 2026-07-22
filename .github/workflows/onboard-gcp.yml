@@ -1,0 +1,112 @@
+# Runs after a gcp account is onboarded to main (auth.yaml + accounts.yaml).
+#
+# Triggered by:
+#   - push to main touching tofu/shared/accounts.yaml or gcp auth paths
+#   - manual workflow_dispatch
+#
+# Pipeline:
+#   1. Seed default two Spot workers nodes.yaml in R2 for every
+#      account under gcp: in accounts.yaml (empty → 2×e2-medium Spot).
+#   2. cluster-provision mode=full (no wipe): image import for new
+#      projects → tofu-apply matrix → Omni cluster template sync.
+#
+# Pair with scripts/bootstrap-gcp-wif.sh which opens the PR that lands
+# those account files.
+name: onboard-gcp
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - tofu/shared/accounts.yaml
+      - tofu/shared/accounts/gcp/**
+      - .github/workflows/onboard-gcp.yml
+  workflow_dispatch:
+    inputs:
+      deploy_flux:
+        description: Also run deploy-flux after cluster template sync
+        type: boolean
+        default: false
+      dry_run:
+        description: Seed dry-run only; skip cluster-provision
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+concurrency:
+  group: onboard-gcp-production
+  cancel-in-progress: false
+
+jobs:
+  seed-default-nodes:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
+      SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install deps
+        run: |
+          set -euo pipefail
+          pip install --quiet pyyaml
+          if ! command -v sops >/dev/null 2>&1; then
+            curl -fsSL -o /usr/local/bin/sops \
+              "https://github.com/getsops/sops/releases/download/v3.11.0/sops-v3.11.0.linux.amd64"
+            chmod +x /usr/local/bin/sops
+          fi
+
+      - name: Stage GCP auth (for region defaults)
+        run: scripts/stage-gcp-auth-from-repo.sh /tmp/gcp-auth .
+
+      - name: Sync inventory from R2
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/inventory/gcp
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/gcp/" /tmp/inventory/gcp/ \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --region us-east-1 || true
+
+      - name: Ensure default Spot capacity (seed empty accounts)
+        run: |
+          set -euo pipefail
+          args=(
+            --inventory-dir /tmp/inventory/gcp
+            --accounts-yaml tofu/shared/accounts.yaml
+            --auth-dir /tmp/gcp-auth
+          )
+          if [[ "$DRY_RUN" != "true" ]]; then
+            args+=(--write)
+          fi
+          python3 scripts/ensure-gcp-default-capacity.py "${args[@]}"
+
+      - name: Upload nodes.yaml to R2
+        if: env.DRY_RUN != 'true'
+        run: |
+          set -euo pipefail
+          aws s3 sync /tmp/inventory/gcp/ "s3://cluster-tofu-state/production/inventory/gcp/" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --region us-east-1 \
+            --exclude "*" --include "*/nodes.yaml"
+          echo "::notice::wrote ensured nodes.yaml files to R2"
+
+  provision:
+    needs: seed-default-nodes
+    if: >-
+      needs.seed-default-nodes.result == 'success'
+      && (github.event_name != 'workflow_dispatch' || inputs.dry_run != true)
+    uses: ./.github/workflows/cluster-provision.yml
+    with:
+      mode: full
+      wipe_cluster: false
+      deploy_flux: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy_flux == true }}
+      dry_run: false
+    secrets: inherit
