@@ -1,0 +1,23 @@
+# Example only — live nodes live in R2 production/inventory/gcp/<account>/nodes.yaml
+# Default pack after onboard: two Spot e2-medium workers.
+gcp:
+  accounts:
+    stawi-prod:
+      project_id: stawi-prod-123456
+      region: europe-west1
+      vpc_cidr: 10.210.0.0/16
+      labels:
+        node.stawi.org/capacity-pool: gce-spot
+      nodes:
+        gcp-stawi-prod-node-1:
+          role: worker
+          machine_type: e2-medium
+          zone: europe-west1-b
+          boot_disk_gb: 50
+          preemptible: true
+        gcp-stawi-prod-node-2:
+          role: worker
+          machine_type: e2-medium
+          zone: europe-west1-b
+          boot_disk_gb: 50
+          preemptible: true

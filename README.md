@@ -1,6 +1,6 @@
 # deployment.infra
 
-Talos Kubernetes cluster provisioning for the Stawi platform, via OpenTofu on Contabo VPS and Oracle Cloud Infrastructure.
+Talos Kubernetes cluster provisioning for the Stawi platform, via OpenTofu on Contabo VPS, Oracle Cloud Infrastructure, and GCP GCE workers.
 
 ![Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 
@@ -11,6 +11,7 @@ This repository owns everything required to bring up, tear down, or replace the 
 - Talos machine-config generation (layer 00)
 - Contabo VPS fleet provisioning (layer 01)
 - Oracle Cloud VM provisioning (layer 02)
+- GCP GCE Spot worker provisioning (layer 02-gcp)
 - On-premises location/node inventory (layer 02-onprem)
 - Talos node configuration apply + bootstrap (layer 03)
 - Flux Operator install + FluxInstance declaration that points the cluster at [stawi-org/deployment.manifest](https://github.com/stawi-org/deployment.manifest) (layer 04)
@@ -25,15 +26,16 @@ Once layer 04 has reconciled, the cluster is self-managing via FluxCD — applic
                                     v
                            GitHub Actions runner
                                     |
-                         +----------+----------+
-                         |                     |
-                         v                     v
-                Contabo API           Oracle Cloud API         On-prem inventory
-                    |                     |                          |
-                    v                     v                          v
-              VPS control plane      OCI nodes                Manual Talos nodes
-                    |                     |                          |
-                    +----+----+----------+--------------------------+
+              +----------+----------+----------+----------+
+              |          |          |          |          |
+              v          v          v          v          v
+        Contabo API  Oracle API  GCP API   On-prem inventory
+              |          |          |          |
+              v          v          v          v
+         VPS control  OCI nodes  Spot GCE  Manual Talos
+            plane     workers    workers     nodes
+              |          |          |          |
+              +----+-----+----+-----+----------+
                          v
                   Talos nodes + KubeSpan (layer 03)
                          |
@@ -113,16 +115,19 @@ state, under `production/config/`. Keep one YAML file per account or site:
 | `production/config/contabo/<account>.yaml` | One Contabo account and all of its nodes. |
 | `production/config/oci/<account>.yaml` | One OCI account and all of its nodes. |
 | `production/config/onprem/<account>.yaml` | One on-prem account and all declared nodes. |
+| `production/inventory/gcp/<account>/nodes.yaml` | GCP project node inventory (R2). Auth/WIF lives in-repo under `tofu/shared/accounts/gcp/<account>/auth.yaml`; roster under `gcp:` in `tofu/shared/accounts.yaml`. |
 
 The reusable workflow consumes every YAML file under `production/config/` and
 aggregates them by provider. Provider-specific objects and secret ladders are
-no longer consumed by the workflow.
+no longer consumed by the workflow. GCP follows the R2 inventory model used by
+live node state: `production/inventory/gcp/<account>/nodes.yaml`.
 
 The structure is:
 
 - `contabo/<account>.yaml`: Contabo credentials plus grouped node inventory.
 - `oci/<account>.yaml`: OCI auth, tenancy, network, and node inventory.
 - `onprem/<location>.yaml`: Physical-site inventory and optional hints.
+- `gcp/<account>/nodes.yaml` (R2): GCE workers only; default pack is two Spot `e2-medium` VMs after onboard.
 
 Contabo node names and OCI node names must remain RFC 1123-safe and unique
 within the cluster. The inventory compiler uses the account and node keys to
@@ -133,7 +138,7 @@ whether layer 03 renders a controlplane or worker Talos machine config, and it
 drives the standardized node-role labels alongside the provider-specific
 metadata.
 
-Contabo, OCI, and on-prem all support `labels` and `annotations` at both the
+Contabo, OCI, GCP, and on-prem all support `labels` and `annotations` at both the
 account/location level and the node level. Node-level keys override the
 account/location defaults for the same field. On-prem nodes also keep IPs
 optional because they may change.
@@ -175,7 +180,15 @@ production/config/
     stawi-a.yaml
   onprem/
     kampala-hq.yaml
+
+production/inventory/
+  gcp/
+    stawi-prod/
+      nodes.yaml
 ```
+
+See [docs/config/gcp/stawi-prod.yaml](docs/config/gcp/stawi-prod.yaml) for an
+example GCP account shape (docs only; live nodes are the R2 inventory path).
 
 Example `production/config/oci/stawi-a.yaml`:
 
@@ -228,24 +241,28 @@ gh workflow run cluster-provision.yml -f mode=full -f force_image_sync=true -f d
 
 That runs preflight (including OCI Always Free inventory checks) → image sync → `tofu-apply` (per-account matrix) → cluster template sync → Flux.
 
+**GCP onboard:** run `scripts/bootstrap-gcp-wif.sh` against a project (creates WIF + SA, SOPS auth, PR). After merge, `onboard-gcp.yml` seeds default Spot capacity and runs `cluster-provision`. No long-lived GCP SA JSON keys — CI uses GitHub OIDC → Workload Identity Federation.
+
 Layer-by-layer (still supported): each layer via `workflow_dispatch` of `tofu-plan` / `tofu-apply` → `tofu-layer.yml`.
 
 1. **Layer 00 — Talos secrets.**
 2. **Layer 01 — Contabo infra.**
 3. **Layer 02 — Oracle infra** (Always Free caps enforced at plan time; see [docs/oci-always-free.md](docs/oci-always-free.md)).
-4. **Layer 02-onprem — On-prem inventory.**
-5. **Layer 03 — Talos** (MachineLabels + per-node patches to R2).
-6. **Layer 04 — DNS** (runs in parallel with talos after infra).
-7. **Flux** via `deploy-flux` (also called from `cluster-provision`).
+4. **Layer 02-gcp — GCP infra** (Spot GCE workers; WIF auth; default two workers per empty account).
+5. **Layer 02-onprem — On-prem inventory.**
+6. **Layer 03 — Talos** (MachineLabels + per-node patches to R2).
+7. **Layer 04 — DNS** (runs in parallel with talos after infra).
+8. **Flux** via `deploy-flux` (also called from `cluster-provision`).
 
 ### Topology boundary
 
 The current production-safe topology keeps the Talos control plane on Contabo
-and treats OCI plus on-prem as nodes joined through KubeSpan. This avoids
-stretching etcd quorum across unmanaged WAN paths. For provider/location
-control-plane survivability, prefer multiple clusters reconciled from the same
-GitOps source rather than one WAN-stretched etcd cluster. See
-[docs/topology.md](docs/topology.md) for the detailed boundary.
+and treats OCI, GCP, and on-prem as workers joined through KubeSpan. GCP is
+**workers only**, Spot by default. This avoids stretching etcd quorum across
+unmanaged WAN paths. For provider/location control-plane survivability, prefer
+multiple clusters reconciled from the same GitOps source rather than one
+WAN-stretched etcd cluster. See [docs/topology.md](docs/topology.md) for the
+detailed boundary.
 
 ### Flux GitHub App prerequisite
 
@@ -263,7 +280,7 @@ Layer 04 requires a Flux GitHub App that is **installed on `stawi-org/deployment
 - See [docs/reset-approval.md](docs/reset-approval.md) for the exact request
   -> approval -> execution flow.
 - `wipe-flux-crds` / `wipe-flux-namespace` workflows clean up Flux state without touching Talos.
-- Destroy order for a full tear-down: layer 04 -> layer 03 -> layer 02-onprem -> layer 02-oracle -> layer 01. Layer 00 (secrets) is left alone unless you're rotating.
+- Destroy order for a full tear-down: layer 04 -> layer 03 -> layer 02-onprem -> layer 02-gcp -> layer 02-oracle -> layer 01. Layer 00 (secrets) is left alone unless you're rotating.
 
 ## Related repositories
 

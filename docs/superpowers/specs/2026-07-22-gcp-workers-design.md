@@ -1,6 +1,6 @@
 # GCP GCE workers — design
 
-> **Status:** Design proposal — awaiting user review.
+> **Status:** Approved — implementation in progress.
 > **Date:** 2026-07-22
 > **Scope:** Full peer provider for paid Google Compute Engine workers: multi-project inventory, Workload Identity Federation, bootstrap PR flow, OpenTofu layer, Omni-aware image import, and post-merge cluster expand. Single implementation plan (multiple PRs OK).
 

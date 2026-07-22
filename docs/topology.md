@@ -1,16 +1,18 @@
 # Cluster Topology
 
-This repository now has three node ownership modes:
+This repository now has four node ownership modes:
 
 1. **Contabo control plane**: layer `01-contabo-infra` provisions the Talos control-plane VPS fleet and publishes IPv4/IPv6 Cloudflare records.
 2. **OCI nodes**: layer `02-oracle-infra` provisions nodes across OCI accounts. OCI networking is dual-stack by default. Account and node sizing comes from the canonical R2 inventory file.
 3. **On-prem nodes**: layer `02-onprem-infra` declares physical site inventory and emits node contracts. Inventory uses `nodes` under `accounts`, plus labels, annotations, role, and region. Layer `03-talos` renders matching Talos node configs, but config application is manual because physical networks are not reachable from GitHub Actions by default. Account and node inventory also comes from the canonical R2 inventory file.
+4. **GCP workers**: layer `02-gcp-infra` provisions paid GCE VMs across GCP projects. Auth is multi-project Workload Identity Federation (no long-lived SA JSON keys). Empty accounts seed a default pack of **two Spot `e2-medium` workers**. v1 is **workers only** (no control plane / etcd on GCE). Live node inventory is under R2 `production/inventory/gcp/<account>/nodes.yaml`; project roster lives in `tofu/shared/accounts.yaml` under `gcp:`.
 
-The canonical inventory lives under `production/config/` as multiple YAML files:
+The canonical inventory lives under `production/config/` as multiple YAML files (legacy layout for Contabo/OCI/on-prem examples) and under R2 `production/inventory/` for per-account node state:
 
 - `contabo/<account>.yaml`
 - `oci/<account>.yaml`
 - `onprem/<account>.yaml`
+- `gcp/<account>/nodes.yaml` (R2: `production/inventory/gcp/<account>/nodes.yaml`)
 
 Layer 03 aggregates those files by provider and account key.
 
@@ -32,11 +34,11 @@ inbound blackholes (verified 2026-05-24 and 2026-07-18).
 ## Kubernetes control-plane boundary
 
 The Kubernetes control plane is intentionally multi-account OCI for
-Always Free packing, with Contabo providing stable worker capacity.
-etcd quorum remains sensitive to latency, packet loss, asymmetric
-routing, and correlated WAN failures.
+Always Free packing, with Contabo providing stable worker capacity and
+GCP adding Spot general-purpose workers. etcd quorum remains sensitive
+to latency, packet loss, asymmetric routing, and correlated WAN failures.
 
-Do not add unmanaged on-prem or OCI control-plane nodes to this cluster without first introducing:
+Do not add unmanaged on-prem, OCI, or GCP control-plane nodes to this cluster without first introducing:
 
 - measured site-to-site latency and packet loss SLOs,
 - health-checked API endpoints,
@@ -44,13 +46,14 @@ Do not add unmanaged on-prem or OCI control-plane nodes to this cluster without 
 - a rolling Talos upgrade path,
 - provider/network failure drills.
 
-For provider-level survivability, the preferred next architecture is multiple Talos clusters, each with a local control plane, reconciled from the same Flux source. That avoids stretching etcd across Contabo, OCI, and on-prem networks while still giving workload placement across all locations.
+For provider-level survivability, the preferred next architecture is multiple Talos clusters, each with a local control plane, reconciled from the same Flux source. That avoids stretching etcd across Contabo, OCI, GCP, and on-prem networks while still giving workload placement across all locations.
 
 ## IPv6 Model
 
 - Kubernetes pod and service CIDRs are IPv6-first.
 - Contabo control-plane nodes receive static IPv6 configuration.
 - OCI worker VCNs, subnets, routes, security lists, and VNICs are IPv6-enabled by default.
+- GCP workers are IPv4-first in v1 (VPC dual-stack / IPv6 is a follow-up).
 - On-prem inventory records site IPv4/IPv6 CIDRs when known, but individual node IPs are optional last-known hints. The physical network remains responsible for router advertisements, DHCPv6, DNS, firewall policy, and address churn.
 
 ## Sensitive Artifacts
