@@ -86,6 +86,8 @@ on:
         description: Validate / plan path only where supported
         type: boolean
         default: false
+  # workflow_call (above) is used by onboard-oracle.yml / onboard-gcp.yml
+  # after a new account merges to main.
 
 permissions:
   contents: read

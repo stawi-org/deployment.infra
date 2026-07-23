@@ -1,0 +1,104 @@
+# Runs after an oracle account is onboarded to main (auth.yaml + accounts.yaml).
+#
+# Triggered by:
+#   - push to main touching tofu/shared/accounts.yaml or oracle auth paths
+#   - manual workflow_dispatch
+#
+# Pipeline:
+#   1. Seed / ensure continuous Always Free nodes.yaml in R2 for every
+#      account listed under oracle: in accounts.yaml (empty → 1×2/12/196).
+#   2. cluster-provision mode=full (no wipe): image import for new
+#      tenancies → tofu-apply matrix (new account cell) → Omni cluster
+#      template sync so machine-set sizes expand as nodes register.
+#
+# Pair with scripts/bootstrap-oci-oidc.sh which opens the PR that lands
+# those account files.
+name: onboard-oracle
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - tofu/shared/accounts.yaml
+      - tofu/shared/accounts/oracle/**
+      - .github/workflows/onboard-oracle.yml
+  workflow_dispatch:
+    inputs:
+      deploy_flux:
+        description: Also run deploy-flux after cluster template sync
+        type: boolean
+        default: false
+      dry_run:
+        description: Seed dry-run only; skip cluster-provision
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+concurrency:
+  group: onboard-oracle-production
+  cancel-in-progress: false
+
+jobs:
+  seed-free-tier-nodes:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      # workflow_dispatch only; push events always write.
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install deps
+        run: pip install --quiet pyyaml
+
+      - name: Sync inventory from R2
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/inventory/oracle
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/oracle/" /tmp/inventory/oracle/ \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --region us-east-1 || true
+
+      - name: Ensure free-tier capacity (seed empty accounts)
+        run: |
+          set -euo pipefail
+          args=(
+            --inventory-dir /tmp/inventory/oracle
+            --accounts-yaml tofu/shared/accounts.yaml
+          )
+          if [[ "$DRY_RUN" != "true" ]]; then
+            args+=(--write)
+          fi
+          python3 scripts/ensure-oci-free-tier-capacity.py "${args[@]}"
+          python3 scripts/validate-oci-free-tier.py --inventory-dir /tmp/inventory/oracle --strict-empty
+
+      - name: Upload nodes.yaml to R2
+        if: env.DRY_RUN != 'true'
+        run: |
+          set -euo pipefail
+          aws s3 sync /tmp/inventory/oracle/ "s3://cluster-tofu-state/production/inventory/oracle/" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --region us-east-1 \
+            --exclude "*" --include "*/nodes.yaml"
+          echo "::notice::wrote ensured nodes.yaml files to R2"
+
+  provision:
+    needs: seed-free-tier-nodes
+    if: >-
+      needs.seed-free-tier-nodes.result == 'success'
+      && (github.event_name != 'workflow_dispatch' || inputs.dry_run != true)
+    uses: ./.github/workflows/cluster-provision.yml
+    with:
+      mode: full
+      wipe_cluster: false
+      # Flux re-apply is opt-in via workflow_dispatch only (push → false).
+      deploy_flux: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy_flux == true }}
+      dry_run: false
+    secrets: inherit
