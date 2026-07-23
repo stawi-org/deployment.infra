@@ -1,0 +1,129 @@
+# One-shot: re-create the stawi-timber Talos GCE image with UEFI_COMPATIBLE
+# from the existing GCS disk.raw.tar.gz (no Omni re-download). Then
+# operators bump force_reinstall / apply 02-gcp-infra.
+name: fix-gcp-image-uefi
+on:
+  workflow_dispatch:
+    inputs:
+      image_name:
+        description: GCE image name to recreate (empty = latest in family stawi-talos)
+        type: string
+        required: false
+        default: ""
+      gcs_uri:
+        description: Optional gs:// URI of disk.raw.tar.gz (empty = derive from image sourceDisk)
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  reimport:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Stage GCP auth
+        id: auth
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+        run: |
+          set -euo pipefail
+          if ! command -v sops >/dev/null; then
+            curl -fsSL -o /usr/local/bin/sops \
+              "https://github.com/getsops/sops/releases/download/v3.11.0/sops-v3.11.0.linux.amd64"
+            chmod +x /usr/local/bin/sops
+          fi
+          scripts/stage-gcp-auth-from-repo.sh /tmp/gcp-auth .
+          python3 <<'PY'
+          import os, yaml
+          a = yaml.safe_load(open("/tmp/gcp-auth/stawi-timber/auth.yaml"))["auth"]
+          mapping = {
+              "project_id": a["project_id"],
+              "workload_identity_provider": a["workload_identity_provider"],
+              "service_account": a["service_account_email"],
+          }
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              for k, v in mapping.items():
+                  print(f"{k}={v}")
+                  f.write(f"{k}={v}\n")
+          PY
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ steps.auth.outputs.workload_identity_provider }}
+          service_account: ${{ steps.auth.outputs.service_account }}
+          project_id: ${{ steps.auth.outputs.project_id }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Recreate image with UEFI_COMPATIBLE
+        env:
+          PROJECT_ID: ${{ steps.auth.outputs.project_id }}
+          IMAGE_NAME_IN: ${{ inputs.image_name }}
+          GCS_URI_IN: ${{ inputs.gcs_uri }}
+        run: |
+          set -euo pipefail
+          gcloud config set project "$PROJECT_ID"
+          family=stawi-talos
+          guest_features="UEFI_COMPATIBLE,GVNIC,VIRTIO_SCSI_MULTIQUEUE"
+
+          if [[ -n "${IMAGE_NAME_IN}" ]]; then
+            image_name="${IMAGE_NAME_IN}"
+          else
+            image_name=$(gcloud compute images list \
+              --project="${PROJECT_ID}" \
+              --filter="family=${family}" \
+              --sort-by="~creationTimestamp" \
+              --format='value(name)' | head -1)
+          fi
+          if [[ -z "${image_name}" ]]; then
+            echo "::error::no image found in family ${family}"
+            exit 1
+          fi
+          echo "::notice::target image=${image_name}"
+
+          features=$(gcloud compute images describe "${image_name}" \
+            --project="${PROJECT_ID}" \
+            --format='value(guestOsFeatures[].type)' 2>/dev/null || true)
+          echo "::notice::current features=${features}"
+
+          if [[ -n "${GCS_URI_IN}" ]]; then
+            gcs_uri="${GCS_URI_IN}"
+          else
+            # Prefer object we uploaded in sync-talos-images (known naming).
+            # Fall back to listing the staging bucket for this schematic prefix.
+            bucket="stawi-talos-images-stawi-timber"
+            gcs_uri=$(gcloud storage ls "gs://${bucket}/**/disk.raw.tar.gz" 2>/dev/null \
+              | sort | tail -1 || true)
+          fi
+          if [[ -z "${gcs_uri}" ]]; then
+            echo "::error::could not resolve disk.raw.tar.gz GCS URI"
+            exit 1
+          fi
+          echo "::notice::source=${gcs_uri}"
+
+          if echo "${features}" | tr ';' '\n' | grep -qx 'UEFI_COMPATIBLE'; then
+            echo "::notice::image already has UEFI_COMPATIBLE — nothing to do"
+            gcloud compute images describe "${image_name}" --project="${PROJECT_ID}" \
+              --format='yaml(name,family,guestOsFeatures,selfLink)'
+            exit 0
+          fi
+
+          echo "::notice::deleting non-UEFI image ${image_name}"
+          gcloud compute images delete "${image_name}" --project="${PROJECT_ID}" --quiet
+
+          echo "::notice::creating ${image_name} with ${guest_features}"
+          gcloud compute images create "${image_name}" \
+            --project="${PROJECT_ID}" \
+            --source-uri="${gcs_uri}" \
+            --family="${family}" \
+            --guest-os-features="${guest_features}" \
+            --architecture=X86_64
+
+          gcloud compute images describe "${image_name}" --project="${PROJECT_ID}" \
+            --format='yaml(name,family,guestOsFeatures,selfLink)'
+          echo "::notice::done — reimage workers (force_reinstall bump + 02-gcp-infra apply)"
