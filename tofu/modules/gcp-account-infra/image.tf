@@ -13,9 +13,13 @@
 # resolved image at create time.
 
 locals {
-  talos_images = fileexists("${var.local_inventory_dir}/talos-images.yaml") ? yamldecode(
-    file("${var.local_inventory_dir}/talos-images.yaml")
-  ) : {}
+  # yamldecode(file) and bare {} are different object types in OpenTofu's
+  # conditional — that produced "Inconsistent conditional result types"
+  # when talos-images.yaml was present. Decode via try() + empty map string.
+  talos_images = try(
+    yamldecode(file("${var.local_inventory_dir}/talos-images.yaml")),
+    {},
+  )
 
   catalog_self_link = try(
     local.talos_images.formats.gcp.accounts[var.account_key].self_link,
