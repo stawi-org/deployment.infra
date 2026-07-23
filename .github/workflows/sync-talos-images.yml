@@ -348,47 +348,78 @@ jobs:
           onprem_file="${metal_iso_file}"
 
           # Normalize Omni GCP media to GCE-importable disk.raw.tar.gz.
-          # Omni often ships `gcp-amd64-*.gz` = gzip(raw disk). GCE
-          # `images create --source-uri` requires a gzip-compressed tar
-          # whose single member is named `disk.raw` — bare .gz fails with
-          # "The provided source is not a supported file."
+          # GCE requires a gzip-compressed tar whose single member is
+          # named `disk.raw` and whose *content* is a raw disk image
+          # (GPT "EFI PART" at LBA1). Omni has shipped:
+          #   - gzip(raw)
+          #   - tar.gz(disk.raw=raw)
+          #   - gzip(tar(disk.raw)) mislabeled as .gz
+          # Blind re-tar of a tar produced nested archives; serial then
+          # showed SeaBIOS "Boot failed: not a bootable disk".
           gcp_src="/tmp/images/${gcp_file}"
           gcp_norm="gcp-amd64-disk.raw.tar.gz"
-          case "${gcp_file}" in
-            *.raw.tar.gz)
-              if [[ "${gcp_file}" != "${gcp_norm}" ]]; then
-                cp "${gcp_src}" "/tmp/images/${gcp_norm}"
-                gcp_file="${gcp_norm}"
-              fi
-              echo "::notice::GCP media already .raw.tar.gz (${gcp_file})"
-              ;;
-            *.tar.gz|*.tgz)
-              cp "${gcp_src}" "/tmp/images/${gcp_norm}"
-              gcp_file="${gcp_norm}"
-              echo "::notice::GCP media copied as ${gcp_norm}"
-              ;;
-            *.gz)
-              echo "::notice::normalizing Omni gzip raw disk → ${gcp_norm}"
-              stage=$(mktemp -d)
-              gunzip -c "${gcp_src}" > "${stage}/disk.raw"
-              tar -Sczf "/tmp/images/${gcp_norm}" -C "${stage}" disk.raw
+          normalize_gcp_to_disk_raw_tar_gz() {
+            local src=$1 dest=$2
+            local stage work kind magic
+            stage=$(mktemp -d)
+            work="${stage}/blob"
+            cp "${src}" "${work}"
+            # Peel compression / tar layers until we have a raw disk.
+            for _ in 1 2 3 4; do
+              kind=$(file -b "${work}" || true)
+              echo "::notice::GCP normalize layer: ${kind}"
+              case "${kind}" in
+                *gzip*)
+                  gunzip -c "${work}" > "${stage}/unz"
+                  mv "${stage}/unz" "${work}"
+                  continue
+                  ;;
+                *'tar archive'*|*'POSIX tar'*)
+                  # Prefer member disk.raw; else first member.
+                  tar -xf "${work}" -C "${stage}"
+                  if [[ -f "${stage}/disk.raw" ]]; then
+                    mv "${stage}/disk.raw" "${work}"
+                  else
+                    first=$(tar -tf "${work}" 2>/dev/null | head -1 || true)
+                    if [[ -n "${first}" && -f "${stage}/${first}" ]]; then
+                      mv "${stage}/${first}" "${work}"
+                    else
+                      echo "::error::tar archive has no usable member"
+                      ls -la "${stage}"
+                      rm -rf "${stage}"
+                      return 1
+                    fi
+                  fi
+                  # Remove leftover tar extract noise; keep only work.
+                  find "${stage}" -mindepth 1 ! -path "${work}" -delete 2>/dev/null || true
+                  continue
+                  ;;
+              esac
+              break
+            done
+            # Validate GPT signature at offset 512 ("EFI PART").
+            magic=$(xxd -p -l 8 -s 512 "${work}" 2>/dev/null || true)
+            if [[ "${magic}" != "4546492050415254" ]]; then
+              echo "::error::disk.raw is not a GPT disk (magic hex=${magic}, expected 4546492050415254 EFI PART). file=$(file -b "${work}")"
+              xxd -l 64 "${work}" || true
+              xxd -l 32 -s 512 "${work}" || true
               rm -rf "${stage}"
-              gcp_file="${gcp_norm}"
-              ;;
-            *.raw)
-              echo "::notice::wrapping raw disk → ${gcp_norm}"
-              stage=$(mktemp -d)
-              cp "${gcp_src}" "${stage}/disk.raw"
-              tar -Sczf "/tmp/images/${gcp_norm}" -C "${stage}" disk.raw
-              rm -rf "${stage}"
-              gcp_file="${gcp_norm}"
-              ;;
-            *)
-              echo "::error::unsupported Omni GCP image extension: ${gcp_file}"
-              ls -la /tmp/images/
-              exit 1
-              ;;
-          esac
+              return 1
+            fi
+            echo "::notice::GPT EFI PART ok; size=$(stat -c%s "${work}")"
+            mkdir -p "${stage}/out"
+            # -S: preserve sparse holes (Talos GCP images are sparse).
+            cp --sparse=always "${work}" "${stage}/out/disk.raw"
+            tar -Sczf "${dest}" -C "${stage}/out" disk.raw
+            rm -rf "${stage}"
+          }
+          if ! normalize_gcp_to_disk_raw_tar_gz "${gcp_src}" "/tmp/images/${gcp_norm}"; then
+            echo "::error::failed to normalize Omni GCP media ${gcp_file}"
+            ls -la /tmp/images/
+            exit 1
+          fi
+          gcp_file="${gcp_norm}"
+          echo "::notice::GCP media normalized to ${gcp_norm}"
 
           # Decompress oracle xz → qcow2 for the .oci archive build.
           # The .xz wrapper is Omni's transport format; OCI image
@@ -1244,34 +1275,63 @@ jobs:
           fi
           echo "::notice::using existing GCS bucket gs://${bucket}"
 
-          # GCE requires disk.raw.tar.gz. Omni often ships bare .gz raw
-          # (gzip of disk, not tar) which fails with "not a supported file".
-          # Normalize here so import works even when R2 still has legacy .gz.
+          # Peel nested gzip/tar until disk.raw is a real GPT image, then
+          # pack as disk.raw.tar.gz. Nested tar was the cause of SeaBIOS
+          # "Boot failed: not a bootable disk" (member content was tar).
           normalized="/tmp/gcp-stage/disk.raw.tar.gz"
-          case "${GCP_FILE}" in
-            *.raw.tar.gz|*.tar.gz|*.tgz)
-              cp "${local_image}" "${normalized}"
-              echo "::notice::GCP media treated as tar.gz for GCE import"
-              ;;
-            *.gz)
-              echo "::notice::normalizing Omni .gz raw disk → disk.raw.tar.gz"
-              stage=$(mktemp -d)
-              gunzip -c "${local_image}" > "${stage}/disk.raw"
-              tar -Sczf "${normalized}" -C "${stage}" disk.raw
+          normalize_gcp_to_disk_raw_tar_gz() {
+            local src=$1 dest=$2
+            local stage work kind magic first
+            stage=$(mktemp -d)
+            work="${stage}/blob"
+            cp "${src}" "${work}"
+            for _ in 1 2 3 4; do
+              kind=$(file -b "${work}" || true)
+              echo "::notice::GCP normalize layer: ${kind}"
+              case "${kind}" in
+                *gzip*)
+                  gunzip -c "${work}" > "${stage}/unz"
+                  mv "${stage}/unz" "${work}"
+                  continue
+                  ;;
+                *'tar archive'*|*'POSIX tar'*)
+                  tar -xf "${work}" -C "${stage}"
+                  if [[ -f "${stage}/disk.raw" ]]; then
+                    mv "${stage}/disk.raw" "${work}"
+                  else
+                    first=$(tar -tf "${work}" 2>/dev/null | head -1 || true)
+                    if [[ -n "${first}" && -f "${stage}/${first}" ]]; then
+                      mv "${stage}/${first}" "${work}"
+                    else
+                      echo "::error::tar archive has no usable member"
+                      ls -la "${stage}"
+                      rm -rf "${stage}"
+                      return 1
+                    fi
+                  fi
+                  find "${stage}" -mindepth 1 ! -path "${work}" -delete 2>/dev/null || true
+                  continue
+                  ;;
+              esac
+              break
+            done
+            magic=$(xxd -p -l 8 -s 512 "${work}" 2>/dev/null || true)
+            if [[ "${magic}" != "4546492050415254" ]]; then
+              echo "::error::disk.raw is not a GPT disk (magic hex=${magic}). file=$(file -b "${work}")"
+              xxd -l 64 "${work}" || true
               rm -rf "${stage}"
-              ;;
-            *.raw)
-              echo "::notice::wrapping .raw → disk.raw.tar.gz"
-              stage=$(mktemp -d)
-              cp "${local_image}" "${stage}/disk.raw"
-              tar -Sczf "${normalized}" -C "${stage}" disk.raw
-              rm -rf "${stage}"
-              ;;
-            *)
-              echo "::error::unsupported GCP image file: ${GCP_FILE}"
-              exit 1
-              ;;
-          esac
+              return 1
+            fi
+            echo "::notice::GPT EFI PART ok; size=$(stat -c%s "${work}")"
+            mkdir -p "${stage}/out"
+            cp --sparse=always "${work}" "${stage}/out/disk.raw"
+            tar -Sczf "${dest}" -C "${stage}/out" disk.raw
+            rm -rf "${stage}"
+          }
+          if ! normalize_gcp_to_disk_raw_tar_gz "${local_image}" "${normalized}"; then
+            echo "::error::failed to normalize GCP media ${GCP_FILE}"
+            exit 1
+          fi
           import_sha=$(sha256sum "${normalized}" | cut -d' ' -f1)
 
           # Object name carries schematic + content fingerprint of the
