@@ -374,9 +374,10 @@ patches:
       # collapses multi-cloud goodput.
       mtu: 1380
       allowDownPeerBypass: true
-      # SideroLink ULA is hub-spoke management, not a peer mesh path.
-      excludeAdvertisedNetworks:
-        - fdae:41e4:649b:9303::/64
+      # Note: excludeAdvertisedNetworks is documented on Talos ≥1.13 but
+      # Omni's cluster-template decoder (v1.9.3) rejects the key as
+      # unknown. Re-add when Omni schema catches up; SideroLink ULA is
+      # already excluded from kubelet nodeIP via validSubnets.
   - name: cluster-discovery
     inline:
       cluster:

@@ -28,6 +28,3 @@ enabled: true
 advertiseKubernetesNetworks: false
 mtu: 1380
 allowDownPeerBypass: true
-# SideroLink ULA is hub-spoke management, not a peer mesh path.
-excludeAdvertisedNetworks:
-  - fdae:41e4:649b:9303::/64
