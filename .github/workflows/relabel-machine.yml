@@ -3,8 +3,15 @@ on:
   workflow_dispatch:
     inputs:
       hostname:
-        required: true
+        description: Omni machine hostname (or leave empty if machine_id set)
+        required: false
         type: string
+        default: ""
+      machine_id:
+        description: Omni Machine UUID (optional if hostname set)
+        required: false
+        type: string
+        default: ""
       role:
         required: true
         type: choice
@@ -16,6 +23,7 @@ jobs:
       OMNI_ENDPOINT: https://cp.stawi.org
       OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
       HOSTNAME: ${{ inputs.hostname }}
+      MACHINE_ID: ${{ inputs.machine_id }}
       ROLE: ${{ inputs.role }}
     steps:
       - run: |
@@ -28,23 +36,41 @@ jobs:
           exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
           WRAP
           chmod +x /usr/local/bin/omnictl
-          # Find machine id by hostname
-          MID=$(omnictl get machinestatus -o json 2>/dev/null | jq -rs --arg h "$HOSTNAME" '.[] | select(.spec.network.hostname == $h) | .metadata.id')
-          [[ -n "$MID" ]] || { echo "::error::no machine for hostname $HOSTNAME"; exit 1; }
-          echo "machine id: $MID for $HOSTNAME"
-          # Apply MachineLabels resource. Role labels are namespaced under node.stawi.org/role
-          cat > /tmp/labels.yaml <<YAMLEOF
-          apiVersion: omni.sidero.dev/v1alpha1
-          kind: MachineLabels
-          metadata:
-            namespace: default
-            id: $MID
-          spec:
-            labels:
-              node.stawi.org/role: $ROLE
-              omni.sidero.dev/role-$ROLE: ""
-          YAMLEOF
-          omnictl apply -f /tmp/labels.yaml
+
+          MID="${MACHINE_ID:-}"
+          if [[ -z "$MID" ]]; then
+            [[ -n "${HOSTNAME:-}" ]] || { echo "::error::hostname or machine_id required"; exit 1; }
+            # Prefer connected match when multiple UUIDs share a hostname.
+            MID=$(omnictl get machinestatus -o json 2>/dev/null | jq -rs --arg h "$HOSTNAME" '
+              [.[] | select((.spec.network.hostname // "") == $h)]
+              | sort_by(.spec.connected // false) | reverse
+              | .[0].metadata.id // empty
+            ')
+            [[ -n "$MID" ]] || { echo "::error::no machine for hostname $HOSTNAME"; exit 1; }
+          fi
+          echo "machine id: $MID hostname=${HOSTNAME:-} role=$ROLE"
+
+          # JSON apply (YAML heredoc under run: was indentation-broken).
+          labels_json=$(jq -n \
+            --arg id "$MID" \
+            --arg role "$ROLE" \
+            --arg host "${HOSTNAME:-}" \
+            '{
+              metadata: {
+                namespace: "default",
+                type: "MachineLabels.omni.sidero.dev",
+                id: $id,
+                labels: (
+                  {
+                    "node.stawi.org/role": $role
+                  }
+                  + (if $host != "" then {"node.stawi.org/name": $host} else {} end)
+                )
+              },
+              spec: {}
+            }')
+          printf '%s\n' "$labels_json" > /tmp/labels.json
+          omnictl apply -f /tmp/labels.json
           echo "applied"
-          # Now show the machine's current labels
-          omnictl get machinelabels $MID -o yaml || omnictl get machinelabels $MID
+          omnictl get machinelabels "$MID" -o yaml || omnictl get machinelabels "$MID" || true
+          omnictl get machinestatus "$MID" -o yaml | head -40 || true
