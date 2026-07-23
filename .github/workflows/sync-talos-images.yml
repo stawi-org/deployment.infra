@@ -811,10 +811,11 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Preflight custom-image-count service limit
+        id: image_limit
         # Some Always Free tenancies ship with custom-image-count=0
-        # (hard service limit — not "quota full"). Import cannot succeed
-        # until an operator raises the limit in the OCI Console
-        # (Governance → Limits → custom-image-count → Request).
+        # (hard service limit — not "quota full"). Soft-skip the import
+        # for that cell so other accounts still publish; operator raises
+        # the limit in OCI Console (Governance → Limits → custom-image-count).
         env:
           PROFILE:     ${{ matrix.account.profile }}
           COMPARTMENT: ${{ matrix.account.compartment_ocid }}
@@ -837,14 +838,19 @@ jobs:
             --query 'data.used' --raw-output 2>/dev/null || echo "unknown")
           echo "::notice::${PROFILE}: custom-image-count limit=${limit} used=${used} available=${avail}"
           if [[ "${limit}" == "0" ]]; then
-            echo "::error::${PROFILE}: service limit custom-image-count=0 — cannot import Talos custom images. Raise the limit in OCI Console (home region) to ≥2, then re-run sync-talos-images."
-            exit 1
+            # Hard tenancy limit (not "quota full"). Soft-skip this matrix
+            # cell so other accounts still import; assemble omits this profile.
+            echo "::warning::${PROFILE}: service limit custom-image-count=0 — skipping OCI image import for this account. Raise the limit in OCI Console (home region) to ≥2, then re-run sync-talos-images."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           if [[ "${avail}" == "0" && "${used}" != "0" ]]; then
             echo "::warning::${PROFILE}: custom-image-count available=0 (used=${used}); prune step will free slots before import"
           fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
 
       - name: Prune old custom Talos images
+        if: steps.image_limit.outputs.skip != 'true'
         # OCI free tenancies often have a tight custom-image-count quota
         # (QuotaExceeded on create_image when full). Always prune down to
         # KEEP images *before* import so the new image has a free slot.
@@ -921,6 +927,7 @@ jobs:
 
       - name: Import as custom image
         id: import
+        if: steps.image_limit.outputs.skip != 'true'
         env:
           PROFILE:         ${{ matrix.account.profile }}
           COMPARTMENT:     ${{ matrix.account.compartment_ocid }}
@@ -1017,6 +1024,7 @@ jobs:
           echo "ocid=${ocid}" >> "$GITHUB_OUTPUT"
 
       - name: Emit artifact
+        if: steps.image_limit.outputs.skip != 'true' && steps.import.outputs.ocid != ''
         env:
           PROFILE:        ${{ matrix.account.profile }}
           REGION:         ${{ matrix.account.region }}
@@ -1034,6 +1042,7 @@ jobs:
           ' > "/tmp/out/${PROFILE}.json"
 
       - uses: actions/upload-artifact@v6
+        if: steps.image_limit.outputs.skip != 'true' && steps.import.outputs.ocid != ''
         with:
           name: oci-import-${{ matrix.account.profile }}
           path: /tmp/out/${{ matrix.account.profile }}.json
@@ -1174,25 +1183,23 @@ jobs:
           # Per-account bucket keeps image bytes project-local for
           # gcloud compute images create --source-uri. Name mirrors
           # OCI's talos-images-<account> pattern.
+          # Bootstrap (bootstrap-gcp-wif.sh) owns bucket create + SA IAM.
+          # CI SA has objectAdmin + legacyBucketReader only — never
+          # storage.buckets.create. Treat missing/forbidden as hard errors
+          # with an operator hint (do not fall back to creating a global name).
           bucket="stawi-talos-images-${ACCOUNT}"
-          # GCS bucket names are global; if the preferred name is taken
-          # outside this project, fall back to a project-scoped name.
-          if ! gcloud storage buckets describe "gs://${bucket}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
-            echo "::notice::creating GCS bucket gs://${bucket} in ${REGION}"
-            if ! gcloud storage buckets create "gs://${bucket}" \
-                  --project="${PROJECT_ID}" \
-                  --location="${REGION}" \
-                  --uniform-bucket-level-access 2>/tmp/gcs-create.err; then
-              bucket="stawi-talos-images"
-              if ! gcloud storage buckets describe "gs://${bucket}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
-                echo "::notice::fallback: creating gs://${bucket} in ${REGION}"
-                gcloud storage buckets create "gs://${bucket}" \
-                  --project="${PROJECT_ID}" \
-                  --location="${REGION}" \
-                  --uniform-bucket-level-access
-              fi
+          if ! gcloud storage buckets describe "gs://${bucket}" --project="${PROJECT_ID}" \
+                >/tmp/gcs-desc.out 2>/tmp/gcs-desc.err; then
+            err=$(cat /tmp/gcs-desc.err 2>/dev/null || true)
+            if echo "$err" | grep -qiE '403|PERMISSION_DENIED|permission|access'; then
+              echo "::error::cannot describe gs://${bucket} (permission). SA needs roles/storage.legacyBucketReader + objectAdmin. Re-run scripts/bootstrap-gcp-wif.sh --project ${PROJECT_ID} --gh-profile ${ACCOUNT}"
+            else
+              echo "::error::gs://${bucket} missing. Re-run scripts/bootstrap-gcp-wif.sh --project ${PROJECT_ID} --gh-profile ${ACCOUNT} (creates the staging bucket)."
             fi
+            printf '%s\n' "$err" | head -c 400 >&2 || true
+            exit 1
           fi
+          echo "::notice::using existing GCS bucket gs://${bucket}"
 
           # Object name carries schematic + content fingerprint so a
           # token/schematic change implies a different object (and a

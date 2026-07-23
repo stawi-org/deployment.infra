@@ -9,7 +9,7 @@ run during account onboarding.
 | Script | Purpose |
 |---|---|
 | `bootstrap-oci-oidc.sh` | Idempotently set up an OCI Identity Domain so GitHub Actions can WIF-federate into a new tenancy. Non-interactive: worktree off `origin/main`, encrypted `auth.yaml` + `accounts.yaml`, push + REST PR (`GITHUB_TOKEN`, no `gh` CLI). After merge, `onboard-oracle.yml` seeds free-tier nodes and runs `cluster-provision`. Usually run from OCI Cloud Shell. |
-| `bootstrap-gcp-wif.sh` | **Once per GCP project:** WIF + SA + SOPS auth + accounts.yaml PR. Capacity defaults live in OpenTofu, not here. |
+| `bootstrap-gcp-wif.sh` | **Once per GCP project:** WIF + SA + image bucket + bucket IAM + monthly budget + SOPS auth + accounts.yaml PR. Standalone: upload only this script to Cloud Shell; it auto-clones the public repo. Capacity defaults live in OpenTofu, not here. |
 | `seed-inventory.sh` | Append a new account stanza to the R2-backed inventory used by tofu's `node-state` module. |
 
 ## Workflow-invoked (don't run by hand)

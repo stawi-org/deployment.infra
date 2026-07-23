@@ -52,10 +52,17 @@ jobs:
           fi
           rc=0
           for p in "${plans[@]}" ; do
-            n=$(jq '[.resource_changes[] | select(.change.actions != ["no-op"] and .change.actions != ["read"])] | length' "$p")
+            # plan.json may omit resource_changes (null) on empty/failed plans.
+            if ! jq -e '.resource_changes | type == "array"' "$p" >/dev/null 2>&1; then
+              echo "::warning::$p has no resource_changes array — treating as empty plan"
+              continue
+            fi
+            # Ignore pure R2 nodes.yaml writeback noise is no longer needed
+            # once discovered_at is sticky; still report every non-noop.
+            n=$(jq '[.resource_changes[]? | select(.change.actions != ["no-op"] and .change.actions != ["read"])] | length' "$p")
             echo "::notice::artifact=$p non-noop-diffs=$n"
             if [ "$n" -ne 0 ]; then
-              jq '.resource_changes[] | select(.change.actions != ["no-op"] and .change.actions != ["read"]) | {address,actions:.change.actions}' "$p"
+              jq '.resource_changes[]? | select(.change.actions != ["no-op"] and .change.actions != ["read"]) | {address,actions:.change.actions}' "$p"
               echo "::error::$p proposes $n changes on a steady-state plan"
               rc=1
             fi

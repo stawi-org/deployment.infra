@@ -9,6 +9,14 @@ resource "oci_core_vcn" "this" {
   # dns_label (we set "privnet" on the private subnet). Without this, the
   # subnet create 400s with "Dns not enabled for Vcn". 1-15 alphanumerics.
   dns_label = "cluster"
+
+  # VCN CIDR is fixed at create time. Shrinking/replacing cidr_blocks while
+  # subnets still exist fails OCI work requests ("CIDR X is not a subset of
+  # any of the given VCN cidrBlocks") — seen when auth.vcn_cidr drifts from
+  # the live VCN (e.g. 10.200.0.0/16 vs live 10.0.0.0/16 + subnet 10.0.2.0/24).
+  lifecycle {
+    ignore_changes = [cidr_blocks]
+  }
 }
 
 resource "oci_core_internet_gateway" "this" {
@@ -135,9 +143,11 @@ resource "oci_core_security_list" "public" {
     }
   }
   # Kubelet 10250 from within VCN (metrics, exec, logs between cluster members).
+  # Use live VCN CIDR (not var.vcn_cidr) so auth drift + ignore_changes on
+  # cidr_blocks does not rewrite seclist sources away from the real block.
   ingress_security_rules {
     protocol = "6"
-    source   = var.vcn_cidr
+    source   = oci_core_vcn.this.cidr_blocks[0]
     tcp_options {
       min = 10250
       max = 10250
@@ -146,7 +156,7 @@ resource "oci_core_security_list" "public" {
   # Etcd 2379-2380 from within VCN.
   ingress_security_rules {
     protocol = "6"
-    source   = var.vcn_cidr
+    source   = oci_core_vcn.this.cidr_blocks[0]
     tcp_options {
       min = 2379
       max = 2380
@@ -222,4 +232,10 @@ resource "oci_core_subnet" "public" {
   route_table_id             = oci_core_route_table.public.id
   security_list_ids          = [oci_core_security_list.public.id]
   dns_label                  = "pubnet"
+
+  # Subnet CIDR follows var.vcn_cidr at create; later VCN/auth CIDR edits
+  # must not force-replace a live subnet under running instances.
+  lifecycle {
+    ignore_changes = [cidr_block, ipv6cidr_block]
+  }
 }
