@@ -57,16 +57,33 @@ Bootstrap is **idempotent**: re-run to repair WIF/SA/IAM or re-open the PR.
 1. **`onboard-gcp`**
    - Decrypts repo auth for region defaults
    - Seeds empty `production/inventory/gcp/<account>/nodes.yaml` with **2 Spot workers**
-   - Calls **`cluster-provision` mode=full** (no wipe)
-2. **`sync-talos-images`**
-   - Downloads Omni **GCP amd64** media
+   - **Catalog gate:** if R2 `talos-images.yaml` already covers every roster account, provision with **`mode=infra`** (no image rebuild). First project (missing GCE self_link) uses **`mode=full`** once.
+2. **`sync-talos-images`** (only when catalog incomplete or force)
+   - Downloads Omni **GCP amd64** media (R2-cached when schematic unchanged)
    - WIF → stages GCS → creates custom GCE image → writes `formats.gcp.accounts.<account>.self_link` into R2 `talos-images.yaml`
+   - **No-op** when schematic matches and every account already has an image handle
 3. **`tofu-apply` → `02-gcp-infra`**
    - VPC + firewall + 2× Spot GCE instances (maintenance mode / SideroLink image)
 4. **`03-talos` + DNS**
    - Labels Omni machines (`node.stawi.org/role=worker`, `provider=gcp`, `spot=true`)
    - Per-node `node-gcp` patches (hostname + Flannel public-ip overwrite)
 5. Machines match MachineClass **`workers`**
+
+### Fast path after the first import
+
+Images are **not** rebuilt per node or per scale-out:
+
+```bash
+# Add a worker: edit R2 nodes.yaml, then infra only
+gh workflow run cluster-provision.yml -f mode=infra
+```
+
+| Action | Mode | Rebuilds images? |
+|---|---|---|
+| First GCP project onboard | `full` (automatic) | Once |
+| Re-run onboard / add nodes (catalog ready) | `infra` | No |
+| Bump Talos / schematic | `images` or `full` + optional force | Yes |
+| Never for scale | `force_image_sync=true` | Avoid |
 
 ## Verification checklist
 

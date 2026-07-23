@@ -6,11 +6,26 @@ Single operator entrypoint: **`cluster-provision`**.
 
 | Mode | What it does |
 |---|---|
-| `full` | preflight → sync-talos-images → tofu-apply → optional wipe → sync-cluster-template → optional flux |
-| `infra` | preflight → tofu-apply |
+| `full` | preflight → **images only if catalog incomplete** → tofu-apply → optional wipe → sync-cluster-template → optional flux |
+| `infra` | preflight → tofu-apply (**fast path** for add/remove nodes) |
 | `cluster` | preflight → optional wipe → sync-cluster-template → optional flux |
-| `images` | preflight → sync-talos-images |
+| `images` | preflight → sync-talos-images (still short-circuits when catalog ready) |
 
+### Image catalog fast path
+
+Preflight pulls R2 `production/inventory/talos-images.yaml` and runs
+`scripts/check-talos-image-catalog.py`. Images are **skipped** when:
+
+- schematic id matches `sha256(schematics/cluster.yaml)-<talos_version>`
+- every `oracle:` account has `formats.oracle.accounts.<acct>.ocid`
+- every `gcp:` account has `formats.gcp.accounts.<acct>.self_link`
+- contabo/onprem shared URLs present when those rosters are non-empty
+- `force_image_sync` is false
+
+Day-2 scale-out should use **`mode=infra`**. Do not set
+`force_image_sync=true` unless you intentionally want a rebuild.
+Existing VMs do not reimage when the catalog updates (GCP/OCI
+`ignore_changes` on boot disks).
 ## Preflight gates
 
 - Omni auth works (`omnictl get user`)

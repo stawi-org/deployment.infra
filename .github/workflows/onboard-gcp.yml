@@ -7,8 +7,9 @@
 # Pipeline:
 #   1. Seed default two Spot workers nodes.yaml in R2 for every
 #      account under gcp: in accounts.yaml (empty → 2×e2-medium Spot).
-#   2. cluster-provision mode=full (no wipe): image import for new
-#      projects → tofu-apply matrix → Omni cluster template sync.
+#   2. Catalog gate: if every roster account already has a Talos image
+#      handle, provision with mode=infra (no image rebuild). Otherwise
+#      mode=full (import once, then apply).
 #
 # Pair with scripts/bootstrap-gcp-wif.sh which opens the PR that lands
 # those account files.
@@ -31,6 +32,10 @@ on:
         description: Seed dry-run only; skip cluster-provision
         type: boolean
         default: false
+      force_image_sync:
+        description: Force image rebuild even if catalog already complete
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -44,6 +49,10 @@ concurrency:
 jobs:
   seed-default-nodes:
     runs-on: ubuntu-latest
+    outputs:
+      provision_mode: ${{ steps.catalog.outputs.provision_mode }}
+      need_images: ${{ steps.catalog.outputs.need_images }}
+      catalog_reason: ${{ steps.catalog.outputs.reason }}
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -51,6 +60,7 @@ jobs:
       R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
       SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+      FORCE_IMAGE_SYNC: ${{ github.event_name == 'workflow_dispatch' && inputs.force_image_sync == true }}
     steps:
       - uses: actions/checkout@v5
 
@@ -98,6 +108,43 @@ jobs:
             --exclude "*" --include "*/nodes.yaml"
           echo "::notice::wrote ensured nodes.yaml files to R2"
 
+      # Prefer mode=infra when the Talos image catalog already covers
+      # every gcp: account (and the rest of the roster). First onboard
+      # of a new project fails the gate → mode=full for one-time import.
+      - name: Choose provision mode from image catalog
+        id: catalog
+        run: |
+          set -euo pipefail
+          R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          if ! aws s3 cp \
+              "s3://cluster-tofu-state/production/inventory/talos-images.yaml" \
+              /tmp/talos-images.yaml \
+              --endpoint-url "$R2_ENDPOINT" --region us-east-1 2>/tmp/catalog-pull.err; then
+            echo "::notice::no talos-images.yaml yet — first image sync required"
+            : > /tmp/talos-images.yaml
+          fi
+          talos_version=$(jq -r '.talos_version' tofu/shared/versions.auto.tfvars.json)
+          force_args=()
+          if [[ "${FORCE_IMAGE_SYNC}" == "true" ]]; then
+            force_args+=(--force)
+          fi
+          python3 scripts/check-talos-image-catalog.py \
+            --accounts-yaml tofu/shared/accounts.yaml \
+            --catalog-yaml /tmp/talos-images.yaml \
+            --schematic tofu/shared/schematics/cluster.yaml \
+            --talos-version "${talos_version}" \
+            "${force_args[@]}" \
+            --github-output
+          need=$(grep -E '^need_images=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
+          reason=$(grep -E '^reason=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
+          if [[ "${need}" == "true" ]]; then
+            mode=full
+          else
+            mode=infra
+          fi
+          echo "provision_mode=${mode}" >> "$GITHUB_OUTPUT"
+          echo "::notice::onboard provision_mode=${mode} (need_images=${need}) — ${reason}"
+
   provision:
     needs: seed-default-nodes
     if: >-
@@ -105,8 +152,11 @@ jobs:
       && (github.event_name != 'workflow_dispatch' || inputs.dry_run != true)
     uses: ./.github/workflows/cluster-provision.yml
     with:
-      mode: full
+      mode: ${{ needs.seed-default-nodes.outputs.provision_mode }}
       wipe_cluster: false
-      deploy_flux: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy_flux == true }}
+      force_image_sync: ${{ github.event_name == 'workflow_dispatch' && inputs.force_image_sync == true }}
+      # Template sync only on full (first-import) path. Infra path still
+      # runs 03-talos labels via tofu-apply — enough for worker join.
+      deploy_flux: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy_flux == true && needs.seed-default-nodes.outputs.provision_mode == 'full' }}
       dry_run: false
     secrets: inherit

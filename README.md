@@ -236,10 +236,14 @@ This optional variable remains available for decommissioning:
 **Preferred:** one orchestrated path — see [docs/cluster-provision.md](docs/cluster-provision.md).
 
 ```bash
-gh workflow run cluster-provision.yml -f mode=full -f force_image_sync=true -f deploy_flux=true
+# Day-2 scale / repair (no image rebuild when catalog is complete):
+gh workflow run cluster-provision.yml -f mode=infra
+
+# Full path (images only run if catalog incomplete or force_image_sync):
+gh workflow run cluster-provision.yml -f mode=full -f deploy_flux=true
 ```
 
-That runs preflight (including OCI Always Free inventory checks) → image sync → `tofu-apply` (per-account matrix) → cluster template sync → Flux.
+`mode=full` runs preflight (including OCI Always Free inventory checks) → **image sync only if needed** → `tofu-apply` (per-account matrix) → cluster template sync → Flux. Image rebuild is gated by `scripts/check-talos-image-catalog.py` against R2 `talos-images.yaml`; use `force_image_sync=true` only when you intentionally want a rebuild.
 
 **GCP onboard:** full operator runbook in [docs/gcp-onboard.md](docs/gcp-onboard.md). Short form: merge the peer-provider code to `main` (empty `gcp: []` is fine), then `scripts/bootstrap-gcp-wif.sh --project …` (WIF + SA + SOPS auth PR). After the onboard PR merges, `onboard-gcp.yml` seeds **two Spot e2-medium workers** and runs `cluster-provision`. No long-lived GCP SA JSON keys — CI uses GitHub OIDC → Workload Identity Federation.
 

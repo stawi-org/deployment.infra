@@ -4,12 +4,14 @@
 # node-* tofu modules via the layer pre-plan `aws s3 sync` step that
 # materialises the inventory dir locally.
 #
-# "Sync" not "regenerate": the build step is a no-op when the schematic
-# hasn't changed (the same .oci / GCP image bytes stay cached in R2).
-# The per-account work is what fires on a new oracle/GCP account —
-# each OCI tenancy gets its own custom-image OCID (tenancy-scoped; no
-# cross-tenancy sharing) and each GCP project gets its own GCE custom
-# image self_link (project-scoped).
+# "Sync" not "regenerate":
+#   1. Whole workflow short-circuits (skipped=true) when R2 catalog
+#      schematic matches AND every accounts.yaml roster entry already
+#      has its per-provider image handle (see check-talos-image-catalog).
+#   2. Otherwise omnictl download is a no-op when R2 already holds the
+#      schematic-keyed bytes; only new/missing per-account imports run.
+#   3. Existing VMs never reimage from catalog drift (boot_disk /
+#      source_details ignore_changes on GCP/OCI).
 #
 # Why this exists: tofu used to drive image generation by computing a
 # Talos Image Factory schematic at plan time and registering it with the
@@ -134,10 +136,11 @@ jobs:
     # basenames + schematic_id and let assemble-and-upload stitch the
     # URLs from the R2_ACCOUNT_ID secret it loads from `secrets`.
     outputs:
-      skipped: ${{ steps.build.outputs.skipped }}
-      schematic_id: ${{ steps.build.outputs.schematic_id }}
-      talos_version: ${{ steps.build.outputs.talos_version }}
-      generated_at: ${{ steps.build.outputs.generated_at }}
+      # Prefer catalog-gate skip outputs; fall back to full build.
+      skipped: ${{ steps.gate.outputs.skipped }}
+      schematic_id: ${{ steps.gate.outputs.schematic_id || steps.build.outputs.schematic_id }}
+      talos_version: ${{ steps.gate.outputs.talos_version || steps.build.outputs.talos_version }}
+      generated_at: ${{ steps.gate.outputs.generated_at || steps.build.outputs.generated_at }}
       contabo_file: ${{ steps.build.outputs.contabo_file }}
       contabo_sha256: ${{ steps.build.outputs.contabo_sha256 }}
       onprem_file: ${{ steps.build.outputs.onprem_file }}
@@ -167,9 +170,60 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Cheap gate BEFORE omnictl install / Omni wait. When the R2
+      # catalog is complete for the current schematic + every roster
+      # account, skip the entire image pipeline (no Omni, no import).
+      - name: Catalog readiness gate
+        id: gate
+        run: |
+          set -euo pipefail
+          : "${R2_ACCOUNT_ID:?required for R2 endpoint URL}"
+          R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          pip install --quiet pyyaml
+
+          src_hash=$(sha256sum tofu/shared/schematics/cluster.yaml | cut -d' ' -f1)
+          schematic_id="${src_hash}-${TALOS_VERSION}"
+          echo "schematic_id=${schematic_id}" >> "$GITHUB_OUTPUT"
+          echo "talos_version=${TALOS_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+          if aws s3 cp \
+              s3://cluster-tofu-state/production/inventory/talos-images.yaml \
+              /tmp/stored-talos-images.yaml \
+              --endpoint-url "$R2_ENDPOINT" --region us-east-1 2>/dev/null; then
+            :
+          else
+            : > /tmp/stored-talos-images.yaml
+          fi
+
+          force_args=()
+          if [[ "${FORCE}" == "true" ]]; then
+            force_args+=(--force)
+          fi
+          cat_out=$(mktemp)
+          GITHUB_OUTPUT="$cat_out" python3 scripts/check-talos-image-catalog.py \
+            --accounts-yaml tofu/shared/accounts.yaml \
+            --catalog-yaml /tmp/stored-talos-images.yaml \
+            --schematic tofu/shared/schematics/cluster.yaml \
+            --talos-version "${TALOS_VERSION}" \
+            "${force_args[@]}" \
+            --github-output
+          cat_ready=$(grep -E '^ready=' "$cat_out" | tail -1 | cut -d= -f2-)
+          cat_reason=$(grep -E '^reason=' "$cat_out" | tail -1 | cut -d= -f2-)
+          rm -f "$cat_out"
+
+          if [[ "${cat_ready}" == "true" ]]; then
+            echo "::notice::image catalog complete — skipping omnictl + imports (${cat_reason})"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::image catalog incomplete — will build/import (${cat_reason})"
+            echo "skipped=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # omnictl version pinned to match the running Omni server. The
       # download URL pattern follows sidero-labs/omni release artifacts.
       - name: Install omnictl
+        if: steps.gate.outputs.skipped != 'true'
         run: |
           set -euo pipefail
           curl -fsSL -o /usr/local/bin/omnictl.real \
@@ -189,6 +243,7 @@ jobs:
       # anything destructive. Failure here means OMNI_SERVICE_ACCOUNT_KEY
       # is wrong / expired.
       - name: Verify omnictl auth
+        if: steps.gate.outputs.skipped != 'true'
         run: omnictl get user --output json | head -20
 
       # Guard against the "regen-images runs before omni-host has new
@@ -199,6 +254,7 @@ jobs:
       # won't auto-register. Wait up to 5 min for the api_endpoint to
       # match the expected cpd.stawi.org address before building.
       - name: Wait for omnictl connection-params resource
+        if: steps.gate.outputs.skipped != 'true'
         # Confirms that omnictl can reach Omni AND the
         # ConnectionParamsController has reconciled (phase=running),
         # which means the SideroLink join token is published. The
@@ -235,22 +291,17 @@ jobs:
       # round-tripping through GITHUB_OUTPUT.
       - name: Build / upload images and .oci archive
         id: build
+        if: steps.gate.outputs.skipped != 'true'
         run: |
           set -euo pipefail
           R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          : "${R2_ACCOUNT_ID:?required for R2 endpoint URL}"
 
           # ----- Hash the schematic source (file + version) -----
           src_hash=$(sha256sum tofu/shared/schematics/cluster.yaml | cut -d' ' -f1)
           schematic_id="${src_hash}-${TALOS_VERSION}"
           echo "::notice::schematic source hash = ${schematic_id}"
 
-          # ----- Skip if unchanged and not forced -----
-          # Reads the schematic_id from the R2-hosted inventory copy
-          # (post-M2: talos-images.yaml lives in R2, not the repo).
-          # First-time bootstraps (no prior object) treat stored as
-          # empty and proceed with the full sync.
-          : "${R2_ACCOUNT_ID:?required for R2 endpoint URL}"
-          R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           if aws s3 cp \
               s3://cluster-tofu-state/production/inventory/talos-images.yaml \
               /tmp/stored-talos-images.yaml \
@@ -259,14 +310,10 @@ jobs:
           else
             stored=""
           fi
-          # NOTE: we no longer short-circuit the whole workflow when the
-          # schematic is unchanged. New oracle accounts still need a
-          # per-tenancy custom-image import even if the .oci bytes are
-          # already cached in R2. Only the omnictl download / rebuild
-          # steps below become no-ops when FORCE is false and bytes
-          # already exist under the schematic key (handled by aws s3
-          # upload skips further down). Always set skipped=false so
-          # discover-oracle + oci-import always run.
+
+          # Gate already decided the catalog is incomplete (new account
+          # and/or schematic drift). Reuse R2 bytes when schematic id
+          # matches; only omnictl download when forced or missing.
           if [[ "${stored}" == "${schematic_id}" && "${FORCE}" != "true" ]]; then
             echo "::notice::schematic unchanged (${stored}); will reuse R2-cached archive for per-account import"
           fi
