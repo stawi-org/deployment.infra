@@ -1192,7 +1192,7 @@ jobs:
                 >/tmp/gcs-desc.out 2>/tmp/gcs-desc.err; then
             err=$(cat /tmp/gcs-desc.err 2>/dev/null || true)
             if echo "$err" | grep -qiE '403|PERMISSION_DENIED|permission|access'; then
-              echo "::error::cannot describe gs://${bucket} (permission). SA needs roles/storage.legacyBucketReader + objectAdmin. Re-run scripts/bootstrap-gcp-wif.sh --project ${PROJECT_ID} --gh-profile ${ACCOUNT}"
+              echo "::error::cannot describe gs://${bucket} (permission). SA needs bucket IAM roles/storage.legacyBucketReader + objectAdmin (not project-level — legacyBucketReader is bucket-only). Re-run scripts/bootstrap-gcp-wif.sh --project ${PROJECT_ID} --gh-profile ${ACCOUNT}"
             else
               echo "::error::gs://${bucket} missing. Re-run scripts/bootstrap-gcp-wif.sh --project ${PROJECT_ID} --gh-profile ${ACCOUNT} (creates the staging bucket)."
             fi
