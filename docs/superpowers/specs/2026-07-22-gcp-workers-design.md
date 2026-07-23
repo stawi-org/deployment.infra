@@ -115,7 +115,7 @@ annotations: {}
 nodes:
   gcp-stawi-prod-node-1:
     role: worker
-    machine_type: e2-medium
+    machine_type: e2-standard-2
     zone: europe-west1-b
     boot_disk_gb: 50
     preemptible: true          # default; Spot provisioning_model
@@ -123,7 +123,7 @@ nodes:
     annotations: {}
   gcp-stawi-prod-node-2:
     role: worker
-    machine_type: e2-medium
+    machine_type: e2-standard-2
     zone: europe-west1-b
     boot_disk_gb: 50
     preemptible: true
@@ -194,13 +194,13 @@ Exactly **two** Spot workers:
 nodes:
   gcp-<account>-node-1:
     role: worker
-    machine_type: e2-medium
+    machine_type: e2-standard-2
     zone: <auth.region>-b
     boot_disk_gb: 50
     preemptible: true
   gcp-<account>-node-2:
     role: worker
-    machine_type: e2-medium
+    machine_type: e2-standard-2
     zone: <auth.region>-b
     boot_disk_gb: 50
     preemptible: true
