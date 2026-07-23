@@ -2,11 +2,36 @@ provider "cloudflare" {
   api_token = var.cloudflare_api_token
 }
 
+# Contabo auth from inventory (same source as 01-contabo-infra). Prefer
+# this over TF_VAR CONTABO_* secrets, which drift and caused HTTP 401
+# invalid_grant on omni-host plans while contabo-infra stayed healthy.
+module "contabo_omni_account_state" {
+  count               = var.omni_host_provider == "contabo" ? 1 : 0
+  source              = "../../modules/node-state"
+  provider_name       = "contabo"
+  account             = "bwire"
+  local_inventory_dir = var.local_inventory_dir
+}
+
+locals {
+  contabo_oauth = var.omni_host_provider == "contabo" ? {
+    client_id     = try(module.contabo_omni_account_state[0].auth.auth.oauth2_client_id, var.contabo_client_id)
+    client_secret = try(module.contabo_omni_account_state[0].auth.auth.oauth2_client_secret, var.contabo_client_secret)
+    api_user      = try(module.contabo_omni_account_state[0].auth.auth.oauth2_user, var.contabo_api_user)
+    api_password  = try(module.contabo_omni_account_state[0].auth.auth.oauth2_pass, var.contabo_api_password)
+    } : {
+    client_id     = var.contabo_client_id
+    client_secret = var.contabo_client_secret
+    api_user      = var.contabo_api_user
+    api_password  = var.contabo_api_password
+  }
+}
+
 provider "contabo" {
-  oauth2_client_id     = var.contabo_client_id
-  oauth2_client_secret = var.contabo_client_secret
-  oauth2_user          = var.contabo_api_user
-  oauth2_pass          = var.contabo_api_password
+  oauth2_client_id     = local.contabo_oauth.client_id
+  oauth2_client_secret = local.contabo_oauth.client_secret
+  oauth2_user          = local.contabo_oauth.api_user
+  oauth2_pass          = local.contabo_oauth.api_password
 }
 
 # Latest Ubuntu 24.04 LTS image_id for Contabo's standard VPS pool.
@@ -15,10 +40,10 @@ module "ubuntu_24_04_image_contabo" {
   source = "../../modules/contabo-image-lookup"
 
   name_pattern  = "^ubuntu-24\\.04$"
-  client_id     = var.contabo_client_id
-  client_secret = var.contabo_client_secret
-  api_user      = var.contabo_api_user
-  api_password  = var.contabo_api_password
+  client_id     = local.contabo_oauth.client_id
+  client_secret = local.contabo_oauth.client_secret
+  api_user      = local.contabo_oauth.api_user
+  api_password  = local.contabo_oauth.api_password
 }
 
 # Read bwire OCI auth from R2-backed inventory — same pattern
@@ -157,10 +182,10 @@ module "omni_host_contabo" {
   region                     = var.omni_host_contabo_region
   image_id                   = try(module.ubuntu_24_04_image_contabo[0].image_id, "")
   force_reinstall_generation = var.force_reinstall_generation
-  contabo_client_id          = var.contabo_client_id
-  contabo_client_secret      = var.contabo_client_secret
-  contabo_api_user           = var.contabo_api_user
-  contabo_api_password       = var.contabo_api_password
+  contabo_client_id          = local.contabo_oauth.client_id
+  contabo_client_secret      = local.contabo_oauth.client_secret
+  contabo_api_user           = local.contabo_oauth.api_user
+  contabo_api_password       = local.contabo_oauth.api_password
 
   omni_version                         = var.omni_version
   dex_version                          = var.dex_version
