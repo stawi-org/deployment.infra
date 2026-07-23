@@ -36,10 +36,11 @@ jobs:
   # tofu/shared/templates/omni-host/**, or tofu/layers/00-omni-server/**.
   # Excluded here so node-only PRs don't waste a runner on a no-op omni-host plan.
 
-  # All three infra layers (contabo, oracle, onprem) are matrixed
+  # Infra layers (contabo, oracle, onprem, gcp) are matrixed
   # per-account to mirror tofu-apply.yml — same reasoning, same
   # per-account-state shape, so plan diffs are scoped to one account
-  # at a time.
+  # at a time. GCP uses count!=0 so an empty gcp: [] roster skips the
+  # matrix cleanly (GHA rejects empty strategy.matrix.account).
   read-contabo-accounts:
     needs: secrets
     runs-on: ubuntu-latest
@@ -127,6 +128,39 @@ jobs:
       mode: plan
     secrets: inherit
     needs: read-onprem-accounts
+  read-gcp-accounts:
+    needs: secrets
+    runs-on: ubuntu-latest
+    outputs:
+      accounts: ${{ steps.read.outputs.accounts }}
+      count: ${{ steps.read.outputs.count }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: read
+        run: |
+          set -euo pipefail
+          accounts=$(yq -o=json '.gcp // []' tofu/shared/accounts.yaml | jq -c .)
+          count=$(jq 'length' <<<"$accounts")
+          echo "accounts=$accounts" >> "$GITHUB_OUTPUT"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "::notice::gcp accounts ($count): $accounts"
+  gcp-infra:
+    needs: read-gcp-accounts
+    if: needs.read-gcp-accounts.outputs.count != '0'
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        account: ${{ fromJson(needs.read-gcp-accounts.outputs.accounts) }}
+    uses: ./.github/workflows/tofu-layer.yml
+    with:
+      layer: 02-gcp-infra
+      account: ${{ matrix.account }}
+      mode: plan
+    secrets: inherit
   talos:
     permissions:
       contents: read
@@ -135,12 +169,14 @@ jobs:
     # Mirror tofu-apply.yml's failure-isolation semantics: any matrix
     # cell failure surfaces as a non-success aggregate result. Use
     # != 'cancelled' so the talos plan still runs as long as none of
-    # the upstream matrices were explicitly cancelled.
-    if: always() && needs.contabo-infra.result != 'cancelled' && needs.oracle-infra.result != 'cancelled' && needs.onprem-infra.result != 'cancelled'
+    # the upstream matrices were explicitly cancelled. When gcp: [] the
+    # gcp-infra job is skipped (result=skipped, != cancelled) so talos
+    # still runs under always().
+    if: always() && needs.contabo-infra.result != 'cancelled' && needs.oracle-infra.result != 'cancelled' && needs.onprem-infra.result != 'cancelled' && needs.gcp-infra.result != 'cancelled'
     uses: ./.github/workflows/tofu-layer.yml
     with: { layer: 03-talos, mode: plan }
     secrets: inherit
-    needs: [contabo-infra, oracle-infra, onprem-infra]
+    needs: [contabo-infra, oracle-infra, onprem-infra, gcp-infra]
   dns:
     needs: talos
     permissions:

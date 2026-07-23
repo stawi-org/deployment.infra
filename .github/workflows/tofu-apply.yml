@@ -59,13 +59,14 @@ jobs:
   # files under those paths); this workflow assumes the omni-host is
   # already healthy when talos-layer's omnictl ops run.
 
-  # All three infra layers (contabo, oracle, onprem) keep one tfstate per
+  # Infra layers (contabo, oracle, onprem, gcp) keep one tfstate per
   # account. Run each account as its own matrix cell with fail-fast=false
   # so a single account's apply failure (Contabo OAuth blip, OCI Out-of-
   # Host-Capacity, missing IAM policy, tenancy outage, R2 sync hiccup,
-  # decryption issue) can't cancel siblings or block downstream layers
-  # whose nodes live in healthy accounts. The set of accounts comes from
-  # tofu/shared/accounts.yaml — single source of truth.
+  # decryption issue, GCP quota) can't cancel siblings or block
+  # downstream layers whose nodes live in healthy accounts. The set of
+  # accounts comes from tofu/shared/accounts.yaml — single source of
+  # truth. GCP uses count!=0 so an empty gcp: [] roster skips cleanly.
   read-contabo-accounts:
     needs: secrets
     runs-on: ubuntu-latest
@@ -165,9 +166,45 @@ jobs:
       environment: production
     secrets: inherit
 
+  read-gcp-accounts:
+    needs: secrets
+    runs-on: ubuntu-latest
+    outputs:
+      accounts: ${{ steps.read.outputs.accounts }}
+      count: ${{ steps.read.outputs.count }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: read
+        run: |
+          set -euo pipefail
+          accounts=$(yq -o=json '.gcp // []' tofu/shared/accounts.yaml | jq -c .)
+          count=$(jq 'length' <<<"$accounts")
+          echo "accounts=$accounts" >> "$GITHUB_OUTPUT"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "::notice::gcp accounts ($count): $accounts"
+
+  gcp-infra:
+    needs: read-gcp-accounts
+    if: needs.read-gcp-accounts.outputs.count != '0'
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        account: ${{ fromJson(needs.read-gcp-accounts.outputs.accounts) }}
+    uses: ./.github/workflows/tofu-layer.yml
+    with:
+      layer: 02-gcp-infra
+      account: ${{ matrix.account }}
+      mode: apply
+      environment: production
+    secrets: inherit
+
   # bwire-only OCI storage layer (buckets + operator CSK). Independent
   # of the per-account oracle matrix — only needs secrets + bwire auth
-  # in R2. Running parallel with contabo/oracle/onprem removes the
+  # in R2. Running parallel with contabo/oracle/onprem/gcp removes the
   # false serial wait on the slowest OCI account cell.
   oci-storage:
     needs: secrets
@@ -186,11 +223,13 @@ jobs:
     # talos layer runs omnictl against cpd.stawi.org for machine-labels
     # + per-node patch render. omni-host lifecycle is owned by
     # tofu-omni-host.yml — this workflow assumes the host is already up.
-    needs: [contabo-infra, oracle-infra, onprem-infra, oci-storage]
+    needs: [contabo-infra, oracle-infra, onprem-infra, gcp-infra, oci-storage]
     # Per-account isolation: fail-fast=false matrices report aggregate
     # success only when every cell wins. We proceed unless cancelled so
-    # healthy accounts still label/sync; cluster-health catches quorum loss.
-    if: always() && needs.contabo-infra.result != 'cancelled' && needs.oracle-infra.result != 'cancelled' && needs.onprem-infra.result != 'cancelled' && needs.oci-storage.result != 'cancelled'
+    # healthy accounts still label/sync; cluster-health catches quorum
+    # loss. When gcp: [] the gcp-infra job is skipped (result=skipped,
+    # != cancelled) so talos still runs under always().
+    if: always() && needs.contabo-infra.result != 'cancelled' && needs.oracle-infra.result != 'cancelled' && needs.onprem-infra.result != 'cancelled' && needs.gcp-infra.result != 'cancelled' && needs.oci-storage.result != 'cancelled'
     permissions:
       contents: read
       id-token: write
@@ -205,8 +244,8 @@ jobs:
   dns:
     # DNS reads infra remote states (node IPs), not 03-talos state.
     # Run in parallel with talos once infra matrices finish.
-    needs: [contabo-infra, oracle-infra, onprem-infra]
-    if: always() && needs.contabo-infra.result != 'cancelled' && needs.oracle-infra.result != 'cancelled' && needs.onprem-infra.result != 'cancelled'
+    needs: [contabo-infra, oracle-infra, onprem-infra, gcp-infra]
+    if: always() && needs.contabo-infra.result != 'cancelled' && needs.oracle-infra.result != 'cancelled' && needs.onprem-infra.result != 'cancelled' && needs.gcp-infra.result != 'cancelled'
     permissions:
       contents: read
       id-token: write
@@ -216,6 +255,20 @@ jobs:
       layer: 04-dns
       mode: apply
       environment: production
+    secrets: inherit
+
+  # After labels/patches: purge disconnected Omni twins that still claim
+  # cluster membership while a live hostname twin exists (Spot recreate,
+  # force reinstall, OCI soft-reset). Never deletes connected machines.
+  # Pins live UUIDs into R2 so the next 03-talos apply is identity-stable.
+  omni-hygiene:
+    needs: [talos]
+    if: always() && needs.talos.result == 'success'
+    uses: ./.github/workflows/omni-cleanup-dead-twins.yml
+    with:
+      dry_run: false
+      write_pins: true
+      auto_confirm: true
     secrets: inherit
 
   # 04-flux is gated off. The 03-talos kubeconfig / talosconfig

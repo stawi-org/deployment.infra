@@ -13,9 +13,14 @@
 # form is still accepted by v1.13.0 (deprecation, not removal),
 # and works in both maintenance-mode and running-mode parsers.
 #
-# KubeSpan: WireGuard mesh for low-ops cross-provider connectivity.
-# Contabo public, OCI public, on-prem behind NAT — all peer up via
-# discovery.talos.dev without per-provider VPN wiring.
+# LIVE APPLY PATH: Omni cluster template tofu/shared/clusters/main.yaml
+# (patch name: kubespan). Keep this file aligned when changing MTU/flags.
+#
+# KubeSpan: throughput-oriented WireGuard mesh across every provider.
+# Contabo / OCI / GCP / on-prem peer via discovery.talos.dev — no
+# per-provider VPN. Design goal: high aggregate goodput *regardless of
+# locality* (see docs/network-throughput.md). Latency co-location is
+# optional; the mesh must stay full-mesh and loss-resistant.
 #
 # Past blackhole incident (documented so we don't regress): on a
 # bootstrap node with no reachable peers yet, Talos installed a
@@ -37,3 +42,10 @@ machine:
       # Pinned explicitly so a future operator reading this knows
       # the past-incident reason without having to grep history.
       advertiseKubernetesNetworks: false
+      # Multi-cloud: slightly under 1420 so WG + Flannel/VXLAN + path
+      # MTU quirks do not fragment. Loss from oversize MTU destroys
+      # throughput far more than a few smaller packets.
+      mtu: 1380
+      # If a peer is down on the mesh, allow non-mesh routes to still
+      # work (robustness when discovery is partial).
+      allowDownPeerBypass: true

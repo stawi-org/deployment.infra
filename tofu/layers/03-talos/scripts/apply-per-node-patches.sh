@@ -116,12 +116,13 @@ while IFS= read -r entry; do
     continue
   fi
 
-  # Shared match: preferred Omni UUID → hostname (connected preferred) → ipv4.
+  # Shared match; --require-connected avoids ConfigPatches on ghost twins.
   match_line=$(python3 "$MATCH_PY" \
     --machines-file "$ms_file" \
     --preferred-id "$preferred" \
     --hostname "$node_name" \
     --ipv4 "$ipv4" \
+    --require-connected \
     --print-reason || true)
   machine_id="${match_line%%$'\t'*}"
   match_reason="${match_line#*$'\t'}"

@@ -6,10 +6,13 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 SRC="$ROOT/tofu/shared/sops-check.tf.tmpl"
 LAYERS=(
+  tofu/layers/00-omni-server
   tofu/layers/00-talos-secrets
   tofu/layers/01-contabo-infra
+  tofu/layers/02-oci-storage
   tofu/layers/02-oracle-infra
   tofu/layers/02-onprem-infra
+  tofu/layers/02-gcp-infra
   tofu/layers/03-talos
 )
 

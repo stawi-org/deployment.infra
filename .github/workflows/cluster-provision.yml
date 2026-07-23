@@ -1,20 +1,58 @@
 # Single entrypoint for reproducible cluster bring-up / repair.
 #
 # Modes:
-#   full     — images (if needed) → tofu-apply → optional wipe →
-#              sync-cluster-template → optional flux
-#   infra    — tofu-apply only
+#   full     — sync-talos-images (idempotent reuse) → tofu-apply →
+#              optional wipe → sync-cluster-template → optional flux
+#   infra    — tofu-apply only (day-2 scale / desired-state apply)
 #   cluster  — force-clear (optional) + sync-cluster-template + Ready
 #   images   — sync-talos-images only
 #
-# All destructive sub-steps require confirm tokens. Dry-run skips applies.
+# Desired state for nodes lives in OpenTofu + R2 inventory. GCP empty
+# inventory seeds two Spot workers inside the module (no seed script).
+# Image *bytes* still need Omni (omnictl); import into each cloud is
+# idempotent. Existing VMs are not recreated on image catalog drift.
 #
-# Design goals: one run ID, no manual multi-workflow sequencing, modes
-# that stay valid as account count grows (infra work is still the
-# per-account matrix inside tofu-apply).
+# All destructive sub-steps require confirm tokens. Dry-run skips applies.
 name: cluster-provision
 
 on:
+  workflow_call:
+    inputs:
+      mode:
+        description: "full | infra | cluster | images"
+        type: string
+        required: false
+        default: full
+      talos_version:
+        description: "Talos version for image sync (empty = versions pin)"
+        type: string
+        required: false
+        default: ""
+      force_image_sync:
+        description: Force image rebuild (ignore R2 cache reuse)
+        type: boolean
+        required: false
+        default: false
+      wipe_cluster:
+        description: Force-clear Omni cluster before template sync
+        type: boolean
+        required: false
+        default: false
+      confirm_wipe:
+        description: Type stawi to confirm wipe_cluster
+        type: string
+        required: false
+        default: ""
+      deploy_flux:
+        description: Run deploy-flux after cluster Ready
+        type: boolean
+        required: false
+        default: true
+      dry_run:
+        description: Validate / plan path only where supported
+        type: boolean
+        required: false
+        default: false
   workflow_dispatch:
     inputs:
       mode:
@@ -28,7 +66,7 @@ on:
         required: false
         default: ""
       force_image_sync:
-        description: Force image rebuild even if schematic unchanged
+        description: Force image rebuild (ignore R2 cache reuse)
         type: boolean
         default: false
       wipe_cluster:
@@ -182,6 +220,10 @@ jobs:
       force: ${{ inputs.force_image_sync }}
     secrets: inherit
 
+  # full|infra mode: tofu-apply matrix includes contabo/oracle/onprem/gcp
+  # (and oci-storage). GCP cells appear only when tofu/shared/accounts.yaml
+  # has non-empty gcp: keys; empty gcp: [] skips that matrix. No GCP
+  # free-tier preflight (paid Spot capacity — OCI Always Free only above).
   infra:
     needs: [preflight, images]
     # images may report failure if a single oci-import matrix cell

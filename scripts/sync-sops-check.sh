@@ -12,6 +12,7 @@ LAYERS=(
   tofu/layers/02-oci-storage
   tofu/layers/02-oracle-infra
   tofu/layers/02-onprem-infra
+  tofu/layers/02-gcp-infra
   tofu/layers/03-talos
 )
 

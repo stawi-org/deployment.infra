@@ -1,0 +1,47 @@
+# After a GCP account lands on main (auth.yaml + accounts.yaml entry):
+# run cluster-provision. OpenTofu owns desired capacity (empty inventory
+# → two Spot workers) and image resolution (catalog self_link or family
+# stawi-talos). No separate seed/catalog scripts.
+#
+# Pair with scripts/bootstrap-gcp-wif.sh (one-shot WIF + SOPS PR).
+name: onboard-gcp
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - tofu/shared/accounts.yaml
+      - tofu/shared/accounts/gcp/**
+      - .github/workflows/onboard-gcp.yml
+  workflow_dispatch:
+    inputs:
+      deploy_flux:
+        description: Also run deploy-flux after cluster template sync
+        type: boolean
+        default: false
+      force_image_sync:
+        description: Force image rebuild (ignore R2 cache reuse)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+concurrency:
+  group: onboard-gcp-production
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    uses: ./.github/workflows/cluster-provision.yml
+    with:
+      # full: idempotent image import for the new project + tofu-apply.
+      # Day-2 scale uses mode=infra (OpenTofu only).
+      mode: full
+      wipe_cluster: false
+      force_image_sync: ${{ github.event_name == 'workflow_dispatch' && inputs.force_image_sync || false }}
+      deploy_flux: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy_flux || false }}
+      dry_run: false
+    secrets: inherit

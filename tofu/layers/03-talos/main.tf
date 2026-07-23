@@ -1,8 +1,8 @@
 # tofu/layers/03-talos/main.tf
 #
 # Reads each upstream infra layer's `nodes` output across every account
-# (Contabo + Oracle + on-prem), folds them into one map keyed by the
-# globally-unique node name, and feeds two things downstream:
+# (Contabo + Oracle + on-prem + GCP), folds them into one map keyed by
+# the globally-unique node name, and feeds two things downstream:
 #
 #   - dns.tf publishes cp-N + prod.<zone> records (cross-provider).
 #   - cluster.tf drives Omni: applies machine-classes, syncs cluster
@@ -12,7 +12,7 @@
 # 00-talos-secrets is no longer read here — Talos cluster secrets
 # (PKI, etcd, kubelet) are owned by Omni now, not by tofu.
 
-# All three infra layers (contabo, oracle, onprem) are per-account:
+# All four infra layers (contabo, oracle, onprem, gcp) are per-account:
 # each entry in accounts.yaml's `<provider>:` list owns its own state
 # file, so the matrix workflow can fail-isolate one account from the
 # others. Read each one and merge their `nodes` outputs into the
@@ -97,6 +97,30 @@ locals {
   ]...)
 }
 
+data "terraform_remote_state" "gcp" {
+  for_each = toset(try(yamldecode(file("${path.module}/../../shared/accounts.yaml")).gcp, []))
+  backend  = "s3"
+  config = {
+    bucket                      = "cluster-tofu-state"
+    key                         = "production/02-gcp-infra-${each.key}.tfstate"
+    region                      = "auto"
+    endpoints                   = { s3 = "https://${var.r2_account_id}.r2.cloudflarestorage.com" }
+    use_path_style              = true
+    skip_credentials_validation = true
+    skip_metadata_api_check     = true
+    skip_region_validation      = true
+    skip_requesting_account_id  = true
+    skip_s3_checksum            = true
+  }
+}
+
+locals {
+  gcp_outputs_nodes = merge([
+    for k, s in data.terraform_remote_state.gcp :
+    try(s.outputs.nodes, {})
+  ]...)
+}
+
 
 locals {
   # Read each Contabo account's R2 inventory (already synced to
@@ -122,6 +146,7 @@ locals {
       contabo = try(yamldecode(file("${path.module}/../../shared/accounts.yaml")).contabo, [])
       oracle  = try(yamldecode(file("${path.module}/../../shared/accounts.yaml")).oracle, [])
       onprem  = try(yamldecode(file("${path.module}/../../shared/accounts.yaml")).onprem, [])
+      gcp     = try(yamldecode(file("${path.module}/../../shared/accounts.yaml")).gcp, [])
       } : [
       for acct in accts : { provider = provider, account = acct }
     ]
@@ -151,6 +176,7 @@ locals {
       local.contabo_outputs_nodes,
       local.oracle_outputs_nodes,
       local.onprem_outputs_nodes,
+      local.gcp_outputs_nodes,
       ) : k => merge(
       try(local.inventory_provider_data[k], {}),
       v,

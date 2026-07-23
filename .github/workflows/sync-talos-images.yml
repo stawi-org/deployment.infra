@@ -1,13 +1,14 @@
 # Syncs Omni-aware Talos images to R2 + every oracle tenancy's compute
-# image catalog. Output (production/inventory/talos-images.yaml in R2)
-# is consumed by the node-* tofu modules via the layer pre-plan
-# `aws s3 sync` step that materialises the inventory dir locally.
+# image catalog + every GCP project's custom image catalog. Output
+# (production/inventory/talos-images.yaml in R2) is consumed by the
+# node-* tofu modules via the layer pre-plan `aws s3 sync` step that
+# materialises the inventory dir locally.
 #
-# "Sync" not "regenerate": the build step is a no-op when the schematic
-# hasn't changed (the same .oci bytes stay cached in R2). The per-account
-# work is what fires on a new oracle account — each tenancy gets its own
-# custom-image OCID since OCI custom images are tenancy-scoped (no
-# cross-tenancy sharing).
+# "Sync" not "regenerate": omnictl download is a no-op when R2 already
+# holds the schematic-keyed bytes; per-account OCI/GCP import reuses an
+# existing image when the name (schematic + sha) already exists. OpenTofu
+# boots from catalog self_link or image family stawi-talos and never
+# recreates existing VMs on catalog drift (boot_disk ignore_changes).
 #
 # Why this exists: tofu used to drive image generation by computing a
 # Talos Image Factory schematic at plan time and registering it with the
@@ -17,9 +18,10 @@
 # out of the image-build path entirely.
 #
 # Job topology:
-#   build              — omnictl download to R2 plus .oci archive to R2,
-#                        computes schematic_id and SHAs. No-op when the
-#                        cached object already matches.
+#   build              — omnictl download (ISO, oracle arm64, gcp amd64)
+#                        to R2 plus .oci archive to R2, computes
+#                        schematic_id and SHAs. No-op when the cached
+#                        object already matches.
 #   discover-oracle    — enumerates oracle accounts in R2 inventory and
 #                        emits a matrix of {profile, region, tenancy,
 #                        compartment_ocid}.
@@ -30,6 +32,16 @@
 #                        Reuses the existing image if its display_name
 #                        (schematic + archive sha) already exists — only
 #                        new tenancies or new bytes do real work.
+#   discover-gcp       — enumerates gcp: accounts from accounts.yaml +
+#                        repo SOPS auth (stage-gcp-auth-from-repo) and
+#                        emits a matrix of {account, project_id, region,
+#                        workload_identity_provider, service_account_email}.
+#   gcp-import         — matrix per GCP account: GitHub-OIDC → GCP WIF,
+#                        download GCP image from R2, stage to
+#                        stawi-talos-images-<account> GCS bucket,
+#                        gcloud compute images create (family stawi-talos),
+#                        emit JSON artifact with self_link. Reuses the
+#                        image when name (schematic + sha) already exists.
 #   assemble-and-upload — collects per-account artifacts, renders the
 #                        final talos-images.yaml, uploads it to R2 at
 #                        production/inventory/talos-images.yaml. No PR.
@@ -41,7 +53,9 @@
 # CreateSchematic / SideroLink-params path which requires Admin
 # (run #25154959742 surfaced "insufficient role: Operator"). OCI
 # imports reuse the existing GitHub-OIDC-to-OCI WIF flow already used
-# by tofu-layer.yml.
+# by tofu-layer.yml. GCP imports use google-github-actions/auth@v2
+# against per-account workload_identity_provider + service_account_email
+# from SOPS-encrypted tofu/shared/accounts/gcp/<acct>/auth.yaml.
 name: sync-talos-images
 on:
   workflow_dispatch:
@@ -131,6 +145,8 @@ jobs:
       oracle_qcow2_sha256: ${{ steps.build.outputs.oracle_qcow2_sha256 }}
       oracle_archive_object: ${{ steps.build.outputs.oracle_archive_object }}
       oracle_archive_sha256: ${{ steps.build.outputs.oracle_archive_sha256 }}
+      gcp_file: ${{ steps.build.outputs.gcp_file }}
+      gcp_sha256: ${{ steps.build.outputs.gcp_sha256 }}
     env:
       # cpd.<zone> is gray-cloud direct (no CF in front). cp.<zone>
       # is orange-cloud — CF's free plan downgrades HTTP/2 to HTTP/1.1
@@ -221,19 +237,13 @@ jobs:
         run: |
           set -euo pipefail
           R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          : "${R2_ACCOUNT_ID:?required for R2 endpoint URL}"
 
           # ----- Hash the schematic source (file + version) -----
           src_hash=$(sha256sum tofu/shared/schematics/cluster.yaml | cut -d' ' -f1)
           schematic_id="${src_hash}-${TALOS_VERSION}"
           echo "::notice::schematic source hash = ${schematic_id}"
 
-          # ----- Skip if unchanged and not forced -----
-          # Reads the schematic_id from the R2-hosted inventory copy
-          # (post-M2: talos-images.yaml lives in R2, not the repo).
-          # First-time bootstraps (no prior object) treat stored as
-          # empty and proceed with the full sync.
-          : "${R2_ACCOUNT_ID:?required for R2 endpoint URL}"
-          R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           if aws s3 cp \
               s3://cluster-tofu-state/production/inventory/talos-images.yaml \
               /tmp/stored-talos-images.yaml \
@@ -242,14 +252,10 @@ jobs:
           else
             stored=""
           fi
-          # NOTE: we no longer short-circuit the whole workflow when the
-          # schematic is unchanged. New oracle accounts still need a
-          # per-tenancy custom-image import even if the .oci bytes are
-          # already cached in R2. Only the omnictl download / rebuild
-          # steps below become no-ops when FORCE is false and bytes
-          # already exist under the schematic key (handled by aws s3
-          # upload skips further down). Always set skipped=false so
-          # discover-oracle + oci-import always run.
+
+          # New oracle/GCP accounts still need per-account import even
+          # when schematic is unchanged. Only omnictl download becomes a
+          # no-op via R2 object reuse below. Discover + import always run.
           if [[ "${stored}" == "${schematic_id}" && "${FORCE}" != "true" ]]; then
             echo "::notice::schematic unchanged (${stored}); will reuse R2-cached archive for per-account import"
           fi
@@ -301,6 +307,15 @@ jobs:
           # own installer on first boot; same end state as raw.
           download_image iso    amd64   # contabo + on-prem (shared)
           download_image oracle arm64   # oci (A1.Flex)
+          # GCP GCE workers are e2-medium (x86_64). Omni InstallationMedia
+          # profile is expected to be `gcp` (platform name, same class as
+          # `oracle` / `aws` / `vmware` per `omnictl download --help`).
+          # Full display name is often "Google Cloud"; if CI later fails
+          # with "no matching image", try `gce` or `"Google Cloud"` and
+          # confirm with `omnictl get installationmedia -o yaml`.
+          # Typical on-disk name: gcp-amd64-*.raw.tar.gz (GCE import
+          # accepts .raw.tar.gz via --source-uri).
+          download_image gcp    amd64   # gce (e2 Spot workers)
           ls -la /tmp/images/
 
           # ----- Resolve filenames produced by omnictl -----
@@ -310,12 +325,20 @@ jobs:
           # profile-arch prefix + extension and require exactly one
           # match per slot. Oracle ships qcow2-inside-xz (per
           # InstallationMedia ContentType="application/x-xz"), so we
-          # decompress for the .oci archive build below.
+          # decompress for the .oci archive build below. GCP ships a
+          # raw disk tarball suitable for `gcloud compute images create
+          # --source-uri`.
           metal_iso_file=$(cd /tmp/images && ls metal-amd64-*.iso  2>/dev/null | head -1 || true)
           oracle_xz=$(cd      /tmp/images && ls oracle-arm64-*.xz  2>/dev/null | head -1 || true)
-          for v in "$metal_iso_file" "$oracle_xz"; do
+          gcp_file=$(cd        /tmp/images && ls gcp-amd64-*       2>/dev/null | head -1 || true)
+          if [[ -z "${gcp_file}" ]]; then
+            # Broader fallback if Omni renames the profile prefix.
+            gcp_file=$(cd /tmp/images && ls *gcp*amd64* 2>/dev/null | head -1 || true)
+          fi
+          for v in "$metal_iso_file" "$oracle_xz" "$gcp_file"; do
             if [[ -z "$v" ]]; then
               echo "::error::expected image file missing — omnictl output naming may have changed"
+              echo "::error::expected metal-amd64-*.iso, oracle-arm64-*.xz, gcp-amd64-* (Omni profile 'gcp')"
               ls -la /tmp/images/
               exit 1
             fi
@@ -407,7 +430,7 @@ jobs:
           # contabo + onprem share the ISO, so dedupe the upload list.
           declare -A seen_files=()
           upload_files=()
-          for f in "/tmp/images/${contabo_file}" "/tmp/images/${onprem_file}" "/tmp/images/${oracle_file}" "${oracle_archive_path}"; do
+          for f in "/tmp/images/${contabo_file}" "/tmp/images/${onprem_file}" "/tmp/images/${oracle_file}" "${oracle_archive_path}" "/tmp/images/${gcp_file}"; do
             if [[ -z "${seen_files[$f]:-}" ]]; then
               seen_files[$f]=1
               upload_files+=("$f")
@@ -551,6 +574,7 @@ jobs:
           onprem_sha=$(sha256sum  "/tmp/images/${onprem_file}"  | cut -d' ' -f1)
           oracle_sha=$(sha256sum  "/tmp/images/${oracle_file}"  | cut -d' ' -f1)
           archive_sha=$(sha256sum "${oracle_archive_path}"      | cut -d' ' -f1)
+          gcp_sha=$(sha256sum     "/tmp/images/${gcp_file}"     | cut -d' ' -f1)
           generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
           {
@@ -565,6 +589,8 @@ jobs:
             echo "oracle_qcow2_sha256=${oracle_sha}"
             echo "oracle_archive_object=${oracle_archive_object}"
             echo "oracle_archive_sha256=${archive_sha}"
+            echo "gcp_file=${gcp_file}"
+            echo "gcp_sha256=${gcp_sha}"
           } >> "$GITHUB_OUTPUT"
 
   # Enumerates oracle accounts in R2 inventory and emits a matrix that
@@ -991,6 +1017,276 @@ jobs:
           path: /tmp/out/${{ matrix.account.profile }}.json
           if-no-files-found: error
 
+  # Enumerates GCP accounts from tofu/shared/accounts.yaml (source of
+  # truth for which projects exist) + staged SOPS auth from the repo.
+  # Emits a matrix for gcp-import. Empty gcp: [] → count=0 → import
+  # matrix skipped cleanly.
+  discover-gcp:
+    needs: build
+    if: needs.build.outputs.skipped != 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      accounts: ${{ steps.list.outputs.accounts }}
+      count: ${{ steps.list.outputs.count }}
+    env:
+      SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Enumerate GCP accounts
+        id: list
+        run: |
+          set -euo pipefail
+          if ! command -v sops >/dev/null 2>&1; then
+            sudo curl -fsSL -o /usr/local/bin/sops \
+              https://github.com/getsops/sops/releases/download/v3.11.0/sops-v3.11.0.linux.amd64
+            sudo chmod +x /usr/local/bin/sops
+          fi
+          pip install --quiet pyyaml
+          # Stage decryptable auth under /tmp/gcp-auth/<account>/auth.yaml.
+          # With gcp: [] and no auth files this stages zero entries.
+          scripts/stage-gcp-auth-from-repo.sh /tmp/gcp-auth .
+          python3 - <<'PY' > /tmp/gcp-accounts.json
+          import json, os, sys, yaml
+
+          with open("tofu/shared/accounts.yaml") as f:
+              roster = yaml.safe_load(f) or {}
+          wanted = list(roster.get("gcp") or [])
+
+          auth_base = "/tmp/gcp-auth"
+          out = []
+          skipped = []
+          required = (
+              "project_id",
+              "region",
+              "workload_identity_provider",
+              "service_account_email",
+          )
+          for entry in wanted:
+              auth_p = os.path.join(auth_base, entry, "auth.yaml")
+              if not os.path.exists(auth_p):
+                  skipped.append(f"{entry}: auth.yaml missing after stage")
+                  continue
+              data = yaml.safe_load(open(auth_p)) or {}
+              auth = data.get("auth", data)
+              missing = [k for k in required if not auth.get(k)]
+              if missing:
+                  skipped.append(
+                      f"{entry}: auth missing {missing}; "
+                      f"auth keys = {sorted(auth.keys())}"
+                  )
+                  continue
+              out.append({
+                  "account": entry,
+                  "project_id": auth["project_id"],
+                  "region": auth["region"],
+                  "workload_identity_provider": auth["workload_identity_provider"],
+                  "service_account_email": auth["service_account_email"],
+              })
+          for s in skipped:
+              print(f"::warning::skipped {s}", file=sys.stderr)
+          print(json.dumps(out))
+          PY
+          accounts=$(cat /tmp/gcp-accounts.json)
+          count=$(jq 'length' /tmp/gcp-accounts.json)
+          echo "::notice::gcp accounts (${count}): ${accounts}"
+          echo "accounts=${accounts}" >> "$GITHUB_OUTPUT"
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+
+  # Per-GCP-account image staging + import. Matrix fan-out over the
+  # accounts emitted by discover-gcp. Each leg uses GitHub-OIDC → GCP
+  # WIF, stages the Omni GCP image into a per-account GCS bucket, and
+  # registers a custom GCE image. self_link is the only field
+  # gcp-account-infra needs from talos-images.yaml.
+  gcp-import:
+    needs: [build, discover-gcp]
+    if: needs.discover-gcp.outputs.count != '0'
+    runs-on: ubuntu-latest
+    # One empty/broken project must not fail the whole workflow —
+    # assemble-and-upload publishes whatever self_links succeeded.
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        account: ${{ fromJson(needs.discover-gcp.outputs.accounts) }}
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ matrix.account.workload_identity_provider }}
+          service_account: ${{ matrix.account.service_account_email }}
+          project_id: ${{ matrix.account.project_id }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Stage GCP image in project bucket + create compute image
+        id: import
+        env:
+          ACCOUNT:        ${{ matrix.account.account }}
+          PROJECT_ID:     ${{ matrix.account.project_id }}
+          REGION:         ${{ matrix.account.region }}
+          GCP_FILE:       ${{ needs.build.outputs.gcp_file }}
+          GCP_SHA256:     ${{ needs.build.outputs.gcp_sha256 }}
+          SCHEMATIC_ID:   ${{ needs.build.outputs.schematic_id }}
+          TALOS_VERSION:  ${{ needs.build.outputs.talos_version }}
+          R2_ACCOUNT_ID:  ${{ secrets.R2_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+
+          R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          mkdir -p /tmp/gcp-stage
+          local_image="/tmp/gcp-stage/${GCP_FILE}"
+          aws s3 cp \
+            "s3://${R2_IMAGE_BUCKET}/${SCHEMATIC_ID}/${GCP_FILE}" \
+            "${local_image}" \
+            --endpoint-url "${R2_ENDPOINT}"
+          echo "::notice::downloaded $(stat -c%s "${local_image}") byte GCP image"
+
+          # Per-account bucket keeps image bytes project-local for
+          # gcloud compute images create --source-uri. Name mirrors
+          # OCI's talos-images-<account> pattern.
+          bucket="stawi-talos-images-${ACCOUNT}"
+          # GCS bucket names are global; if the preferred name is taken
+          # outside this project, fall back to a project-scoped name.
+          if ! gcloud storage buckets describe "gs://${bucket}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+            echo "::notice::creating GCS bucket gs://${bucket} in ${REGION}"
+            if ! gcloud storage buckets create "gs://${bucket}" \
+                  --project="${PROJECT_ID}" \
+                  --location="${REGION}" \
+                  --uniform-bucket-level-access 2>/tmp/gcs-create.err; then
+              bucket="stawi-talos-images"
+              if ! gcloud storage buckets describe "gs://${bucket}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+                echo "::notice::fallback: creating gs://${bucket} in ${REGION}"
+                gcloud storage buckets create "gs://${bucket}" \
+                  --project="${PROJECT_ID}" \
+                  --location="${REGION}" \
+                  --uniform-bucket-level-access
+              fi
+            fi
+          fi
+
+          # Object name carries schematic + content fingerprint so a
+          # token/schematic change implies a different object (and a
+          # different GCE image name below).
+          object="${SCHEMATIC_ID}/${GCP_SHA256:0:12}-${GCP_FILE}"
+          gcs_uri="gs://${bucket}/${object}"
+          if gcloud storage objects describe "${gcs_uri}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+            echo "::notice::reusing existing GCS object ${gcs_uri}"
+          else
+            echo "::notice::uploading ${GCP_FILE} → ${gcs_uri}"
+            gcloud storage cp "${local_image}" "${gcs_uri}" --project="${PROJECT_ID}"
+          fi
+
+          # GCE image name rules: lowercase letters, digits, hyphens;
+          # must start with a letter; ≤63 chars.
+          # Include talos version + schematic + archive sha so a token
+          # rotation (same schematic, new bytes) produces a new image
+          # and tofu's image_change sentinel fires.
+          raw_name="talos-${TALOS_VERSION//./-}-${SCHEMATIC_ID:0:12}-${GCP_SHA256:0:12}"
+          image_name=$(printf '%s' "${raw_name}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]/-/g; s/-+/-/g; s/^-//; s/-$//')
+          image_name="${image_name:0:63}"
+          # Trim trailing hyphen if truncation left one.
+          image_name="${image_name%-}"
+
+          family="stawi-talos"
+          if gcloud compute images describe "${image_name}" \
+                --project="${PROJECT_ID}" >/dev/null 2>&1; then
+            echo "::notice::reusing existing GCE image ${image_name}"
+          else
+            echo "::notice::creating GCE image ${image_name} from ${gcs_uri}"
+            # .raw.tar.gz (Omni/Talos GCP media) imports via --source-uri.
+            # GVNIC + multi-queue SCSI match Talos GCE recommendations.
+            gcloud compute images create "${image_name}" \
+              --project="${PROJECT_ID}" \
+              --source-uri="${gcs_uri}" \
+              --family="${family}" \
+              --guest-os-features=GVNIC,VIRTIO_SCSI_MULTIQUEUE \
+              --architecture=X86_64
+          fi
+
+          self_link=$(gcloud compute images describe "${image_name}" \
+            --project="${PROJECT_ID}" \
+            --format='value(selfLink)')
+          if [[ -z "${self_link}" ]]; then
+            echo "::error::empty selfLink for image ${image_name}"
+            exit 1
+          fi
+          echo "::notice::image self_link=${self_link}"
+
+          # Prune old custom images in family stawi-talos: keep the
+          # image we just imported/reused + one previous (KEEP=1 other).
+          # Stale GCE images bill for storage and clutter the catalog;
+          # OCI has an analogous prune before import.
+          KEEP_OTHERS=1
+          mapfile -t family_images < <(gcloud compute images list \
+            --project="${PROJECT_ID}" \
+            --filter="family=${family}" \
+            --sort-by="~creationTimestamp" \
+            --format='value(name)' 2>/dev/null || true)
+          if (( ${#family_images[@]} > KEEP_OTHERS + 1 )); then
+            # First entry is newest; always keep image_name + KEEP_OTHERS others.
+            declare -A keep
+            keep["${image_name}"]=1
+            kept_others=0
+            for n in "${family_images[@]}"; do
+              [[ -n "${keep[$n]:-}" ]] && continue
+              if (( kept_others < KEEP_OTHERS )); then
+                keep["$n"]=1
+                kept_others=$((kept_others + 1))
+              fi
+            done
+            for n in "${family_images[@]}"; do
+              [[ -n "${keep[$n]:-}" ]] && continue
+              echo "::notice::pruning stale GCE image ${n}"
+              gcloud compute images delete "${n}" \
+                --project="${PROJECT_ID}" --quiet \
+                || echo "::warning::failed to delete image ${n}"
+            done
+          else
+            echo "::notice::no GCE image prune needed (count=${#family_images[@]})"
+          fi
+
+          {
+            echo "self_link=${self_link}"
+            echo "image_name=${image_name}"
+            echo "family=${family}"
+            echo "bucket=${bucket}"
+            echo "object=${object}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Emit artifact
+        env:
+          ACCOUNT:      ${{ matrix.account.account }}
+          SELF_LINK:    ${{ steps.import.outputs.self_link }}
+          FAMILY:       ${{ steps.import.outputs.family }}
+          SCHEMATIC_ID: ${{ needs.build.outputs.schematic_id }}
+          GCP_SHA256:   ${{ needs.build.outputs.gcp_sha256 }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/out
+          jq -n \
+            --arg a "$ACCOUNT" \
+            --arg s "$SELF_LINK" \
+            --arg f "$FAMILY" \
+            --arg sid "$SCHEMATIC_ID" \
+            --arg sha "$GCP_SHA256" '
+            { account: $a, self_link: $s, family: $f,
+              schematic_id: $sid, sha256: $sha }
+          ' > "/tmp/out/${ACCOUNT}.json"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: gcp-import-${{ matrix.account.account }}
+          path: /tmp/out/${{ matrix.account.account }}.json
+          if-no-files-found: error
+
   # Renders the final talos-images.yaml from job outputs + per-account
   # artifacts and uploads it to R2 (production/inventory/talos-images.yaml).
   # No PR is opened: existing OCI instances ignore source_details drift
@@ -998,26 +1294,43 @@ jobs:
   # would react to a URL change and that path is bypassed when the
   # cluster is rebuilt fresh — see [[contabo_image_url_reinstall]] memory.
   assemble-and-upload:
-    # Run as long as build + discover succeeded. oci-import is a
-    # fail-fast=false matrix; we tolerate per-account failures and
-    # publish the inventory with whichever OCIDs successfully made it.
-    # (1 failed account out of 4 should not block the other 3.) The
+    # Run as long as build + discover succeeded. oci-import / gcp-import
+    # are fail-fast=false matrices; we tolerate per-account failures and
+    # publish the inventory with whichever OCIDs / self_links made it.
+    # (1 failed account out of N should not block the others.) The
     # render step only emits accounts that produced artifacts; missing
     # accounts simply don't appear in the per-account map.
-    needs: [build, discover-oracle, oci-import]
+    # Empty gcp: [] leaves discover-gcp success with count=0 and
+    # gcp-import skipped — assemble still runs and writes accounts: {}.
+    needs: [build, discover-oracle, oci-import, discover-gcp, gcp-import]
     if: |
       always()
       && needs.build.result == 'success'
       && needs.build.outputs.skipped != 'true'
       && needs.discover-oracle.result == 'success'
+      && (needs.discover-gcp.result == 'success' || needs.discover-gcp.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/download-artifact@v6
+        # Tolerate zero oracle legs (all matrix cells failed) so assemble
+        # still publishes contabo/onprem/gcp sections.
+        continue-on-error: true
         with:
           path: /tmp/oci-artifacts
           pattern: oci-import-*
+          merge-multiple: true
+
+      # Skip entirely when gcp: [] (count=0) — download-artifact fails
+      # hard when a pattern matches nothing. continue-on-error covers
+      # the case where every gcp-import matrix cell failed.
+      - uses: actions/download-artifact@v6
+        if: needs.discover-gcp.result == 'success' && needs.discover-gcp.outputs.count != '0'
+        continue-on-error: true
+        with:
+          path: /tmp/gcp-artifacts
+          pattern: gcp-import-*
           merge-multiple: true
 
       - name: Render talos-images.yaml
@@ -1033,6 +1346,8 @@ jobs:
           ORACLE_QCOW2_SHA256:    ${{ needs.build.outputs.oracle_qcow2_sha256 }}
           ORACLE_ARCHIVE_OBJECT:  ${{ needs.build.outputs.oracle_archive_object }}
           ORACLE_ARCHIVE_SHA256:  ${{ needs.build.outputs.oracle_archive_sha256 }}
+          GCP_FILE:               ${{ needs.build.outputs.gcp_file }}
+          GCP_SHA256:             ${{ needs.build.outputs.gcp_sha256 }}
         run: |
           set -euo pipefail
 
@@ -1094,6 +1409,42 @@ jobs:
                 echo "        namespace: \"${namespace}\""
                 echo "        bucket: \"${bucket}\""
                 echo "        object: \"${object}\""
+              } >> /tmp/talos-images.yaml
+            done
+          fi
+
+          # GCP format block: shared R2 url/sha + per-project self_links.
+          # Empty accounts map is required so consumers can safely
+          # try(local.talos_images.formats.gcp.accounts[...]) when
+          # gcp: [] or no import artifacts landed.
+          {
+            echo "  gcp:"
+            if [[ -n "${GCP_FILE}" ]]; then
+              echo "    url: \"${base}/${GCP_FILE}\""
+              echo "    sha256: \"${GCP_SHA256}\""
+            fi
+            echo "    accounts:"
+          } >> /tmp/talos-images.yaml
+
+          shopt -s nullglob
+          gcp_artifacts=(/tmp/gcp-artifacts/*.json)
+          shopt -u nullglob
+          IFS=$'\n' gcp_artifacts=($(printf '%s\n' "${gcp_artifacts[@]}" | sort))
+          if (( ${#gcp_artifacts[@]} == 0 )); then
+            echo "      {}" >> /tmp/talos-images.yaml
+          else
+            for f in "${gcp_artifacts[@]}"; do
+              acct=$(jq -r '.account' "$f")
+              self_link=$(jq -r '.self_link' "$f")
+              schematic_id=$(jq -r '.schematic_id' "$f")
+              sha256=$(jq -r '.sha256' "$f")
+              family=$(jq -r '.family // "stawi-talos"' "$f")
+              {
+                echo "      ${acct}:"
+                echo "        self_link: \"${self_link}\""
+                echo "        schematic_id: \"${schematic_id}\""
+                echo "        sha256: \"${sha256}\""
+                echo "        family: \"${family}\""
               } >> /tmp/talos-images.yaml
             done
           fi

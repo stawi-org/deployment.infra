@@ -1,9 +1,9 @@
 variable "provider_name" {
   type        = string
-  description = "Provider kind: contabo | oracle | onprem. 'provider' is reserved, hence the _name suffix."
+  description = "Provider kind: contabo | oracle | onprem | gcp. 'provider' is reserved, hence the _name suffix."
   validation {
-    condition     = contains(["contabo", "oracle", "onprem"], var.provider_name)
-    error_message = "Invalid provider_name \"${var.provider_name}\". Must be one of: contabo, oracle, onprem."
+    condition     = contains(["contabo", "oracle", "onprem", "gcp"], var.provider_name)
+    error_message = "Invalid provider_name \"${var.provider_name}\". Must be one of: contabo, oracle, onprem, gcp."
   }
 }
 

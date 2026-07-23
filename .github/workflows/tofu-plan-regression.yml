@@ -18,12 +18,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        layer: [01-contabo-infra, 02-oracle-infra, 02-onprem-infra, 03-talos]
+        layer: [01-contabo-infra, 02-oracle-infra, 02-onprem-infra, 02-gcp-infra, 03-talos]
     steps:
       - uses: actions/checkout@v5
-      # The three per-account-state layers (01-contabo-infra,
-      # 02-oracle-infra, 02-onprem-infra) upload one artifact per
-      # account (tfplan-<layer>-<acct>); 03-talos uploads a single
+      # Per-account-state layers (01-contabo-infra, 02-oracle-infra,
+      # 02-onprem-infra, 02-gcp-infra) upload one artifact per account
+      # (tfplan-<layer>-<acct>); 03-talos uploads a single
       # tfplan-<layer>. Glob with `*` so the regression check covers
       # every per-account artifact while staying a single download for
       # 03-talos. With v6 + multi-match the artifacts land in
@@ -34,6 +34,7 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: artifacts
+        continue-on-error: true
 
       - name: Assert zero resource diffs
         run: |
@@ -41,6 +42,11 @@ jobs:
           shopt -s nullglob
           mapfile -t plans < <(find artifacts -name plan.json -type f 2>/dev/null)
           if (( ${#plans[@]} == 0 )); then
+            # Empty gcp: [] skips the plan matrix entirely — no artifact.
+            if [[ "${{ matrix.layer }}" == "02-gcp-infra" ]]; then
+              echo "::notice::no plan.json for 02-gcp-infra (empty gcp matrix or skipped) — ok"
+              exit 0
+            fi
             echo "::error::no plan.json artifact found for ${{ matrix.layer }}"
             exit 1
           fi

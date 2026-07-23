@@ -111,6 +111,8 @@ locals {
   ipv6_cidr    = try(contabo_instance.this.ip_config[0].v6[0].netmask_cidr, null)
   ipv6_gateway = try(contabo_instance.this.ip_config[0].v6[0].gateway, null)
 
+  # CNPG affinity NotIn provider=contabo; also force role-database=false
+  # so Contabo never matches role-database In ["true"].
   derived_labels = merge(
     var.labels,
     {
@@ -119,6 +121,7 @@ locals {
       "node.stawi.org/account"        = var.account_key
       "node.stawi.org/role"           = var.role
       "node.stawi.org/name"           = var.name
+      "node.stawi.org/role-database"  = "false"
     },
     # Only the CP role label is set here. The kubelet's system:node:<name>
     # identity is forbidden by NodeRestriction admission from setting

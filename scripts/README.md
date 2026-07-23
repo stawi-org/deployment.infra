@@ -9,6 +9,7 @@ run during account onboarding.
 | Script | Purpose |
 |---|---|
 | `bootstrap-oci-oidc.sh` | Idempotently set up an OCI Identity Domain so GitHub Actions can WIF-federate into a new tenancy. Run once per OCI tenancy, usually in OCI Cloud Shell. |
+| `bootstrap-gcp-wif.sh` | **Once per GCP project:** WIF + SA + SOPS auth + accounts.yaml PR. Capacity defaults live in OpenTofu, not here. |
 | `seed-inventory.sh` | Append a new account stanza to the R2-backed inventory used by tofu's `node-state` module. |
 
 ## Workflow-invoked (don't run by hand)
@@ -18,6 +19,7 @@ run during account onboarding.
 | `cluster-health.sh` | `cluster-health.yml` |
 | `configure-oci-wif.sh` | `tofu-layer.yml` (OCI auth step) |
 | `build-oci-auth-json.py` | `tofu-layer.yml` |
+| `stage-gcp-auth-from-repo.sh` | `tofu-layer.yml`, `sync-talos-images.yml` (decrypt repo GCP auth for WIF ADC) |
 | `prune-stale-oci-instance-ocids.sh` + `.py` | `prune-stale-oci-ocids.yml` |
 | `rename-inventory-accounts.sh` + `rename_inventory_keys.py` + `rename-inventory-keys.sh` | `rename-inventory-{accounts,keys}.yml` |
 | `sync-sops-check.sh` + `check-sops-check-drift.sh` | pre-commit hooks |
@@ -41,6 +43,7 @@ run during account onboarding.
 python3 -m unittest scripts.lib.test_oci_free_tier -q
 # or from scripts/lib:
 python3 -m unittest test_oci_free_tier.py -q
+
 ```
 
 ---
