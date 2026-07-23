@@ -8,9 +8,30 @@
 #   4. Re-label live twins (role) so MachineClass can allocate
 #   5. Optionally pin live UUIDs into inventory (write_pins=true)
 #
-# Safe: never deletes a connected machine. Dry-run by default.
+# Safe: never deletes a connected machine. Dry-run by default on
+# workflow_dispatch; tofu-apply post-step calls workflow_call with
+# dry_run=false after infra so Spot/recreate ghosts are purged.
 name: omni-cleanup-dead-twins
 on:
+  workflow_call:
+    inputs:
+      dry_run:
+        type: boolean
+        required: false
+        default: false
+      write_pins:
+        type: boolean
+        required: false
+        default: true
+      # CI post-apply path: skip the CLEANUP confirm token.
+      auto_confirm:
+        type: boolean
+        required: false
+        default: true
+      confirm:
+        type: string
+        required: false
+        default: ""
   workflow_dispatch:
     inputs:
       confirm:
@@ -44,8 +65,9 @@ jobs:
       OMNI_ENDPOINT: https://cp.stawi.org
       OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
       DRY_RUN: ${{ inputs.dry_run }}
-      CONFIRM: ${{ inputs.confirm }}
+      CONFIRM: ${{ inputs.confirm || '' }}
       WRITE_PINS: ${{ inputs.write_pins }}
+      AUTO_CONFIRM: ${{ inputs.auto_confirm || false }}
       AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
       AWS_EC2_METADATA_DISABLED: "true"
@@ -56,8 +78,16 @@ jobs:
       - name: Guard write path
         run: |
           set -euo pipefail
-          if [[ "$DRY_RUN" != "true" && "$CONFIRM" != "CLEANUP" ]]; then
-            echo "::error::dry_run=false requires confirm=CLEANUP"
+          if [[ "$DRY_RUN" == "true" ]]; then
+            exit 0
+          fi
+          # workflow_call from tofu-apply uses auto_confirm; dispatch needs CLEANUP.
+          if [[ "$AUTO_CONFIRM" == "true" ]]; then
+            echo "::notice::auto_confirm=true (CI post-apply hygiene)"
+            exit 0
+          fi
+          if [[ "$CONFIRM" != "CLEANUP" ]]; then
+            echo "::error::dry_run=false requires confirm=CLEANUP (or auto_confirm via workflow_call)"
             exit 1
           fi
 

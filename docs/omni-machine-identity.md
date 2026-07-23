@@ -22,10 +22,15 @@ Shared library: `scripts/lib/omni_machine_match.py`
 | 3 | Else hostname match (prefer connected) |
 | 4 | Else IPv4 match (prefer connected) |
 
+**Labeling / patches** pass `--require-connected`: a disconnected preferred
+pin is **never** returned (avoids applying MachineLabels to ghost twins after
+Spot recreate or force reinstall). Inventory pin reconcile may still hold an
+offline pin when no twin exists (`require_connected=false`).
+
 Used by:
 
-- `tofu/layers/03-talos/scripts/sync-machine-label.sh`
-- `tofu/layers/03-talos/scripts/apply-per-node-patches.sh`
+- `tofu/layers/03-talos/scripts/sync-machine-label.sh` (`require_connected`)
+- `tofu/layers/03-talos/scripts/apply-per-node-patches.sh` (`require_connected`)
 - `scripts/reconcile-omni-machine-ids.py`
 
 ## Persist pins (inventory)
@@ -49,15 +54,16 @@ python3 scripts/reconcile-omni-machine-ids.py \
 
 ## Preserve pins across tofu apply
 
-`nodes-writer.tf` on oracle / contabo / onprem **merges** observed
-`provider_data` over existing keys instead of replacing the map, so
-`omni_machine_id` survives infra applies.
+`nodes-writer.tf` on oracle / contabo / onprem / gcp **merges** observed
+`provider_data` over existing keys so `omni_machine_id` survives steady
+applies. GCP also stores `gce_unique_id` and **clears** the Omni pin when
+that id changes (destroy/create), so a force reinstall never pins a ghost.
 
 ## Twin / rebind recovery
 
-When free-tier resize or soft-reset produce a **disconnected
-cluster-bound UUID** and a **connected twin** under the same hostname
-(ghost etcd members / stage-1 control planes):
+When free-tier resize, soft-reset, or force reinstall produce a
+**disconnected cluster-bound UUID** and a **connected twin** under the
+same hostname (ghost etcd members / stage-1 control planes):
 
 ```bash
 # Preferred: discover + strip finalizers + delete dead twins + relabel + pin
@@ -70,6 +76,10 @@ gh workflow run omni-rebind-disconnected-machines.yml -f confirm=REBIND -f dry_r
 # Pin live UUIDs into inventory (cleanup does this when write_pins=true)
 gh workflow run reconcile-omni-machine-ids.yml -f write=true -f confirm=RECONCILE
 ```
+
+**Automatic:** every successful `tofu-apply` runs cleanup after `03-talos`
+(`omni-hygiene`: dry_run=false, auto_confirm, write_pins) so operator
+memory is not required for Spot/GCP recreate ghosts.
 
 **Never** manually create MachineSetNodes on automated MachineSets —
 use role labels + MachineClass only. After purge, if control planes

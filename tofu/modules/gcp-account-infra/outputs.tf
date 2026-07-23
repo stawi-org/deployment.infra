@@ -14,15 +14,16 @@ output "nodes_state" {
   description = "Per-node metadata for the state writer, keyed by local node key."
   value = {
     for k, n in module.node : k => {
-      id           = n.id
-      self_link    = n.self_link
-      machine_type = n.machine_type
-      zone         = n.zone
-      region       = n.region
-      preemptible  = n.preemptible
-      ipv4         = n.ipv4
-      public_ipv4  = n.public_ipv4
-      private_ipv4 = n.private_ipv4
+      id            = n.id
+      self_link     = n.self_link
+      gce_unique_id = n.gce_unique_id
+      machine_type  = n.machine_type
+      zone          = n.zone
+      region        = n.region
+      preemptible   = n.preemptible
+      ipv4          = n.ipv4
+      public_ipv4   = n.public_ipv4
+      private_ipv4  = n.private_ipv4
     }
   }
 }

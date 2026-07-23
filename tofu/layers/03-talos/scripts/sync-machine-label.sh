@@ -90,11 +90,14 @@ match_machine_id() {
   local ms_file
   ms_file=$(mktemp -t omni-ms-XXXXXX.json)
   printf '%s' "$machines_json" >"$ms_file"
+  # --require-connected: never apply MachineLabels to a disconnected
+  # ghost twin (Spot recreate / soft-reset). Poll until a live match.
   python3 "$MATCH_PY" \
     --machines-file "$ms_file" \
     --preferred-id "$NODE_OMNI_MACHINE_ID_VAL" \
     --hostname "$NODE_NAME" \
     --ipv4 "$NODE_IPV4_VAL" \
+    --require-connected \
     --print-reason
   rm -f "$ms_file"
 }

@@ -3,6 +3,8 @@
 OpenTofu owns desired GCP capacity. Bootstrap is the only one-shot
 script (WIF + SOPS auth). After that: **apply**, not seed scripts.
 
+Lifecycle, idempotency, and ghost prevention: **[docs/gcp-lifecycle.md](gcp-lifecycle.md)**.
+
 ## Model
 
 | Concern | Owner |

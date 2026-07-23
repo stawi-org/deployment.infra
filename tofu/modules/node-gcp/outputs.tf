@@ -28,6 +28,8 @@ output "node" {
 # state.yaml in R2.
 output "id" { value = google_compute_instance.this.id }
 output "self_link" { value = google_compute_instance.this.self_link }
+# Numeric GCE id — changes on destroy/create (not on Spot STOP/start).
+output "gce_unique_id" { value = google_compute_instance.this.instance_id }
 output "machine_type" { value = var.machine_type }
 output "zone" { value = var.zone }
 output "region" { value = var.region }

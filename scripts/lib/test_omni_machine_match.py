@@ -39,11 +39,23 @@ class TestMatchMachine(unittest.TestCase):
         self.assertEqual(r.machine_id, "new")
         self.assertEqual(r.reason, "preferred_stale_twin")
 
-    def test_preferred_offline_no_twin_keeps_pin(self):
+    def test_preferred_offline_no_twin_keeps_pin_when_allowed(self):
         machines = [_ms("old", "node-a", connected=False)]
         r = match_machine(machines, preferred_id="old", hostname="node-a")
         self.assertEqual(r.machine_id, "old")
         self.assertEqual(r.reason, "preferred")
+
+    def test_preferred_offline_no_twin_skipped_when_require_connected(self):
+        """Labeling must not target a disconnected preferred (ghost)."""
+        machines = [_ms("old", "node-a", connected=False)]
+        r = match_machine(
+            machines,
+            preferred_id="old",
+            hostname="node-a",
+            require_connected=True,
+        )
+        self.assertEqual(r.machine_id, "")
+        self.assertEqual(r.reason, "none")
 
     def test_hostname_prefers_connected(self):
         machines = [
@@ -53,6 +65,12 @@ class TestMatchMachine(unittest.TestCase):
         r = match_machine(machines, hostname="node-a")
         self.assertEqual(r.machine_id, "b")
         self.assertEqual(r.reason, "hostname")
+
+    def test_hostname_require_connected_ignores_dead_only(self):
+        machines = [_ms("a", "node-a", connected=False)]
+        r = match_machine(machines, hostname="node-a", require_connected=True)
+        self.assertEqual(r.machine_id, "")
+        self.assertEqual(r.reason, "none")
 
     def test_ipv4_fallback(self):
         machines = [

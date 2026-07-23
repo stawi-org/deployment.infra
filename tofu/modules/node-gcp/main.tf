@@ -60,15 +60,21 @@ resource "google_compute_instance" "this" {
   tags = ["stawi-talos"]
 
   # Spot by default; STANDARD when preemptible=false.
-  # instance_termination_action is Spot-only; null omits the attribute
-  # for STANDARD so the google provider does not send an invalid value.
+  # STOP (not DELETE) on preemption: boot disk + Talos state survive so
+  # the node re-registers to Omni under the same Machine UUID after
+  # desired_status=RUNNING restarts it. DELETE created ghost twins on
+  # every preemption. instance_termination_action is Spot-only.
   scheduling {
     preemptible                 = var.preemptible
     automatic_restart           = var.preemptible ? false : true
     on_host_maintenance         = var.preemptible ? "TERMINATE" : "MIGRATE"
     provisioning_model          = var.preemptible ? "SPOT" : "STANDARD"
-    instance_termination_action = var.preemptible ? "DELETE" : null
+    instance_termination_action = var.preemptible ? "STOP" : null
   }
+
+  # After Spot STOP, the next tofu apply starts the instance when
+  # capacity is available (idempotent RUNNING reconciliation).
+  desired_status = "RUNNING"
 
   # No metadata. GCP nodes boot in Talos maintenance mode; Omni pushes
   # machine config after SideroLink registration (kernel arg baked into

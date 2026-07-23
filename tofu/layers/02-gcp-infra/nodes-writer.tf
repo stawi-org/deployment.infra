@@ -41,10 +41,17 @@ module "gcp_nodes_writer" {
             )
             preemptible = node.preemptible
             provider_data = merge(
-              try(module.gcp_account_state[each.key].nodes.nodes[node_key].provider_data, {}),
+              # Drop prior provider_data then re-add; omni_machine_id is
+              # re-injected only when gce_unique_id is unchanged so a
+              # destroy/create (force reinstall) does not pin a ghost UUID.
+              {
+                for pk, pv in try(module.gcp_account_state[each.key].nodes.nodes[node_key].provider_data, {}) :
+                pk => pv if pk != "omni_machine_id"
+              },
               {
                 gce_instance_id        = node.id
                 gce_self_link          = node.self_link
+                gce_unique_id          = node.gce_unique_id
                 machine_type           = node.machine_type
                 zone                   = node.zone
                 region                 = node.region
@@ -52,13 +59,20 @@ module "gcp_nodes_writer" {
                 ipv4                   = node.ipv4
                 public_ipv4            = node.public_ipv4
                 private_ipv4           = node.private_ipv4
-                image_apply_generation = try(module.gcp_account[each.key].nodes[node_key].image_apply_generation, node.id)
+                image_apply_generation = try(module.gcp_account[each.key].nodes[node_key].image_apply_generation, node.gce_unique_id)
                 status                 = "running"
                 discovered_at = try(
                   module.gcp_account_state[each.key].nodes.nodes[node_key].provider_data.discovered_at,
                   timestamp(),
                 )
               },
+              # Preserve Omni pin only across STOP/start (same unique id).
+              (
+                try(module.gcp_account_state[each.key].nodes.nodes[node_key].provider_data.gce_unique_id, "") == node.gce_unique_id
+                && try(module.gcp_account_state[each.key].nodes.nodes[node_key].provider_data.omni_machine_id, "") != ""
+                ) ? {
+                omni_machine_id = module.gcp_account_state[each.key].nodes.nodes[node_key].provider_data.omni_machine_id
+              } : {},
             )
           },
         )

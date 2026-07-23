@@ -257,6 +257,20 @@ jobs:
       environment: production
     secrets: inherit
 
+  # After labels/patches: purge disconnected Omni twins that still claim
+  # cluster membership while a live hostname twin exists (Spot recreate,
+  # force reinstall, OCI soft-reset). Never deletes connected machines.
+  # Pins live UUIDs into R2 so the next 03-talos apply is identity-stable.
+  omni-hygiene:
+    needs: [talos]
+    if: always() && needs.talos.result == 'success'
+    uses: ./.github/workflows/omni-cleanup-dead-twins.yml
+    with:
+      dry_run: false
+      write_pins: true
+      auto_confirm: true
+    secrets: inherit
+
   # 04-flux is gated off. The 03-talos kubeconfig / talosconfig
   # outputs that this layer consumed are gone now that Omni owns
   # cluster lifecycle. Task 8 part 2 of the Omni-takeover plan re-
