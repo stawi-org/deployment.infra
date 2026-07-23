@@ -1,5 +1,5 @@
 # Example only — live nodes live in R2 production/inventory/gcp/<account>/nodes.yaml
-# Default pack after onboard: two Spot e2-medium workers.
+# Empty inventory: OpenTofu gcp-account-infra seeds two Spot e2-medium workers on apply.
 gcp:
   accounts:
     stawi-prod:

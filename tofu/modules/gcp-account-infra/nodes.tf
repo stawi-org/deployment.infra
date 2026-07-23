@@ -3,9 +3,11 @@
 # GCE workers boot Talos in maintenance mode from the Omni-aware custom
 # image (siderolink.api baked into the schematic). Omni pushes machine
 # config after SideroLink registration — same model as node-oracle.
+#
+# for_each uses nodes_effective (inventory or OpenTofu default pack).
 
 module "node" {
-  for_each = var.nodes
+  for_each = local.nodes_effective
   source   = "../node-gcp"
 
   name                       = each.key

@@ -5,6 +5,11 @@ output "nodes" {
   value       = { for k, m in module.node : k => m.node }
 }
 
+output "desired_nodes" {
+  description = "Effective desired node map (inventory or default Spot pack). Written back to R2 by the layer nodes-writer."
+  value       = local.nodes_effective
+}
+
 output "nodes_state" {
   description = "Per-node metadata for the state writer, keyed by local node key."
   value = {
@@ -24,4 +29,9 @@ output "nodes_state" {
 
 output "network_id" {
   value = google_compute_network.this.id
+}
+
+output "image_self_link" {
+  description = "Resolved GCE image used for new instances."
+  value       = local.image_self_link
 }

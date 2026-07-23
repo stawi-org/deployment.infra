@@ -1,22 +1,18 @@
 # Single entrypoint for reproducible cluster bring-up / repair.
 #
 # Modes:
-#   full     — images (only if catalog incomplete or force) → tofu-apply →
+#   full     — sync-talos-images (idempotent reuse) → tofu-apply →
 #              optional wipe → sync-cluster-template → optional flux
-#   infra    — tofu-apply only (fast path for add/remove nodes)
+#   infra    — tofu-apply only (day-2 scale / desired-state apply)
 #   cluster  — force-clear (optional) + sync-cluster-template + Ready
-#   images   — sync-talos-images only (still no-ops when catalog ready)
+#   images   — sync-talos-images only
 #
-# Image efficiency: preflight compares R2 talos-images.yaml against the
-# current schematic + every accounts.yaml roster entry. When complete,
-# mode=full skips sync-talos-images entirely so day-2 provision is just
-# tofu-apply. force_image_sync=true always rebuilds.
+# Desired state for nodes lives in OpenTofu + R2 inventory. GCP empty
+# inventory seeds two Spot workers inside the module (no seed script).
+# Image *bytes* still need Omni (omnictl); import into each cloud is
+# idempotent. Existing VMs are not recreated on image catalog drift.
 #
 # All destructive sub-steps require confirm tokens. Dry-run skips applies.
-#
-# Design goals: one run ID, no manual multi-workflow sequencing, modes
-# that stay valid as account count grows (infra work is still the
-# per-account matrix inside tofu-apply).
 name: cluster-provision
 
 on:
@@ -33,7 +29,7 @@ on:
         required: false
         default: ""
       force_image_sync:
-        description: Force image rebuild even if catalog already complete
+        description: Force image rebuild (ignore R2 cache reuse)
         type: boolean
         required: false
         default: false
@@ -70,7 +66,7 @@ on:
         required: false
         default: ""
       force_image_sync:
-        description: Force image rebuild even if catalog already complete
+        description: Force image rebuild (ignore R2 cache reuse)
         type: boolean
         default: false
       wipe_cluster:
@@ -109,9 +105,6 @@ jobs:
     outputs:
       talos_version: ${{ steps.versions.outputs.talos_version }}
       free_tier_ok: ${{ steps.free_tier.outputs.ok }}
-      need_images: ${{ steps.catalog.outputs.need_images }}
-      catalog_ready: ${{ steps.catalog.outputs.ready }}
-      catalog_reason: ${{ steps.catalog.outputs.reason }}
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -121,7 +114,6 @@ jobs:
       WIPE: ${{ inputs.wipe_cluster }}
       CONFIRM_WIPE: ${{ inputs.confirm_wipe }}
       TALOS_VERSION_INPUT: ${{ inputs.talos_version }}
-      FORCE_IMAGE_SYNC: ${{ inputs.force_image_sync }}
     steps:
       - uses: actions/checkout@v5
 
@@ -216,59 +208,12 @@ jobs:
             fi
           fi
 
-      # Fast path gate: skip the whole image pipeline when R2 already
-      # has a schematic-matching catalog covering every roster account.
-      # mode=images always wants a catalog pass (still no-ops inside
-      # sync-talos-images when ready unless force).
-      - name: Talos image catalog readiness
-        id: catalog
-        env:
-          TALOS_VERSION: ${{ steps.versions.outputs.talos_version }}
-        run: |
-          set -euo pipefail
-          pip install --quiet pyyaml
-          mkdir -p /tmp
-          R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          if ! aws s3 cp \
-              "s3://cluster-tofu-state/production/inventory/talos-images.yaml" \
-              /tmp/talos-images.yaml \
-              --endpoint-url "$R2_ENDPOINT" --region us-east-1 2>/tmp/catalog-pull.err; then
-            echo "::notice::no talos-images.yaml in R2 yet (first image sync required)"
-            : > /tmp/talos-images.yaml
-          fi
-          force_args=()
-          if [[ "${FORCE_IMAGE_SYNC}" == "true" ]]; then
-            force_args+=(--force)
-          fi
-          # mode=images with force=false still runs the workflow so
-          # operators can refresh reuse checks; catalog gate only
-          # skips the images *job* for mode=full.
-          python3 scripts/check-talos-image-catalog.py \
-            --accounts-yaml tofu/shared/accounts.yaml \
-            --catalog-yaml /tmp/talos-images.yaml \
-            --schematic tofu/shared/schematics/cluster.yaml \
-            --talos-version "${TALOS_VERSION}" \
-            "${force_args[@]}" \
-            --github-output
-          need=$(grep -E '^need_images=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
-          ready=$(grep -E '^ready=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
-          reason=$(grep -E '^reason=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
-          echo "::notice::catalog ready=${ready} need_images=${need} — ${reason}"
-
   images:
     needs: preflight
-    # mode=full: only when catalog incomplete or force_image_sync.
-    # mode=images: always invoke (internal early-skip still applies).
     if: |
       needs.preflight.result == 'success'
+      && (inputs.mode == 'full' || inputs.mode == 'images')
       && inputs.dry_run != true
-      && (
-        inputs.mode == 'images'
-        || (inputs.mode == 'full' && (
-          needs.preflight.outputs.need_images == 'true'
-          || inputs.force_image_sync == true
-        ))
-      )
     uses: ./.github/workflows/sync-talos-images.yml
     with:
       talos_version: ${{ needs.preflight.outputs.talos_version }}

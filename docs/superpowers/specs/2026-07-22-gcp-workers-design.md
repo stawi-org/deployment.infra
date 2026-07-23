@@ -1,6 +1,6 @@
 # GCP GCE workers — design
 
-> **Status:** Implemented on `feat/gcp-workers` — ready for merge + first live project onboard (see [docs/gcp-onboard.md](../../gcp-onboard.md)).
+> **Status:** Implemented — OpenTofu owns default Spot pack + image resolution; bootstrap is WIF-only. See [docs/gcp-onboard.md](../../gcp-onboard.md).
 > **Date:** 2026-07-22
 > **Scope:** Full peer provider for paid Google Compute Engine workers: multi-project inventory, Workload Identity Federation, bootstrap PR flow, OpenTofu layer, Omni-aware image import, and post-merge cluster expand. Single implementation plan (multiple PRs OK).
 
@@ -306,7 +306,7 @@ formats:
 |---|---|
 | `scripts/bootstrap-gcp-wif.sh` | New |
 | `scripts/stage-gcp-auth-from-repo.sh` | New — decrypt/stage auth for CI like oracle |
-| `scripts/ensure-gcp-default-capacity.py` (or equivalent) | New — seed empty nodes.yaml |
+| OpenTofu `gcp-account-infra` defaults | Empty inventory → two Spot workers (no seed script) |
 | `.github/workflows/onboard-gcp.yml` | New |
 | `.github/workflows/sync-talos-images.yml` | discover + import + assemble for gcp |
 | `.github/workflows/tofu-layer.yml` | Layer `02-gcp-infra`, WIF step, inventory sync `gcp/` |

@@ -12,8 +12,8 @@ locals {
   gcp_account_keys  = [var.account_key]
 }
 
-# node-state: R2-backed inventory read. Populated initially by
-# scripts/seed-inventory.sh / onboard-gcp; kept in sync by this layer's writers.
+# node-state: R2-backed inventory read. Empty nodes → module defaults
+# (two Spot workers); nodes-writer persists the result after apply.
 module "gcp_account_state" {
   for_each            = toset(local.gcp_account_keys)
   source              = "../../modules/node-state"

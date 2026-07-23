@@ -236,16 +236,16 @@ This optional variable remains available for decommissioning:
 **Preferred:** one orchestrated path — see [docs/cluster-provision.md](docs/cluster-provision.md).
 
 ```bash
-# Day-2 scale / repair (no image rebuild when catalog is complete):
+# Day-2: OpenTofu apply only (desired nodes / networks)
 gh workflow run cluster-provision.yml -f mode=infra
 
-# Full path (images only run if catalog incomplete or force_image_sync):
+# Full path: idempotent image import + tofu-apply + template + Flux
 gh workflow run cluster-provision.yml -f mode=full -f deploy_flux=true
 ```
 
-`mode=full` runs preflight (including OCI Always Free inventory checks) → **image sync only if needed** → `tofu-apply` (per-account matrix) → cluster template sync → Flux. Image rebuild is gated by `scripts/check-talos-image-catalog.py` against R2 `talos-images.yaml`; use `force_image_sync=true` only when you intentionally want a rebuild.
+Desired state lives in **OpenTofu** (plus R2 inventory). Image *bytes* need Omni (`sync-talos-images`); imports and downloads are idempotent. Existing VMs are not recreated when the image catalog changes.
 
-**GCP onboard:** full operator runbook in [docs/gcp-onboard.md](docs/gcp-onboard.md). Short form: merge the peer-provider code to `main` (empty `gcp: []` is fine), then `scripts/bootstrap-gcp-wif.sh --project …` (WIF + SA + SOPS auth PR). After the onboard PR merges, `onboard-gcp.yml` seeds **two Spot e2-medium workers** and runs `cluster-provision`. No long-lived GCP SA JSON keys — CI uses GitHub OIDC → Workload Identity Federation.
+**GCP onboard:** [docs/gcp-onboard.md](docs/gcp-onboard.md). Bootstrap WIF once (`bootstrap-gcp-wif.sh` → PR). After merge, OpenTofu creates the default **two Spot workers** when inventory is empty — no separate seed script. CI uses GitHub OIDC → WIF (no long-lived SA JSON keys).
 
 Layer-by-layer (still supported): each layer via `workflow_dispatch` of `tofu-plan` / `tofu-apply` → `tofu-layer.yml`.
 
