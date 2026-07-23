@@ -192,9 +192,62 @@ module "omni_host_contabo" {
   r2_backup_prefix = "production/omni-backups-2026-05-24-contabo"
 }
 
-# DNS records pull the IPs straight from the OCI instance — tofu knows
-# them because the instance exists. AAAA included so clients with v6
-# connectivity hit the VM directly.
+# GCP Always Free–oriented Omni host (STANDARD e2-micro, never Spot).
+# Auth: tofu/shared/accounts/gcp/<omni_host_gcp_account>/auth.yaml (SOPS).
+# Provider ADC is established by tofu-layer WIF for this account.
+module "gcp_omni_account_state" {
+  count               = var.omni_host_provider == "gcp" ? 1 : 0
+  source              = "../../modules/node-state"
+  provider_name       = "gcp"
+  account             = var.omni_host_gcp_account
+  local_inventory_dir = var.local_inventory_dir
+}
+
+provider "google" {
+  # Always declared; only used when omni_host_provider=gcp (module count).
+  # Project comes from auth when present, else placeholder (unused).
+  project = try(module.gcp_omni_account_state[0].auth.auth.project_id, "unused-when-not-gcp")
+  region  = var.omni_host_gcp_region
+}
+
+module "omni_host_gcp" {
+  count  = var.omni_host_provider == "gcp" ? 1 : 0
+  source = "../../modules/omni-host-gcp"
+
+  project_id   = module.gcp_omni_account_state[0].auth.auth.project_id
+  name         = "gcp-${var.omni_host_gcp_account}-omni"
+  region       = var.omni_host_gcp_region
+  zone         = var.omni_host_gcp_zone
+  machine_type = var.omni_host_gcp_machine_type
+
+  omni_version                         = var.omni_version
+  dex_version                          = var.dex_version
+  nginx_version                        = var.nginx_version
+  omni_account_id                      = random_uuid.omni_account_id.result
+  dex_omni_client_secret               = random_password.dex_omni_client_secret.result
+  omni_account_name                    = "stawi"
+  siderolink_api_advertised_host       = "cp.stawi.org"
+  siderolink_wireguard_advertised_host = "cpd.stawi.org"
+  github_oidc_client_id                = var.github_oidc_client_id
+  github_oidc_client_secret            = var.github_oidc_client_secret
+  cf_dns_api_token                     = var.cloudflare_api_token
+  initial_users                        = [for e in split(",", var.omni_initial_users) : trimspace(e) if trimspace(e) != ""]
+  eula_name                            = var.omni_eula_name
+  eula_email                           = var.omni_eula_email
+  etcd_backup_enabled                  = var.etcd_backup_enabled
+  vpn_users                            = var.vpn_users
+  ssh_authorized_keys                  = []
+
+  r2_account_id        = var.r2_account_id
+  r2_access_key_id     = var.r2_access_key_id
+  r2_secret_access_key = var.r2_secret_access_key
+  # Reuse Contabo backup prefix so first boot can restore Omni etcd
+  # and keep machine registrations (cutover continuity).
+  r2_backup_prefix = "production/omni-backups-2026-05-24-contabo"
+}
+
+# DNS records pull the IPs straight from the active omni-host — tofu knows
+# them because the instance exists. AAAA included when the substrate has v6.
 #
 # data sources lookup pre-existing CF records by name so the
 # import {} blocks below can adopt them — earlier failed/cancelled
@@ -227,16 +280,22 @@ locals {
 }
 
 locals {
-  # Active omni-host outputs, substrate-agnostic. Exactly one of the
-  # two modules has count=1; coalescelist picks its outputs.
+  # Active omni-host outputs, substrate-agnostic. Exactly one module has count=1.
   omni_host_ipv4 = coalescelist(
     module.omni_host_contabo[*].ipv4,
     module.omni_host_oci[*].ipv4,
+    module.omni_host_gcp[*].ipv4,
   )[0]
-  omni_host_ipv6 = coalescelist(
-    module.omni_host_contabo[*].ipv6,
-    module.omni_host_oci[*].ipv6,
-  )[0]
+  # GCP v1 has no public IPv6 — filter nulls so coalescelist does not fail.
+  omni_host_ipv6 = try(coalescelist([
+    for ip in concat(
+      module.omni_host_contabo[*].ipv6,
+      module.omni_host_oci[*].ipv6,
+      module.omni_host_gcp[*].ipv6,
+    ) : ip if ip != null
+  ])[0], null)
+  # Plan-time known: whether AAAA records should exist.
+  omni_host_has_ipv6 = var.omni_host_provider != "gcp" && try(module.bwire_account_state.auth.auth.enable_ipv6, true)
 }
 
 import {
@@ -276,12 +335,8 @@ resource "cloudflare_dns_record" "cp_stawi" {
 }
 
 resource "cloudflare_dns_record" "cp_stawi_v6" {
-  # Predicate must be plan-time-known so the import-block targets
-  # cp_stawi_v6[0] / cpd_stawi_v6[0] validate even on a fresh tfstate
-  # (where local.omni_host_ipv6 is "known after apply"). The
-  # bwire auth.yaml's enable_ipv6 flag is read at plan time via the
-  # node-state module, so use that directly.
-  count   = try(module.bwire_account_state.auth.auth.enable_ipv6, true) ? 1 : 0
+  # Predicate must be plan-time-known (not known-after-apply).
+  count   = local.omni_host_has_ipv6 ? 1 : 0
   zone_id = var.cloudflare_zone_id_stawi
   name    = "cp"
   type    = "AAAA"
@@ -306,12 +361,7 @@ resource "cloudflare_dns_record" "cpd_stawi" {
 }
 
 resource "cloudflare_dns_record" "cpd_stawi_v6" {
-  # Predicate must be plan-time-known so the import-block targets
-  # cp_stawi_v6[0] / cpd_stawi_v6[0] validate even on a fresh tfstate
-  # (where local.omni_host_ipv6 is "known after apply"). The
-  # bwire auth.yaml's enable_ipv6 flag is read at plan time via the
-  # node-state module, so use that directly.
-  count   = try(module.bwire_account_state.auth.auth.enable_ipv6, true) ? 1 : 0
+  count   = local.omni_host_has_ipv6 ? 1 : 0
   zone_id = var.cloudflare_zone_id_stawi
   name    = "cpd"
   type    = "AAAA"

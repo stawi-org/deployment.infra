@@ -223,14 +223,15 @@ jobs:
       # google-github-actions/auth. No long-lived GCP keys in secrets.
       - name: Stage GCP auth from repo
         id: gcp_auth
-        if: inputs.layer == '02-gcp-infra'
+        # 02-gcp-infra: per-matrix account. 00-omni-server: fixed Omni host account (stawi-timber).
+        if: inputs.layer == '02-gcp-infra' || inputs.layer == '00-omni-server'
         env:
           SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
-          ACCOUNT:      ${{ inputs.account }}
+          ACCOUNT:      ${{ inputs.layer == '00-omni-server' && 'stawi-timber' || inputs.account }}
         run: |
           set -euo pipefail
           if [[ -z "${ACCOUNT}" ]]; then
-            echo "::error::02-gcp-infra requires a non-empty account input (per-account matrix cell)"
+            echo "::error::GCP auth requires a non-empty account (matrix cell or omni host account)"
             exit 1
           fi
           if ! command -v sops >/dev/null 2>&1; then
@@ -286,7 +287,7 @@ jobs:
           PY
 
       - name: Authenticate to Google Cloud (WIF)
-        if: inputs.layer == '02-gcp-infra'
+        if: inputs.layer == '02-gcp-infra' || inputs.layer == '00-omni-server'
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ steps.gcp_auth.outputs.workload_identity_provider }}

@@ -113,13 +113,36 @@ variable "nginx_version" {
 }
 
 variable "omni_host_provider" {
-  description = "Substrate hosting omni-host. 'contabo' uses an existing Contabo VPS; 'oci' uses an OCI A1.Flex VM in bwire."
+  description = "Substrate hosting omni-host: contabo (existing VPS), oci (A1.Flex), or gcp (Always Free e2-micro / STANDARD GCE)."
   type        = string
   default     = "oci"
   validation {
-    condition     = contains(["contabo", "oci"], var.omni_host_provider)
-    error_message = "omni_host_provider must be 'contabo' or 'oci'."
+    condition     = contains(["contabo", "oci", "gcp"], var.omni_host_provider)
+    error_message = "omni_host_provider must be 'contabo', 'oci', or 'gcp'."
   }
+}
+
+variable "omni_host_gcp_account" {
+  description = "GCP accounts.yaml key for Omni host when omni_host_provider==gcp (auth under tofu/shared/accounts/gcp/<key>/)."
+  type        = string
+  default     = "stawi-timber"
+}
+
+variable "omni_host_gcp_region" {
+  description = "GCP region for Omni. Always Free e2-micro is free only in us-west1, us-central1, us-east1."
+  type        = string
+  default     = "us-central1"
+}
+
+variable "omni_host_gcp_zone" {
+  type    = string
+  default = "us-central1-a"
+}
+
+variable "omni_host_gcp_machine_type" {
+  description = "GCE machine type. e2-micro = Always Free eligible (1 GiB + swap); e2-small/medium if free tier is insufficient."
+  type        = string
+  default     = "e2-micro"
 }
 
 variable "omni_host_contabo_vps_id" {

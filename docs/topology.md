@@ -21,14 +21,19 @@ applied so node-specific values win.
 
 ## Omni control plane
 
-Omni (management plane for Talos) runs on **Contabo** VPS
-`contabo-bwire-node-3` / `202727781` (Ubuntu + docker-compose), not as
-a Talos node. DNS: `cp.stawi.org` (UI, orange-cloud) and
+Omni (management plane for Talos) runs as **Ubuntu + docker-compose**, not
+as a Talos node. DNS: `cp.stawi.org` (UI, orange-cloud) and
 `cpd.stawi.org` (SideroLink / machine-api, gray-cloud). Layer:
-`tofu/layers/00-omni-server` with `omni_host_provider = "contabo"`.
+`tofu/layers/00-omni-server` with `omni_host_provider` ∈
+`contabo` | `oci` | `gcp`.
 
-OCI Omni substrate exists but is **blocked** by eu-frankfurt-1 public
-inbound blackholes (verified 2026-05-24 and 2026-07-18).
+| Substrate | Status |
+|---|---|
+| **Contabo** VPS `contabo-bwire-node-3` / `202727781` | **Current production** default |
+| **OCI** A1.Flex | Code path exists; historically blocked by eu-frankfurt-1 inbound blackholes |
+| **GCP** STANDARD e2-micro on `stawi-timber` (us-central1) | Module ready; cutover guide [omni-host-gcp.md](omni-host-gcp.md). **Not Spot.** |
+
+Never colocate Omni on Spot Talos workers.
 
 ## Kubernetes control-plane boundary
 
