@@ -13,4 +13,5 @@ oracle:
   - madiang100
 onprem:
   - tindase
-gcp: []
+gcp:
+  - stawi-timber
