@@ -114,10 +114,12 @@ locals {
   # Prefer public IPv4 for endpoints; fall back to private if absent.
   ipv4 = coalesce(local.public_ip, local.private_ip)
 
+  # Label contract matches deployment.manifests CNPG affinity:
+  #   role-database In ["true"] AND provider NotIn ["contabo"]
+  # GCP must never advertise role-database=true (inventory cannot override).
   derived_labels = merge(
+    var.labels,
     {
-      # Standard topology keys enable topology-aware routing / hints and
-      # affinity so hot paths stay in-region (sub-10ms) instead of WAN.
       "topology.kubernetes.io/region" = var.region
       "topology.kubernetes.io/zone"   = var.zone
       "node.stawi.org/provider"       = "gcp"
@@ -125,12 +127,9 @@ locals {
       "node.stawi.org/role"           = var.role
       "node.stawi.org/name"           = var.name
       "node.stawi.org/spot"           = var.preemptible ? "true" : "false"
-      # Latency domain for affinity: co-locate chatty pods (see docs/network-latency.md).
-      "node.stawi.org/latency-domain" = "gcp-${var.region}"
-      # Databases stay on OCI (and Contabo) — GCP Spot is general workload only.
-      "node.stawi.org/db-eligible" = "false"
+      # CNPG: required In "true" — omit/false keeps Spot workers non-DB.
+      "node.stawi.org/role-database" = "false"
     },
-    var.labels,
   )
 
   derived_annotations = merge(

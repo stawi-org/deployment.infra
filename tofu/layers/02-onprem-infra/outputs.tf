@@ -26,10 +26,8 @@ output "nodes" {
           "node.stawi.org/role"           = item.node.role
           "node.stawi.org/apply-source"   = "manual"
           "node.stawi.org/managed-plane"  = "inventory"
-          "node.stawi.org/latency-domain" = format(
-            "onprem-%s",
-            lower(replace(try(item.node.region, try(item.account.region, "unknown")), "/[^a-zA-Z0-9-]/", "-")),
-          )
+          # Match CNPG policy unless inventory opts in explicitly via labels.
+          "node.stawi.org/role-database" = try(item.node.labels["node.stawi.org/role-database"], "false")
         },
         # See node-contabo/main.tf for why the worker side is empty:
         # NodeRestriction forbids kubelet from setting node-role.kubernetes.io/worker

@@ -5,16 +5,16 @@ any pod on any provider. Optimization target is **sustained goodput and
 resilience under WAN RTT/jitter/loss**, not forcing every workload into one
 region.
 
-Locality labels (`latency-domain`, topology keys) remain available for
-*optional* affinity when an app wants them. They are **not** required for the
-platform to be considered healthy.
+Topology labels (`topology.kubernetes.io/*`) support optional affinity and
+PreferSameZone. CNPG placement uses the shared contract in
+[node-labels.md](node-labels.md) — not ad-hoc keys.
 
 ## Topology (what “everywhere” means)
 
 | Site | Role | Notes |
 |---|---|---|
 | Contabo EU | Stable workers / some CP capacity | Public dual-stack where available |
-| OCI `eu-frankfurt-1` | Workers + **stateful DBs** | Always Free packing; `db-eligible` stays off GCP |
+| OCI `eu-frankfurt-1` | Workers + **stateful DBs** | Always Free packing; `role-database=true` |
 | GCP `europe-west9` (Paris) | Spot general workers | Elastic; same mesh as everyone else |
 | On-prem | Optional workers | Manual Talos apply |
 
@@ -47,7 +47,7 @@ directly** — edit `main.yaml` when changing live cluster knobs.
 | Large TCP windows | up to 128 MiB | Fill pipes Contabo↔OCI↔GCP |
 | `tcp_mtu_probing` | 1 | Adapt if path MTU is lower |
 | `tcp_slow_start_after_idle` | 0 | Keep long-lived streams hot |
-| Topology + `latency-domain` labels | Contabo/OCI/GCP/on-prem | Optional affinity only |
+| Topology + CNPG labels | See [node-labels.md](node-labels.md) | `role-database` / `provider` as manifests expect |
 | Omni twin hygiene | post-`tofu-apply` | Ghost machines must not clog the mesh |
 
 ### Apply path (idempotent)
@@ -77,9 +77,9 @@ Re-running template sync or apply is a no-op when already in sync.
 | Pattern | Recommendation |
 |---|---|
 | Default | Schedule freely; assume mesh is good enough |
-| DB primary | Prefer OCI (`db-eligible` / provider labels)—data plane risk, not mesh |
+| DB primary | CNPG affinity: `role-database=true` + `provider NotIn contabo` |
 | Fan-out workers | GCP Spot + OCI + Contabo all fine |
-| Optional | Soft affinity to `latency-domain` only if profiling shows benefit |
+| Optional | Soft topology affinity only if profiling shows benefit |
 | Avoid | Assuming cross-site RTT is LAN; design retries/timeouts for WAN |
 
 ## SLOs (throughput-centric)
@@ -98,7 +98,7 @@ primary control plane for placement.
 
 ```bash
 # Membership + topology labels (optional for apps)
-kubectl get nodes -L node.stawi.org/provider,node.stawi.org/latency-domain
+kubectl get nodes -L node.stawi.org/provider,node.stawi.org/role-database
 
 # From a pod: multi-stream iperf3 or similar to a pod on another provider
 # Expect stable multi-stream goodput; single-stream will still be RTT-bound.

@@ -23,11 +23,11 @@ locals {
       labels = {
         "node.stawi.org/plane"          = "worker"
         "node.stawi.org/capacity-class" = "spot"
-        # Stateful DBs (CNPG, etc.) stay on OCI for now — never schedule here.
-        "node.stawi.org/db-eligible" = "false"
+        # CNPG requires role-database=true; keep false on Spot workers.
+        "node.stawi.org/role-database" = "false"
       }
       annotations = {
-        "node.stawi.org/operator-note" = "default Spot pack ${local.default_machine_type}/${local.default_boot_disk_gb}GB; DBs on OCI only"
+        "node.stawi.org/operator-note" = "default Spot pack ${local.default_machine_type}/${local.default_boot_disk_gb}GB; CNPG on OCI (role-database)"
       }
     }
   }

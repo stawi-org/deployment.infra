@@ -39,9 +39,10 @@ export GITHUB_TOKEN=...
 ```
 
 Default region is **`europe-west9` (Paris)** — closest French GCE region to
-Marseille (GCP has no Marseille zone). **Databases stay on OCI** (currently
-`eu-frankfurt-1`); GCP nodes are labeled `node.stawi.org/db-eligible=false`
-so CNPG and other stateful DBs must select OCI/Contabo capacity.
+Marseille (GCP has no Marseille zone). **CNPG** (deployment.manifests) requires
+`node.stawi.org/role-database=true` and `provider NotIn contabo`. Infra sets
+`role-database=true` on OCI and **`false` on GCP/Contabo** so Postgres stays
+on OCI. See [docs/node-labels.md](node-labels.md).
 
 Merge the PR. `onboard-gcp` runs `cluster-provision` mode=full:
 

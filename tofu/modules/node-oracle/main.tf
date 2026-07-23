@@ -149,6 +149,11 @@ locals {
   ipv4       = local.public_ip != null && local.public_ip != "" ? local.public_ip : local.private_ip
   ipv6       = try(data.oci_core_vnic.primary.ipv6addresses[0], null)
 
+  # CNPG (deployment.manifests) requires:
+  #   node.stawi.org/role-database In ["true"]
+  #   node.stawi.org/provider NotIn ["contabo"]
+  # OCI nodes are the database plane; always set role-database=true here
+  # (inventory cannot unset it).
   derived_labels = merge(
     var.labels,
     {
@@ -158,8 +163,7 @@ locals {
       "node.stawi.org/account"        = var.account_key
       "node.stawi.org/role"           = var.role
       "node.stawi.org/name"           = var.name
-      # Co-locate chatty workloads (API + DB) within this domain.
-      "node.stawi.org/latency-domain" = "oci-${var.region}"
+      "node.stawi.org/role-database"  = "true"
     },
     # See node-contabo/main.tf for why the worker side is empty: kubelet's
     # system:node:<name> identity is forbidden by NodeRestriction from

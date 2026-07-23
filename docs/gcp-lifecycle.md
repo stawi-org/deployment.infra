@@ -73,16 +73,12 @@ After every successful `tofu-apply` → `03-talos`:
 
 | Workload | Where | Why |
 |---|---|---|
-| Stateful DBs (CNPG, etc.) | **OCI** (`eu-frankfurt-1` today) | Stable capacity; free-tier packing; not Spot |
-| General workers / batch | **GCP Spot** in `europe-west9` (Paris) | Paid elastic capacity near FR / Marseille path |
+| Stateful DBs (CNPG) | **OCI** with `role-database=true` | Matches deployment.manifests CNPG affinity |
+| General workers / batch | **GCP Spot** / Contabo | `role-database=false` |
 | Control plane / Omni | Contabo + OCI policy | Unchanged topology |
 
-GCP has no Marseille region. Paris (`europe-west9`) is the French GCE region
-chosen for collocation with FR/Marseille traffic. Bootstrap defaults to it.
-
-All GCP nodes carry `node.stawi.org/db-eligible=false`. Schedule DBs with a
-nodeSelector/affinity requiring OCI (or `db-eligible=true` when you label OCI
-nodes that way in deployment.manifest).
+GCP has no Marseille region. Paris (`europe-west9`) is the French GCE default.
+CNPG affinity: [node-labels.md](node-labels.md).
 
 ## Day-2 operator path (fast)
 
@@ -112,7 +108,7 @@ gh workflow run cluster-provision.yml -f mode=images
 | Custom node count/size | Edit R2 `nodes.yaml` → `mode=infra` |
 | Standard (non-Spot) node | `preemptible: false` on that inventory entry |
 | New provider | Same `provider_data.omni_machine_id` + matcher; wire hygiene already global |
-| Region / collocation | Default **`europe-west9` (Paris)** — nearest GCE region to Marseille (no GCP Marseille zone). **Databases stay on OCI**; GCP nodes have `node.stawi.org/db-eligible=false`. |
+| Region / collocation | Default **`europe-west9` (Paris)**. CNPG uses `role-database` + `provider` (not invent keys) — see [node-labels.md](node-labels.md). |
 
 ## Failure modes
 

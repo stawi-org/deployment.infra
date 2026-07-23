@@ -248,6 +248,8 @@ Desired state lives in **OpenTofu** (plus R2 inventory). Image *bytes* need Omni
 
 **GCP onboard:** [docs/gcp-onboard.md](docs/gcp-onboard.md). Bootstrap WIF once (`bootstrap-gcp-wif.sh` → PR). After merge, OpenTofu creates the default **two Spot workers** when inventory is empty — no separate seed script. CI uses GitHub OIDC → WIF (no long-lived SA JSON keys).
 
+**Node labels:** match deployment.manifests (CNPG uses `role-database` + `provider`) — [docs/node-labels.md](docs/node-labels.md). **Secrets:** [SECURITY.md](SECURITY.md) if the repo is ever made public.
+
 Layer-by-layer (still supported): each layer via `workflow_dispatch` of `tofu-plan` / `tofu-apply` → `tofu-layer.yml`.
 
 1. **Layer 00 — Talos secrets.**

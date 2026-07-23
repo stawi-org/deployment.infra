@@ -11,9 +11,9 @@ locality for correctness or baseline performance.
 
 | Situation | Optional action |
 |---|---|
-| Chatty API + DB with tiny queries | Soft affinity to same `node.stawi.org/latency-domain` |
+| Chatty API + DB with tiny queries | Soft affinity to same `topology.kubernetes.io/region` / zone |
 | Want topology-aware Services | Use topology keys already on nodes |
-| Edge close to users | Prefer backends in nearer domain *if* replicas exist there |
+| Edge close to users | Prefer nearby region *if* replicas exist there |
 
 ## When to ignore locality
 
@@ -25,9 +25,8 @@ locality for correctness or baseline performance.
 
 ## Labels available
 
-- `topology.kubernetes.io/region` / `zone`
-- `node.stawi.org/latency-domain` (`oci-eu-frankfurt-1`, `gcp-europe-west9`, `contabo-eu`)
-- `node.stawi.org/provider`, `node.stawi.org/db-eligible`
+See [node-labels.md](node-labels.md) — especially `role-database` + `provider` for CNPG,
+and `topology.kubernetes.io/*` for optional co-location.
 
 Cross-site RTT (e.g. Paris↔Frankfurt) often exceeds 10 ms by physics. That is
 expected; the mesh is tuned so **bandwidth still flows** under that RTT (BBR,

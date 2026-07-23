@@ -2,9 +2,9 @@
 # Empty inventory: OpenTofu seeds two Spot e2-standard-2 (8 GiB) workers on apply.
 #
 # Region: europe-west9 (Paris) — closest French GCE region to Marseille.
-# There is no GCP Marseille zone; OCI DBs remain on eu-frankfurt-1 (or
-# eu-marseille-1 if/when that home region is used). Do not schedule CNPG
-# / stateful DBs on GCP (node.stawi.org/db-eligible=false).
+# CNPG affinity (deployment.manifests) requires role-database=true and
+# provider NotIn contabo. GCP nodes force role-database=false so Postgres
+# stays on OCI.
 gcp:
   accounts:
     stawi-prod:
@@ -13,7 +13,7 @@ gcp:
       vpc_cidr: 10.210.0.0/24
       labels:
         node.stawi.org/capacity-pool: gce-spot
-        node.stawi.org/db-eligible: "false"
+        node.stawi.org/role-database: "false"
       nodes:
         gcp-stawi-prod-node-1:
           role: worker
