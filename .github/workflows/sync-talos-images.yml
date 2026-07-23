@@ -1297,18 +1297,38 @@ jobs:
           image_name="${image_name%-}"
 
           family="stawi-talos"
+          # Talos is UEFI-only. Without UEFI_COMPATIBLE GCE boots SeaBIOS
+          # and serial shows "Boot failed: not a bootable disk" forever —
+          # machines never reach SideroLink. Also set GVNIC + multi-queue
+          # SCSI per Talos GCE guidance.
+          guest_features="UEFI_COMPATIBLE,GVNIC,VIRTIO_SCSI_MULTIQUEUE"
           if gcloud compute images describe "${image_name}" \
                 --project="${PROJECT_ID}" >/dev/null 2>&1; then
-            echo "::notice::reusing existing GCE image ${image_name}"
+            features=$(gcloud compute images describe "${image_name}" \
+              --project="${PROJECT_ID}" \
+              --format='value(guestOsFeatures[].type)' 2>/dev/null || true)
+            if echo "${features}" | tr ';' '\n' | grep -qx 'UEFI_COMPATIBLE'; then
+              echo "::notice::reusing existing GCE image ${image_name} (UEFI_COMPATIBLE present)"
+            else
+              echo "::warning::existing image ${image_name} lacks UEFI_COMPATIBLE (features=${features}); deleting and recreating"
+              gcloud compute images delete "${image_name}" \
+                --project="${PROJECT_ID}" --quiet
+              echo "::notice::creating GCE image ${image_name} from ${gcs_uri}"
+              gcloud compute images create "${image_name}" \
+                --project="${PROJECT_ID}" \
+                --source-uri="${gcs_uri}" \
+                --family="${family}" \
+                --guest-os-features="${guest_features}" \
+                --architecture=X86_64
+            fi
           else
             echo "::notice::creating GCE image ${image_name} from ${gcs_uri}"
             # disk.raw.tar.gz imports via --source-uri.
-            # GVNIC + multi-queue SCSI match Talos GCE recommendations.
             gcloud compute images create "${image_name}" \
               --project="${PROJECT_ID}" \
               --source-uri="${gcs_uri}" \
               --family="${family}" \
-              --guest-os-features=GVNIC,VIRTIO_SCSI_MULTIQUEUE \
+              --guest-os-features="${guest_features}" \
               --architecture=X86_64
           fi
 
