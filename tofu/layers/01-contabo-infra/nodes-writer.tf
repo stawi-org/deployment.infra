@@ -50,7 +50,11 @@ module "contabo_nodes_writer" {
                 ipv6_gateway           = node_module.ipv6_gateway
                 image_apply_generation = node_module.image_apply_generation
                 status                 = "running"
-                discovered_at          = timestamp()
+                # Preserve prior stamp so R2 nodes.yaml is not rewritten every plan.
+                discovered_at = try(
+                  module.contabo_account_state[each.key].nodes.nodes[node_key].provider_data.discovered_at,
+                  timestamp(),
+                )
               },
             )
           },

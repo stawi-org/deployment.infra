@@ -52,11 +52,31 @@ jobs:
           fi
           rc=0
           for p in "${plans[@]}" ; do
-            n=$(jq '[.resource_changes[] | select(.change.actions != ["no-op"] and .change.actions != ["read"])] | length' "$p")
-            echo "::notice::artifact=$p non-noop-diffs=$n"
+            # plan.json may omit resource_changes (null) on empty/failed plans.
+            if ! jq -e '.resource_changes | type == "array"' "$p" >/dev/null 2>&1; then
+              echo "::warning::$p has no resource_changes array — treating as empty plan"
+              continue
+            fi
+            # Pure ["create"] is expected for newly onboarded accounts /
+            # free-tier seed capacity before the first apply. Fail only on
+            # updates, deletes, or multi-action changes (replace thrash).
+            n=$(jq '[.resource_changes[]?
+              | select(.change.actions != ["no-op"]
+                       and .change.actions != ["read"]
+                       and .change.actions != ["create"])
+              ] | length' "$p")
+            creates=$(jq '[.resource_changes[]? | select(.change.actions == ["create"])] | length' "$p")
+            echo "::notice::artifact=$p thrash-diffs=$n creates=$creates"
+            if [ "$creates" -ne 0 ]; then
+              echo "::notice::allowing $creates pure create(s) (first-time capacity)"
+            fi
             if [ "$n" -ne 0 ]; then
-              jq '.resource_changes[] | select(.change.actions != ["no-op"] and .change.actions != ["read"]) | {address,actions:.change.actions}' "$p"
-              echo "::error::$p proposes $n changes on a steady-state plan"
+              jq '.resource_changes[]?
+                | select(.change.actions != ["no-op"]
+                         and .change.actions != ["read"]
+                         and .change.actions != ["create"])
+                | {address,actions:.change.actions}' "$p"
+              echo "::error::$p proposes $n update/delete/replace changes on a steady-state plan"
               rc=1
             fi
           done

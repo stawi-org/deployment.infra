@@ -10,35 +10,57 @@
 #                       ↓ impersonation
 #                  OpenTofu / image-import ADC in CI
 #
-# Prereqs:
+# Prereqs (everything else is fetched/installed by this script):
 #   - gcloud CLI installed and authed to the target project (Owner or
-#     equivalent for IAM + service usage)
-#   - jq, curl, python3, git
-#   - sops (auto-installed into ~/.local/bin if missing)
-#   - GITHUB_TOKEN or GH_TOKEN with Contents + Pull requests on
-#     stawi-org/deployment.infra (for push + PR; optional with --no-push/--no-pr)
-#   - A local clone of deployment.infra with .sops.yaml at the root
+#     equivalent for IAM + service usage + billing budgets)
+#   - Network access to github.com (public clone of deployment.infra)
+#   - jq, curl, python3, git (pre-installed on GCP Cloud Shell)
 #
-# Each invocation:
-#   1. Enables required APIs; ensures WIF pool, OIDC provider, SA, project
-#      IAM roles, and WIF→SA binding.
-#   2. Writes a SOPS-encrypted auth.yaml under
-#      tofu/shared/accounts/gcp/<gh-profile>/ in a git worktree off
-#      origin/<base-branch> so the operator's current branch stays clean.
-#   3. Adds the account under gcp: in tofu/shared/accounts.yaml (idempotent).
-#   4. Commits, pushes branch onboard-gcp-<gh-profile>, opens a PR via the
-#      GitHub REST API (no gh CLI required).
+# Standalone Cloud Shell flow (only this file needs to be uploaded):
+#   ./bootstrap-gcp-wif.sh --project YOUR_PROJECT_ID --gh-profile my-acct
+#
+# The script will, on its own:
+#   - install sops into ~/.local/bin if missing
+#   - clone https://github.com/stawi-org/deployment.infra into
+#     ~/deployment.infra when cwd is not already that checkout
+#   - configure WIF / SA / bucket / budget on the GCP project
+#   - write SOPS-encrypted auth + accounts.yaml on a worktree branch
+#   - push and print OPEN: compare URL (PR API if GITHUB_TOKEN set)
+#
+# Encryption uses the public age key in .sops.yaml — no private age key
+# is required on the bootstrap machine.
+#
+# No `gh` CLI / GITHUB_TOKEN required for the default path. The operator's
+# existing git push credentials are sufficient; the script always prints a
+# GitHub "Create PR" / compare URL. Pass GITHUB_TOKEN/GH_TOKEN only if you
+# want the script to open the PR via the REST API.
 #
 # Usage:
-#   ./scripts/bootstrap-gcp-wif.sh --project YOUR_PROJECT_ID
-#   ./scripts/bootstrap-gcp-wif.sh --project p --gh-profile demo --region europe-west9
-#   ./scripts/bootstrap-gcp-wif.sh --project p --no-push   # local branch only
+#   ./bootstrap-gcp-wif.sh --project YOUR_PROJECT_ID
+#   ./bootstrap-gcp-wif.sh --project p --gh-profile demo --region europe-west9
+#   ./bootstrap-gcp-wif.sh --project p --repo-path /path/to/checkout
+#   ./bootstrap-gcp-wif.sh --project p --no-push   # local branch only
+#   ./bootstrap-gcp-wif.sh --project p --budget-amount 50 --budget-email you@ex.com
 #
 # Re-running is safe. GCP resources are looked up by name; missing ones are
 # created and existing ones updated. The accounts.yaml edit is idempotent.
 # The branch is reused if it already exists.
 
 set -euo pipefail
+
+# Fully non-interactive: never hang on Username/Password or credential prompts.
+# (Cloud Shell has no GitHub credentials by default; we use a token or skip push.)
+export GIT_TERMINAL_PROMPT=0
+export GIT_ASKPASS="${GIT_ASKPASS:-/bin/true}"
+export SSH_ASKPASS="${SSH_ASKPASS:-/bin/true}"
+# Never hang on SSH passphrase / host key prompts either.
+export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new}"
+# Disable credential helpers for this process (avoids desktop/store prompts).
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0=credential.helper
+export GIT_CONFIG_VALUE_0=
+# sops auto-install lands here; Cloud Shell often lacks it on PATH by default.
+export PATH="${HOME}/.local/bin:${PATH}"
 
 # -------- defaults --------
 PROJECT=""
@@ -52,6 +74,19 @@ BASE_BRANCH="main"
 BRANCH=""
 NO_PUSH="false"
 NO_PR="false"
+# Auto-clone is the default: Cloud Shell operators only upload this script.
+# --no-clone forces fail-fast if no checkout is found (CI / strict mode).
+NO_CLONE="false"
+NO_BUDGET="false"
+# Monthly cost tripwire for Spot workers. Default $50 matches the operator
+# budget target (2×e2-standard-2 pack leaves headroom). Override with
+# --budget-amount or env BUDGET_AMOUNT=N. Not a hard provisioner stop.
+BUDGET_AMOUNT="${BUDGET_AMOUNT:-50}"
+# Alert recipient for billing-account IAM defaults. If unset, defaults to
+# `git config user.email`. Override with --budget-email / BUDGET_EMAIL.
+# Budget is still created without email (console + billing-admin defaults).
+BUDGET_EMAIL="${BUDGET_EMAIL:-}"
+BUDGET_NAME="${BUDGET_NAME:-stawi-gcp-workers}"
 
 WIF_POOL="github"
 WIF_PROVIDER="github-actions"
@@ -62,42 +97,66 @@ ATTR_CONDITION="assertion.repository=='${GITHUB_REPO}'"
 ATTR_MAPPING="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref"
 
 SOPS_VERSION="v3.11.0"
+CLONE_URL="https://github.com/${GITHUB_REPO}.git"
+DEFAULT_CLONE_DIR="${HOME}/deployment.infra"
 
 usage() {
-  # Emit the leading comment block (strip "# " prefix) then the flag table.
-  awk 'NR==1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' \
-    "${BASH_SOURCE[0]}"
+  # Prefer the header comment block when BASH_SOURCE is a real file (not a pipe).
+  if [[ -n "${BASH_SOURCE[0]:-}" && -r "${BASH_SOURCE[0]}" ]]; then
+    awk 'NR==1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' \
+      "${BASH_SOURCE[0]}"
+  else
+    cat <<'HDR'
+bootstrap-gcp-wif.sh — configure GCP WIF + SOPS auth PR for deployment.infra
+HDR
+  fi
   cat <<'EOF'
 
 Flags:
-  --project <ID>       GCP project id (required)
-  --region <REGION>    Default europe-west9 (Paris FR; nearest to Marseille)
-  --gh-profile <NAME>  accounts.yaml key / auth path segment
-                       (default: slug of project id last dash segment)
-  --vpc-cidr <CIDR>    Default 10.210.0.0/24
-  --repo-path <PATH>   deployment.infra checkout (default: git root)
-  --base-branch <NAME> Branch to fork the worktree from (default: main)
-  --branch <NAME>      Push branch (default: onboard-gcp-<gh-profile>)
-  --no-push            Commit in worktree only; skip push
-  --no-pr              Push but do not open a pull request
-  -h, --help           Show this help
+  --project <ID>         GCP project id (required)
+  --region <REGION>      Default europe-west9 (Paris FR; nearest to Marseille)
+  --gh-profile <NAME>    accounts.yaml key / auth path segment
+                         (default: slug of project id last dash segment)
+  --vpc-cidr <CIDR>      Default 10.210.0.0/24
+  --repo-path <PATH>     deployment.infra checkout
+                         (default: git root, else auto-clone ~/deployment.infra)
+  --no-clone             Do not auto-clone; fail if no checkout is found
+  --clone                Accepted for back-compat (auto-clone is already default)
+  --base-branch <NAME>   Branch to fork the worktree from (default: main)
+  --branch <NAME>        Push branch (default: onboard-gcp-<gh-profile>)
+  --no-push              Commit in worktree only; skip push
+  --no-pr                Push but do not open a pull request via API
+  --budget-amount <USD>  Monthly Cloud Billing budget (default: 50)
+  --budget-email <ADDR>  Hint only (billing admins still get default alerts)
+  --budget-name <NAME>   Budget display name (default: stawi-gcp-workers)
+  --no-budget            Skip Cloud Billing budget ensure
+  -h, --help             Show this help
+
+Cloud Shell (upload only this script to ~):
+  ./bootstrap-gcp-wif.sh --project YOUR_PROJECT_ID --gh-profile my-acct
 EOF
   exit 1
 }
 
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --project)     PROJECT="$2"; shift 2 ;;
-    --region)      REGION="$2"; shift 2 ;;
-    --gh-profile)  GH_PROFILE="$2"; shift 2 ;;
-    --vpc-cidr)    VPC_CIDR="$2"; shift 2 ;;
-    --repo-path)   REPO_PATH="$2"; shift 2 ;;
-    --base-branch) BASE_BRANCH="$2"; shift 2 ;;
-    --branch)      BRANCH="$2"; shift 2 ;;
-    --no-push)     NO_PUSH="true"; shift ;;
-    --no-pr)       NO_PR="true"; shift ;;
-    -h|--help)     usage ;;
-    *)             echo "unknown arg: $1" >&2; usage ;;
+    --project)        PROJECT="$2"; shift 2 ;;
+    --region)         REGION="$2"; shift 2 ;;
+    --gh-profile)     GH_PROFILE="$2"; shift 2 ;;
+    --vpc-cidr)       VPC_CIDR="$2"; shift 2 ;;
+    --repo-path)      REPO_PATH="$2"; shift 2 ;;
+    --clone)          NO_CLONE="false"; shift ;;  # default; kept for older docs/invocations
+    --no-clone)       NO_CLONE="true"; shift ;;
+    --base-branch)    BASE_BRANCH="$2"; shift 2 ;;
+    --branch)         BRANCH="$2"; shift 2 ;;
+    --no-push)        NO_PUSH="true"; shift ;;
+    --no-pr)          NO_PR="true"; shift ;;
+    --budget-amount)  BUDGET_AMOUNT="$2"; shift 2 ;;
+    --budget-email)   BUDGET_EMAIL="$2"; shift 2 ;;
+    --budget-name)    BUDGET_NAME="$2"; shift 2 ;;
+    --no-budget)      NO_BUDGET="true"; shift ;;
+    -h|--help)        usage ;;
+    *)                echo "unknown arg: $1" >&2; usage ;;
   esac
 done
 
@@ -130,6 +189,7 @@ ensure_sops() {
 }
 
 github_token() {
+  # Never prompt. Sources (first wins): GITHUB_TOKEN, GH_TOKEN, `gh auth token`.
   if [[ -n "${GITHUB_TOKEN:-}" ]]; then
     printf '%s' "$GITHUB_TOKEN"
     return 0
@@ -138,7 +198,77 @@ github_token() {
     printf '%s' "$GH_TOKEN"
     return 0
   fi
+  if command -v gh >/dev/null 2>&1; then
+    local t
+    t=$(GH_PROMPT_DISABLED=1 gh auth token 2>/dev/null || true)
+    if [[ -n "$t" ]]; then
+      printf '%s' "$t"
+      return 0
+    fi
+  fi
   return 1
+}
+
+github_login() {
+  # Authenticated login for the token (owner of a fork), or empty.
+  local token="${1:-}"
+  [[ -n "$token" ]] || return 1
+  curl -fsS -H "Authorization: Bearer ${token}" \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "https://api.github.com/user" 2>/dev/null \
+    | jq -r '.login // empty'
+}
+
+github_ensure_fork() {
+  # Ensure token owner has a fork of GITHUB_REPO; print "owner/repo".
+  local token="$1"
+  local login fork_full
+  login=$(github_login "$token") || true
+  [[ -n "$login" ]] || return 1
+  fork_full="${login}/${GITHUB_REPO#*/}"
+  # Already exists?
+  if curl -fsS -o /dev/null -w '%{http_code}' \
+      -H "Authorization: Bearer ${token}" \
+      -H "Accept: application/vnd.github+json" \
+      "https://api.github.com/repos/${fork_full}" 2>/dev/null | grep -qx '200'; then
+    printf '%s' "$fork_full"
+    return 0
+  fi
+  say "creating fork ${fork_full} (no write access to ${GITHUB_REPO})"
+  local code
+  code=$(curl -sS -o /tmp/gcp-fork.json -w '%{http_code}' -X POST \
+    -H "Authorization: Bearer ${token}" \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "https://api.github.com/repos/${GITHUB_REPO}/forks" || true)
+  if [[ "$code" != "202" && "$code" != "200" ]]; then
+    warn "fork create HTTP ${code}: $(head -c 300 /tmp/gcp-fork.json 2>/dev/null || true)"
+    return 1
+  fi
+  # Forks are async — wait until the repo is readable.
+  local i
+  for ((i = 1; i <= 30; i++)); do
+    if curl -fsS -o /dev/null \
+        -H "Authorization: Bearer ${token}" \
+        "https://api.github.com/repos/${fork_full}" 2>/dev/null; then
+      printf '%s' "$fork_full"
+      return 0
+    fi
+    sleep 2
+  done
+  warn "fork ${fork_full} not ready after 60s"
+  return 1
+}
+
+git_push_noninteractive() {
+  # Args: remote_url refspec. Never prompts; returns 0 on success.
+  local url="$1" refspec="$2"
+  # Strip any interactive helpers; force terminal prompt off.
+  GIT_TERMINAL_PROMPT=0 \
+  GIT_ASKPASS=/bin/true \
+  git -c credential.helper= -c core.askPass=/bin/true \
+    push --porcelain "$url" "$refspec" 2>/tmp/gcp-git-push.err
 }
 
 github_api() {
@@ -184,9 +314,16 @@ github_create_pr() {
   fi
   if [[ "$code" == "422" ]]; then
     # Already exists — look up open PR for this head.
-    local existing
+    # head may already be "owner:branch" (fork) or plain "branch" (same-repo).
+    local head_q existing
+    if [[ "$head" == *:* ]]; then
+      head_q="$head"
+    else
+      head_q="${GITHUB_REPO%%/*}:${head}"
+    fi
+    # URL-encode colon is fine as-is for GitHub's head query.
     existing=$(github_api GET \
-      "/repos/${GITHUB_REPO}/pulls?head=${GITHUB_REPO%%/*}:${head}&state=open" \
+      "/repos/${GITHUB_REPO}/pulls?head=${head_q}&state=open" \
       || true)
     pr_url=$(jq -r '.[0].html_url // empty' <<<"$existing")
     if [[ -n "$pr_url" ]]; then
@@ -205,20 +342,127 @@ slugify() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]-' | sed -E 's/-+/-/g; s/^-|-$//g'
 }
 
-# -------- prereqs --------
+ensure_git_clone() {
+  # Populate $1 with a usable deployment.infra checkout (clone or update).
+  local dest="$1"
+  if [[ -d "$dest/.git" && -f "$dest/.sops.yaml" ]]; then
+    say "reusing existing clone at $dest"
+    git -C "$dest" fetch origin "$BASE_BRANCH" --quiet 2>/dev/null \
+      || warn "could not fetch origin/${BASE_BRANCH} (using local clone as-is)"
+    # Prefer a clean main tip when the clone is only used as a worktree base.
+    git -C "$dest" checkout "$BASE_BRANCH" --quiet 2>/dev/null \
+      || git -C "$dest" checkout -B "$BASE_BRANCH" "origin/${BASE_BRANCH}" --quiet 2>/dev/null \
+      || true
+    git -C "$dest" pull --ff-only origin "$BASE_BRANCH" --quiet 2>/dev/null || true
+    return 0
+  fi
+  if [[ -e "$dest" && ! -d "$dest/.git" ]]; then
+    die "$dest exists but is not a git clone — remove it or pass --repo-path elsewhere"
+  fi
+  say "cloning ${CLONE_URL} → ${dest}"
+  mkdir -p "$(dirname "$dest")"
+  if ! git clone --branch "$BASE_BRANCH" --single-branch "$CLONE_URL" "$dest"; then
+    # Fallback without --branch in case default branch rename race.
+    git clone "$CLONE_URL" "$dest" \
+      || die "git clone failed — need network access to github.com/${GITHUB_REPO}"
+  fi
+}
+
+resolve_repo_path() {
+  # Standalone-first: Cloud Shell operators upload only this script to ~.
+  # Resolution order:
+  #   1) explicit --repo-path (create via clone if missing, unless --no-clone)
+  #   2) cwd is already a deployment.infra checkout (.sops.yaml at git root)
+  #   3) auto-clone into ~/deployment.infra (default)
+  if [[ -n "$REPO_PATH" ]]; then
+    if [[ ! -d "$REPO_PATH" || ! -f "$REPO_PATH/.sops.yaml" ]]; then
+      if [[ "$NO_CLONE" == "true" ]]; then
+        die "--repo-path ${REPO_PATH} is not a deployment.infra checkout (--no-clone set)"
+      fi
+      ensure_git_clone "$REPO_PATH"
+    fi
+  else
+    local detected
+    detected=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    if [[ -n "$detected" && -f "$detected/.sops.yaml" && -f "$detected/tofu/shared/accounts.yaml" ]]; then
+      REPO_PATH="$detected"
+      say "using checkout at cwd: $REPO_PATH"
+    elif [[ "$NO_CLONE" == "true" ]]; then
+      die "Not inside a deployment.infra checkout and --no-clone set. Pass --repo-path or drop --no-clone."
+    else
+      REPO_PATH="$DEFAULT_CLONE_DIR"
+      ensure_git_clone "$REPO_PATH"
+    fi
+  fi
+
+  REPO_PATH="$(cd "$REPO_PATH" && pwd)"
+  [[ -f "$REPO_PATH/.sops.yaml" ]] \
+    || die "$REPO_PATH has no .sops.yaml — wrong checkout? Aborting before any write."
+  [[ -f "$REPO_PATH/tofu/shared/accounts.yaml" ]] \
+    || die "$REPO_PATH missing tofu/shared/accounts.yaml — wrong checkout?"
+  say "repo path: $REPO_PATH"
+}
+
+verify_gcloud_access() {
+  command -v gcloud >/dev/null 2>&1 || die "missing: gcloud (install Cloud SDK or use GCP Cloud Shell)"
+
+  # Active account?
+  local active
+  active=$(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null | head -1 || true)
+  if [[ -z "$active" ]]; then
+    # ADC / metadata (Cloud Shell, GCE) can still work without an "active" user.
+    if ! gcloud projects describe "$PROJECT" --format='value(projectId)' >/dev/null 2>&1; then
+      die "no active gcloud account and cannot access project ${PROJECT}. Run: gcloud auth login"
+    fi
+    say "gcloud: using application-default / metadata credentials"
+  else
+    say "gcloud account: $active"
+  fi
+
+  if ! gcloud projects describe "$PROJECT" --format='value(projectId)' >/dev/null 2>&1; then
+    die "cannot describe project '${PROJECT}' — check id, permissions, or: gcloud config set project ${PROJECT}"
+  fi
+  say "gcloud project access: ok ($PROJECT)"
+
+  # Billing must be linked for Spot compute + budgets.
+  local billing_enabled billing_name
+  billing_enabled=$(gcloud billing projects describe "$PROJECT" \
+    --format='value(billingEnabled)' 2>/dev/null || true)
+  billing_name=$(gcloud billing projects describe "$PROJECT" \
+    --format='value(billingAccountName)' 2>/dev/null || true)
+  if [[ "$billing_enabled" != "True" && "$billing_enabled" != "true" ]]; then
+    die "project ${PROJECT} has no billing account linked (Spot is paid). Link billing in the console, then re-run."
+  fi
+  BILLING_ACCOUNT="${billing_name#billingAccounts/}"
+  [[ -n "$BILLING_ACCOUNT" ]] || die "could not resolve billing account for ${PROJECT}"
+  say "billing account: $BILLING_ACCOUNT"
+}
+
+compare_pr_url() {
+  local base="$1" head="$2"
+  local origin slug
+  origin=$(git -C "$REPO_PATH" config --get remote.origin.url 2>/dev/null || true)
+  slug=$(printf '%s' "$origin" | sed -E 's#.*[/:]([^/]+/[^/]+)\.git$#\1#; t; s#.*[/:]([^/]+/[^/]+)$#\1#')
+  slug="${slug:-$GITHUB_REPO}"
+  printf 'https://github.com/%s/compare/%s...%s?expand=1' "$slug" "$base" "$head"
+}
+
+# -------- prereqs (fail fast BEFORE any GCP mutation) --------
 ensure_sops
 for cmd in gcloud jq curl python3 git sops; do
   command -v "$cmd" >/dev/null 2>&1 || die "missing: $cmd"
 done
 
-if [[ -z "$REPO_PATH" ]]; then
-  REPO_PATH=$(git rev-parse --show-toplevel 2>/dev/null || true)
-  [[ -z "$REPO_PATH" ]] && die "Not inside a git repo; pass --repo-path PATH explicitly"
+resolve_repo_path
+verify_gcloud_access
+
+# Budget email default from operator git identity (same convention as OCI).
+if [[ -z "$BUDGET_EMAIL" ]]; then
+  BUDGET_EMAIL=$(git -C "$REPO_PATH" config --get user.email 2>/dev/null \
+    || git config --global --get user.email 2>/dev/null \
+    || git config --get user.email 2>/dev/null \
+    || true)
 fi
-REPO_PATH="$(cd "$REPO_PATH" && pwd)"
-[[ -f "$REPO_PATH/.sops.yaml" ]] \
-  || die "$REPO_PATH has no .sops.yaml — wrong checkout? Aborting before any write."
-say "repo path: $REPO_PATH"
 
 if [[ -z "$GH_PROFILE" ]]; then
   # Last dash-separated segment of the project id, slugged.
@@ -236,10 +480,11 @@ say "inventory account key: $GH_PROFILE"
 BRANCH="${BRANCH:-onboard-gcp-${GH_PROFILE}}"
 SA_EMAIL="${SA_ID}@${PROJECT}.iam.gserviceaccount.com"
 
-# Warn early when push/PR will lack a token (push can still use git creds).
+# Token is optional: git push uses operator credentials; PR API is best-effort.
 if [[ "$NO_PUSH" != "true" ]] && ! github_token >/dev/null 2>&1; then
-  warn "no GITHUB_TOKEN/GH_TOKEN — push will use existing git credentials; PR open needs a token"
+  say "no GITHUB_TOKEN/GH_TOKEN — push uses existing git credentials; OPEN URL printed for manual PR"
 fi
+
 # =========================================================================
 # 1. GCP: enable APIs
 # =========================================================================
@@ -251,6 +496,8 @@ gcloud services enable \
   cloudresourcemanager.googleapis.com \
   sts.googleapis.com \
   storage.googleapis.com \
+  cloudbilling.googleapis.com \
+  billingbudgets.googleapis.com \
   --project="$PROJECT" \
   --quiet
 
@@ -304,7 +551,32 @@ say "  provider resource: $WIF_PROVIDER_RESOURCE"
 # =========================================================================
 # 3. Service account + project roles + WIF binding
 # =========================================================================
+# CRM IAM can lag a newly-created SA by tens of seconds ("does not exist"
+# on add-iam-policy-binding even though describe succeeds). Wait + retry.
+wait_for_service_account() {
+  local email="$1"
+  local max_attempts="${2:-30}"
+  local delay="${3:-2}"
+  local i
+  for ((i = 1; i <= max_attempts; i++)); do
+    if gcloud iam service-accounts describe "$email" --project="$PROJECT" \
+        --format='value(email)' >/dev/null 2>&1; then
+      # Extra settle so Cloud Resource Manager sees the member identity.
+      if (( i == 1 )); then
+        return 0
+      fi
+      say "  SA visible after ${i} attempt(s); settling 5s for IAM propagation"
+      sleep 5
+      return 0
+    fi
+    say "  waiting for SA ${email} (attempt ${i}/${max_attempts})…"
+    sleep "$delay"
+  done
+  die "service account ${email} not visible after $((max_attempts * delay))s"
+}
+
 say "Ensuring service account $SA_EMAIL"
+SA_JUST_CREATED="false"
 if gcloud iam service-accounts describe "$SA_EMAIL" --project="$PROJECT" \
     --format='value(email)' >/dev/null 2>&1; then
   say "  SA exists"
@@ -315,11 +587,19 @@ else
     --description="CI/tofu principal for cluster workers via GitHub WIF" \
     --quiet
   say "  SA created"
+  SA_JUST_CREATED="true"
+fi
+wait_for_service_account "$SA_EMAIL"
+if [[ "$SA_JUST_CREATED" == "true" ]]; then
+  # Fresh creates almost always need a short CRM propagation pause.
+  say "  post-create IAM settle (8s)"
+  sleep 8
 fi
 
 ensure_project_role() {
   local role="$1"
   local member="serviceAccount:${SA_EMAIL}"
+  local attempt max_attempts=12 delay=5
   if gcloud projects get-iam-policy "$PROJECT" \
       --flatten='bindings[].members' \
       --filter="bindings.role=${role} AND bindings.members=${member}" \
@@ -327,32 +607,49 @@ ensure_project_role() {
     say "  role $role already bound"
     return 0
   fi
-  gcloud projects add-iam-policy-binding "$PROJECT" \
-    --member="$member" \
-    --role="$role" \
-    --condition=None \
-    --quiet >/dev/null
-  say "  bound $role"
+  for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+    if gcloud projects add-iam-policy-binding "$PROJECT" \
+        --member="$member" \
+        --role="$role" \
+        --condition=None \
+        --quiet >/dev/null 2>/tmp/gcp-iam-bind.err; then
+      say "  bound $role"
+      return 0
+    fi
+    # Retry only the classic post-create race; other errors are fatal.
+    if grep -qiE 'does not exist|ABORTED|concurrent policy|Please try again' \
+        /tmp/gcp-iam-bind.err 2>/dev/null; then
+      warn "  bind $role attempt ${attempt}/${max_attempts} raced; retry in ${delay}s"
+      sleep "$delay"
+      continue
+    fi
+    cat /tmp/gcp-iam-bind.err >&2 || true
+    die "failed to bind $role on project $PROJECT"
+  done
+  cat /tmp/gcp-iam-bind.err >&2 || true
+  die "failed to bind $role after ${max_attempts} attempts (SA IAM still propagating?)"
 }
 
 # Least-privilege-ish set for tofu + image import (not full compute.admin):
 #   instanceAdmin.v1 — GCE VMs
 #   networkAdmin     — VPC / subnet / firewall
 #   storageAdmin     — disks + custom images (compute.storageAdmin)
-#   storage.objectAdmin — GCS objects for image staging (bucket is
-#                         created once below so we do not need storage.admin)
+#   storage.objectAdmin — GCS objects for image staging
+#   storage.legacyBucketReader — storage.buckets.get/list so CI can
+#     describe the staging bucket (objectAdmin alone is not enough)
 for role in \
   roles/compute.instanceAdmin.v1 \
   roles/compute.networkAdmin \
   roles/compute.storageAdmin \
-  roles/storage.objectAdmin
+  roles/storage.objectAdmin \
+  roles/storage.legacyBucketReader
 do
   ensure_project_role "$role"
 done
 
-# Pre-create the image-staging bucket so CI never needs storage.admin
-# (bucket create). Object writes use objectAdmin above. Nearline + 30d
-# lifecycle keeps staged .raw.tar.gz from accumulating forever.
+# Pre-create the image-staging bucket so CI never needs storage.buckets.create.
+# Object writes use objectAdmin; describe uses legacyBucketReader. Lifecycle
+# 30d keeps staged .raw.tar.gz from accumulating forever.
 IMAGE_BUCKET="stawi-talos-images-${GH_PROFILE}"
 say "Ensuring image staging bucket gs://${IMAGE_BUCKET}"
 if gcloud storage buckets describe "gs://${IMAGE_BUCKET}" --project="$PROJECT" >/dev/null 2>&1; then
@@ -367,11 +664,9 @@ else
     say "  bucket created"
   else
     warn "could not create gs://${IMAGE_BUCKET}: $(head -c 200 /tmp/gcs-boot-create.err 2>/dev/null || true)"
-    warn "CI may fail image import until the bucket exists or a fallback name works"
+    warn "CI may fail image import until the bucket exists (re-run bootstrap as project Owner)"
   fi
 fi
-# Lifecycle: drop objects older than 30 days (image imports re-upload
-# when schematic/sha changes; stale staging bytes are pure waste).
 if gcloud storage buckets describe "gs://${IMAGE_BUCKET}" --project="$PROJECT" >/dev/null 2>&1; then
   tmp_lc=$(mktemp)
   cat >"$tmp_lc" <<'JSON'
@@ -391,6 +686,25 @@ JSON
     && say "  lifecycle: delete objects after 30d" \
     || warn "could not set lifecycle on gs://${IMAGE_BUCKET} (non-fatal)"
   rm -f "$tmp_lc"
+
+  # Bucket-scoped IAM (in addition to project roles) so objectAdmin on
+  # the project still works under uniform bucket-level access.
+  for b_role in roles/storage.objectAdmin roles/storage.legacyBucketReader; do
+    if gcloud storage buckets get-iam-policy "gs://${IMAGE_BUCKET}" --project="$PROJECT" \
+        --flatten='bindings[].members' \
+        --filter="bindings.role=${b_role} AND bindings.members:serviceAccount:${SA_EMAIL}" \
+        --format='value(bindings.role)' 2>/dev/null | grep -qx "$b_role"; then
+      say "  bucket IAM $b_role already bound"
+    else
+      gcloud storage buckets add-iam-policy-binding "gs://${IMAGE_BUCKET}" \
+        --member="serviceAccount:${SA_EMAIL}" \
+        --role="$b_role" \
+        --project="$PROJECT" \
+        --quiet >/dev/null 2>/tmp/gcs-bucket-iam.err \
+        && say "  bucket IAM bound $b_role" \
+        || warn "bucket IAM $b_role failed: $(head -c 160 /tmp/gcs-bucket-iam.err 2>/dev/null || true)"
+    fi
+  done
 fi
 
 WIF_MEMBER="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${WIF_POOL}/attribute.repository/${GITHUB_REPO}"
@@ -401,16 +715,98 @@ if gcloud iam service-accounts get-iam-policy "$SA_EMAIL" --project="$PROJECT" \
     --format='value(bindings.role)' 2>/dev/null | grep -qx 'roles/iam.workloadIdentityUser'; then
   say "  workloadIdentityUser already bound for ${GITHUB_REPO}"
 else
-  gcloud iam service-accounts add-iam-policy-binding "$SA_EMAIL" \
-    --project="$PROJECT" \
-    --role="roles/iam.workloadIdentityUser" \
-    --member="$WIF_MEMBER" \
-    --quiet >/dev/null
-  say "  bound roles/iam.workloadIdentityUser → $WIF_MEMBER"
+  wif_ok="false"
+  for ((attempt = 1; attempt <= 8; attempt++)); do
+    if gcloud iam service-accounts add-iam-policy-binding "$SA_EMAIL" \
+        --project="$PROJECT" \
+        --role="roles/iam.workloadIdentityUser" \
+        --member="$WIF_MEMBER" \
+        --quiet >/dev/null 2>/tmp/gcp-wif-bind.err; then
+      say "  bound roles/iam.workloadIdentityUser → $WIF_MEMBER"
+      wif_ok="true"
+      break
+    fi
+    warn "  WIF bind attempt ${attempt}/8 failed; retry in 5s"
+    sleep 5
+  done
+  if [[ "$wif_ok" != "true" ]]; then
+    cat /tmp/gcp-wif-bind.err >&2 || true
+    die "failed to bind workloadIdentityUser on $SA_EMAIL"
+  fi
 fi
 
 # =========================================================================
-# 4. Repo write phase (isolated worktree)
+# 4. Cloud Billing budget (cost tripwire)
+# =========================================================================
+# Mirrors OCI's budget step: monthly cap + threshold ladder. Not a hard
+# provisioner stop — alerts billing-account admins (and console).
+BUDGET_ID=""
+if [[ "$NO_BUDGET" == "true" ]]; then
+  say "skipping Cloud Billing budget (--no-budget)"
+else
+  say "Ensuring budget '$BUDGET_NAME' (USD ${BUDGET_AMOUNT}/month, project ${PROJECT})"
+  if [[ -n "$BUDGET_EMAIL" ]]; then
+    say "  budget-email hint: ${BUDGET_EMAIL} (GCP emails Billing Account Admin/User by default)"
+  fi
+
+  existing_budget_json=$(gcloud billing budgets list \
+    --billing-account="$BILLING_ACCOUNT" \
+    --format=json 2>/dev/null || echo '[]')
+  if ! printf '%s' "$existing_budget_json" | jq empty 2>/dev/null; then
+    warn "  budget list returned non-JSON; treating as empty"
+    existing_budget_json='[]'
+  fi
+
+  BUDGET_ID=$(printf '%s' "$existing_budget_json" | jq -r \
+    --arg n "$BUDGET_NAME" \
+    '.[] | select(.displayName == $n) | .name // empty' | head -1)
+
+  # Threshold ladder: current-spend 50/80/100 + forecasted 50/100.
+  # gcloud --threshold-rule uses fraction (0.5 = 50%).
+  THRESHOLD_ARGS=(
+    --threshold-rule=percent=0.50
+    --threshold-rule=percent=0.80
+    --threshold-rule=percent=1.00
+    --threshold-rule=percent=0.50,basis=forecasted-spend
+    --threshold-rule=percent=1.00,basis=forecasted-spend
+  )
+
+  if [[ -z "$BUDGET_ID" ]]; then
+    say "  creating budget"
+    if create_out=$(gcloud billing budgets create \
+        --billing-account="$BILLING_ACCOUNT" \
+        --display-name="$BUDGET_NAME" \
+        --budget-amount="${BUDGET_AMOUNT}USD" \
+        --filter-projects="projects/${PROJECT}" \
+        --calendar-period=month \
+        "${THRESHOLD_ARGS[@]}" \
+        --format='value(name)' 2>&1); then
+      BUDGET_ID=$(printf '%s' "$create_out" | tail -1)
+      say "  budget created: $BUDGET_ID"
+    else
+      warn "  budget create failed (billing.budgets admin on the billing account?):"
+      printf '%s\n' "$create_out" | head -c 800 >&2
+      printf '\n' >&2
+      warn "  continuing — WIF/auth still valid; set budget in console if needed"
+    fi
+  else
+    say "  exists ($BUDGET_ID); reconciling amount + thresholds"
+    if gcloud billing budgets update "$BUDGET_ID" \
+        --billing-account="$BILLING_ACCOUNT" \
+        --budget-amount="${BUDGET_AMOUNT}USD" \
+        --filter-projects="projects/${PROJECT}" \
+        "${THRESHOLD_ARGS[@]}" \
+        --quiet >/dev/null 2>&1; then
+      say "  budget updated"
+    else
+      warn "  budget update returned non-zero (often ok — partial field immutability)"
+    fi
+  fi
+  [[ -n "$BUDGET_ID" ]] && say "  budget: $BUDGET_ID (USD ${BUDGET_AMOUNT}/mo)"
+fi
+
+# =========================================================================
+# 5. Repo write phase (isolated worktree)
 # =========================================================================
 say ""
 say "=========================================================="
@@ -426,7 +822,20 @@ cleanup_worktree() {
 }
 trap cleanup_worktree EXIT
 
-git -C "$REPO_PATH" fetch origin "$BASE_BRANCH" --quiet
+# Resolve base ref: prefer origin/<base>, fall back to local.
+BASE_REF=""
+if git -C "$REPO_PATH" fetch origin "$BASE_BRANCH" --quiet 2>/dev/null; then
+  BASE_REF="origin/${BASE_BRANCH}"
+elif git -C "$REPO_PATH" rev-parse --verify "origin/${BASE_BRANCH}" >/dev/null 2>&1; then
+  BASE_REF="origin/${BASE_BRANCH}"
+  warn "could not fetch origin/${BASE_BRANCH}; using cached remote-tracking ref"
+elif git -C "$REPO_PATH" rev-parse --verify "refs/heads/${BASE_BRANCH}" >/dev/null 2>&1; then
+  BASE_REF="$BASE_BRANCH"
+  warn "could not fetch origin/${BASE_BRANCH}; using local ${BASE_BRANCH}"
+else
+  die "cannot resolve base branch '${BASE_BRANCH}' (fetch failed and no local/remote ref)"
+fi
+
 # Best-effort fetch of existing push branch so we can reuse it.
 git -C "$REPO_PATH" fetch origin "$BRANCH" --quiet 2>/dev/null || true
 
@@ -439,8 +848,8 @@ elif git -C "$REPO_PATH" rev-parse --verify "refs/heads/${BRANCH}" >/dev/null 2>
   say "  reusing local ${BRANCH}"
   git -C "$REPO_PATH" worktree add -f -B "$BRANCH" "$WORKTREE" "$BRANCH"
 else
-  say "  creating ${BRANCH} from origin/${BASE_BRANCH}"
-  git -C "$REPO_PATH" worktree add -B "$BRANCH" "$WORKTREE" "origin/${BASE_BRANCH}"
+  say "  creating ${BRANCH} from ${BASE_REF}"
+  git -C "$REPO_PATH" worktree add -B "$BRANCH" "$WORKTREE" "$BASE_REF"
 fi
 
 AUTH_DIR="$WORKTREE/tofu/shared/accounts/gcp/$GH_PROFILE"
@@ -458,8 +867,16 @@ auth:
 EOF
 
 # Encrypt in place; .sops.yaml at worktree root is checked out from base.
-(cd "$WORKTREE" && sops -e --input-type yaml --output-type yaml -i \
-  "tofu/shared/accounts/gcp/${GH_PROFILE}/auth.yaml")
+# Public age recipients in .sops.yaml are enough — no private key needed.
+if ! (cd "$WORKTREE" && sops -e --input-type yaml --output-type yaml -i \
+  "tofu/shared/accounts/gcp/${GH_PROFILE}/auth.yaml"); then
+  die "sops encrypt failed — check .sops.yaml age recipients and sops version"
+fi
+# Sanity: encrypted file must not still contain plaintext project id as a bare value
+# under a non-sops structure. Presence of sops: metadata is the reliable signal.
+if ! grep -q '^sops:' "$AUTH_FILE"; then
+  die "auth.yaml does not look SOPS-encrypted after sops -e (missing sops: key)"
+fi
 say "wrote encrypted $AUTH_FILE"
 
 # Idempotent accounts.yaml edit under gcp:
@@ -539,33 +956,14 @@ else
   say "committed on $BRANCH"
 fi
 
-if [[ "$NO_PUSH" = "true" ]]; then
-  say "branch '$BRANCH' ready locally at $WORKTREE — skipping push (--no-push)"
-  say "  (worktree will be removed; branch ref remains in $REPO_PATH)"
-else
-  push_url=""
-  if token=$(github_token 2>/dev/null); then
-    push_url="https://x-access-token:${token}@github.com/${GITHUB_REPO}.git"
-  fi
-  if [[ -n "$push_url" ]]; then
-    git push "$push_url" "HEAD:refs/heads/${BRANCH}" --force-with-lease
-  else
-    git push -u origin "HEAD:refs/heads/${BRANCH}"
-  fi
-  say "pushed origin/${BRANCH}"
+OPEN_URL=$(compare_pr_url "$BASE_BRANCH" "$BRANCH")
+PR_HEAD="$BRANCH"   # may become "user:branch" when pushing via fork
+PUSH_OK="false"
+TOKEN=""
+TOKEN=$(github_token 2>/dev/null || true)
 
-  if [[ "$NO_PR" = "true" ]]; then
-    say "skipping PR (--no-pr)"
-    origin=$(git -C "$REPO_PATH" config --get remote.origin.url || true)
-    slug=$(printf '%s' "$origin" | sed -E 's#.*[/:]([^/]+/[^/]+)\.git$#\1#; t; s#.*[/:]([^/]+/[^/]+)$#\1#')
-    slug="${slug:-$GITHUB_REPO}"
-    say "OPEN: https://github.com/${slug}/compare/${BASE_BRANCH}...${BRANCH}?expand=1"
-  else
-    if ! github_token >/dev/null 2>&1; then
-      warn "no GITHUB_TOKEN/GH_TOKEN — cannot open PR via API"
-      say "OPEN: https://github.com/${GITHUB_REPO}/compare/${BASE_BRANCH}...${BRANCH}?expand=1"
-    else
-      pr_body=$(cat <<EOF
+pr_body_text() {
+  cat <<EOF
 ## Onboard GCP account \`${GH_PROFILE}\`
 
 Adds SOPS-encrypted WIF auth and registers the account under \`gcp:\` in \`accounts.yaml\`.
@@ -577,17 +975,110 @@ Adds SOPS-encrypted WIF auth and registers the account under \`gcp:\` in \`accou
 | vpc_cidr | \`${VPC_CIDR}\` |
 | service_account | \`${SA_EMAIL}\` |
 | workload_identity_provider | \`${WIF_PROVIDER_RESOURCE}\` |
+| monthly budget | USD \`${BUDGET_AMOUNT}\` (\`${BUDGET_NAME}\`) |
 
 After merge, \`onboard-gcp\` runs \`cluster-provision\` (mode=full, no wipe).
 OpenTofu seeds default Spot capacity (2×e2-standard-2 / 8 GiB) when inventory is empty.
 EOF
-)
-      github_create_pr \
-        "onboard gcp ${GH_PROFILE}" \
-        "$BRANCH" \
-        "$BASE_BRANCH" \
-        "$pr_body" || true
+}
+
+print_token_help() {
+  cat >&2 <<EOF
+
+GCP side is complete (WIF, SA, roles, bucket, budget). Git push was skipped
+because this run is non-interactive and no GitHub credentials were available.
+
+To finish (push branch + open PR), set a token and re-run the same command:
+
+  export GITHUB_TOKEN=ghp_xxxxxxxx   # classic PAT: repo scope
+  # or fine-grained: Contents (R/W) + Pull requests on ${GITHUB_REPO}
+  ./bootstrap-gcp-wif.sh --project ${PROJECT} --gh-profile ${GH_PROFILE} --region ${REGION}
+
+Local branch kept at: ${REPO_PATH}  (${BRANCH})
+
+EOF
+}
+
+if [[ "$NO_PUSH" = "true" ]]; then
+  say "branch '$BRANCH' ready locally — skipping push (--no-push)"
+  say "  (worktree will be removed; branch ref remains in $REPO_PATH)"
+  say "OPEN: $OPEN_URL  (after you push)"
+else
+  REFSPEC="HEAD:refs/heads/${BRANCH}"
+  ORIGIN_URL="https://github.com/${GITHUB_REPO}.git"
+
+  if [[ -n "$TOKEN" ]]; then
+    # Token-first: never use interactive credential prompts.
+    say "pushing with GitHub token (non-interactive)"
+    token_url="https://x-access-token:${TOKEN}@github.com/${GITHUB_REPO}.git"
+    if git_push_noninteractive "$token_url" "$REFSPEC"; then
+      PUSH_OK="true"
+      say "pushed origin/${BRANCH}"
+    else
+      warn "push to ${GITHUB_REPO} failed (no write access or token scope?)"
+      head -c 400 /tmp/gcp-git-push.err >&2 || true
+      printf '\n' >&2
+      # Fork + push + cross-repo PR (contributor without upstream write).
+      if fork_full=$(github_ensure_fork "$TOKEN"); then
+        fork_url="https://x-access-token:${TOKEN}@github.com/${fork_full}.git"
+        say "pushing to fork ${fork_full}"
+        if git_push_noninteractive "$fork_url" "$REFSPEC"; then
+          PUSH_OK="true"
+          PR_HEAD="${fork_full%%/*}:${BRANCH}"
+          OPEN_URL="https://github.com/${GITHUB_REPO}/compare/${BASE_BRANCH}...${PR_HEAD}?expand=1"
+          say "pushed ${fork_full}/${BRANCH}"
+        else
+          warn "fork push failed:"
+          head -c 400 /tmp/gcp-git-push.err >&2 || true
+          printf '\n' >&2
+        fi
+      fi
     fi
+  else
+    # No token: one non-interactive attempt (SSH key / cached helper only).
+    say "no GITHUB_TOKEN/GH_TOKEN/gh — attempting non-interactive git push"
+    if git_push_noninteractive "$ORIGIN_URL" "$REFSPEC" \
+        || git_push_noninteractive "origin" "$REFSPEC"; then
+      PUSH_OK="true"
+      say "pushed origin/${BRANCH}"
+    else
+      warn "git push failed without credentials (non-interactive; will not prompt)"
+      head -c 200 /tmp/gcp-git-push.err >&2 || true
+      printf '\n' >&2
+    fi
+  fi
+
+  if [[ "$PUSH_OK" != "true" ]]; then
+    print_token_help
+    say "Done (GCP only)."
+    say "  project:  $PROJECT ($PROJECT_NUMBER)"
+    say "  SA:       $SA_EMAIL"
+    say "  WIF:      $WIF_PROVIDER_RESOURCE"
+    say "  account:  $GH_PROFILE"
+    say "  branch:   $BRANCH (local only — not on GitHub yet)"
+    say "  region:   $REGION"
+    [[ -n "$BUDGET_ID" ]] && say "  budget:   $BUDGET_ID (USD ${BUDGET_AMOUNT}/mo → $BUDGET_NAME)"
+    # Exit 0: GCP bootstrap succeeded; git is a follow-up with a token.
+    exit 0
+  fi
+
+  if [[ "$NO_PR" = "true" ]]; then
+    say "skipping PR API (--no-pr)"
+    say "OPEN: $OPEN_URL"
+  elif [[ -z "$TOKEN" ]]; then
+    say "pushed without token — open the PR in the browser:"
+    say "OPEN: $OPEN_URL"
+  else
+    if pr_url=$(github_create_pr \
+      "onboard gcp ${GH_PROFILE}" \
+      "$PR_HEAD" \
+      "$BASE_BRANCH" \
+      "$(pr_body_text)"); then
+      [[ -n "$pr_url" ]] && OPEN_URL="$pr_url"
+    else
+      warn "PR API failed — open manually"
+    fi
+    say "OPEN: $OPEN_URL"
   fi
 fi
 
@@ -598,3 +1089,6 @@ say "  SA:       $SA_EMAIL"
 say "  WIF:      $WIF_PROVIDER_RESOURCE"
 say "  account:  $GH_PROFILE"
 say "  branch:   $BRANCH"
+say "  region:   $REGION"
+[[ -n "$BUDGET_ID" ]] && say "  budget:   $BUDGET_ID (USD ${BUDGET_AMOUNT}/mo → $BUDGET_NAME)"
+say "  OPEN:     $OPEN_URL"

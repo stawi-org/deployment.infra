@@ -35,7 +35,11 @@ module "oracle_nodes_writer" {
                 ipv6                   = node.ipv6
                 image_apply_generation = try(module.oracle_account[each.key].nodes[node_key].image_apply_generation, node.id)
                 status                 = "running"
-                discovered_at          = timestamp()
+                # Preserve prior stamp so R2 nodes.yaml is not rewritten every plan.
+                discovered_at = try(
+                  module.oracle_account_state[each.key].nodes.nodes[node_key].provider_data.discovered_at,
+                  timestamp(),
+                )
               },
             )
           },

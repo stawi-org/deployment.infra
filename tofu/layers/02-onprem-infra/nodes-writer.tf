@@ -25,8 +25,12 @@ module "onprem_nodes_writer" {
             provider_data = merge(
               try(node.provider_data, {}),
               {
-                status        = "declared"
-                discovered_at = timestamp()
+                status = "declared"
+                # Preserve prior stamp so R2 nodes.yaml is not rewritten every plan.
+                discovered_at = try(
+                  module.onprem_account_state[each.key].nodes.nodes[node_key].provider_data.discovered_at,
+                  timestamp(),
+                )
               },
             )
           },
