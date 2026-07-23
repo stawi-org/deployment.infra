@@ -164,20 +164,14 @@ patches:
             - fd00:10:96::/108
             - 10.96.0.0/12
           # MTU note: pod traffic crosses KubeSpan WireGuard tunnels
-          # cluster-wide. WG MTU is 1420; Flannel's VXLAN backend
-          # adds 50 bytes, so pod MTU must be ≤ 1370 to avoid
-          # cross-node TCP/TLS handshake blackhole on cert-chain
-          # replies. Tried `cni.flannel.extraArgs: [--iface=kubespan]`
-          # to make Flannel auto-detect MTU from WG, but the
-          # KubeSpan iface is IPv6-only and Flannel's --iface
-          # mandates an IPv4 address ("Could not find valid
-          # interface matching kubespan: failed to find IPv4 address
-          # for interface kubespan"). Instead, we patch kube-flannel-
-          # cfg's net-conf.json with `Backend.MTU: 1370` via Flux
-          # (deployment.manifests/providers/network/), which Flannel
-          # honors and propagates as FLANNEL_MTU=1320 to every pod
-          # veth pair. Verified: pod eth0 MTU drops 8950 → 1320,
-          # cross-node TLS handshake succeeds.
+          # cluster-wide. KubeSpan MTU is 1380 (see kubespan patch);
+          # Flannel VXLAN adds ~50 bytes, so Backend.MTU must stay
+          # ≤ ~1330 to avoid cross-node TCP/TLS blackholes. Flux
+          # patches kube-flannel-cfg net-conf.json (deployment.manifest
+          # providers/network/) to Backend.MTU 1320–1370 and propagates
+          # FLANNEL_MTU to pod veths. Keep Flux MTU ≤ KubeSpan MTU − 50.
+          # Tried `cni.flannel.extraArgs: [--iface=kubespan]` but
+          # KubeSpan is IPv6-only and Flannel --iface needs IPv4.
       # Kubelet needs `--node-ip` to include both v4 and v6 so each
       # node reports both InternalIPs and gets a v6 podCIDR. Without
       # this, kubelet auto-detects only the primary v4 address and
@@ -231,6 +225,18 @@ patches:
   # accept anyway, and the NDP tuning matches Linux defaults from the
   # OCI side). Avoids needing a per-machine ConfigPatch + Omni
   # selector machinery for what's strictly tuning.
+  # Throughput-first multi-site mesh: large BDP windows + BBR so
+  # Contabo↔OCI↔GCP goodput stays high under WAN RTT/loss. Keep in
+  # sync with tofu/shared/patches/common.yaml (Omni applies THIS file).
+  - name: machine-kernel-throughput
+    inline:
+      machine:
+        kernel:
+          modules:
+            - name: nf_conntrack
+            - name: br_netfilter
+            - name: ipv6
+            - name: tcp_bbr
   - name: machine-tuning
     inline:
       machine:
@@ -238,31 +244,33 @@ patches:
           # File descriptors — chart sidecars + flannel + kube-proxy
           # collectively open many fds.
           fs.file-max: "2000000"
-          # Balanced backlogs for moderate ingress.
+          # High connection + packet rates across multi-site mesh.
           net.core.somaxconn: "262144"
-          net.core.netdev_max_backlog: "131072"
+          net.core.netdev_max_backlog: "250000"
           net.ipv4.tcp_max_syn_backlog: "131072"
-          # Socket buffers tuned to handle bulk transfers (image pulls,
-          # etcd snapshots, flannel VXLAN payloads).
-          net.core.rmem_default: "8388608"
-          net.core.wmem_default: "8388608"
-          net.core.rmem_max: "67108864"
-          net.core.wmem_max: "67108864"
-          net.ipv4.tcp_rmem: "4096 87380 67108864"
-          net.ipv4.tcp_wmem: "4096 65536 67108864"
+          # WAN BDP: Contabo↔OCI↔GCP bulk + many parallel streams.
+          net.core.rmem_default: "16777216"
+          net.core.wmem_default: "16777216"
+          net.core.rmem_max: "134217728"
+          net.core.wmem_max: "134217728"
+          net.ipv4.tcp_rmem: "4096 131072 134217728"
+          net.ipv4.tcp_wmem: "4096 131072 134217728"
+          # Fair Queue + BBR — loss-tolerant multi-cloud WireGuard.
+          net.core.default_qdisc: "fq"
+          net.ipv4.tcp_congestion_control: "bbr"
           # Conntrack — Service IP DNAT path.
           net.netfilter.nf_conntrack_max: "1048576"
           net.netfilter.nf_conntrack_tcp_timeout_established: "86400"
-          # TCP behaviour.
+          # TCP behaviour — keep pipes full after idle.
           net.ipv4.tcp_fin_timeout: "15"
           net.ipv4.tcp_tw_reuse: "0"
           net.ipv4.tcp_slow_start_after_idle: "0"
+          net.ipv4.tcp_mtu_probing: "1"
           # Keepalive (safe for both v4/v6).
           net.ipv4.tcp_keepalive_time: "300"
           net.ipv4.tcp_keepalive_intvl: "30"
           net.ipv4.tcp_keepalive_probes: "5"
-          # IPv6 — fully enabled and tuned for dual-stack. The block
-          # below mirrors antinvestor/deployments common.yaml exactly.
+          # IPv6 — fully enabled and tuned for dual-stack.
           net.bridge.bridge-nf-call-iptables: "1"
           net.bridge.bridge-nf-call-ip6tables: "1"
           net.ipv6.conf.all.disable_ipv6: "0"
@@ -271,13 +279,10 @@ patches:
           net.ipv6.conf.default.forwarding: "1"
           net.ipv6.conf.all.accept_ra: "2"
           net.ipv6.conf.default.accept_ra: "2"
-          # ICMPv6 ratelimit + DAD enabled for proper RFC4861 NDP.
           net.ipv6.icmp.ratelimit: "1000"
           net.ipv6.conf.all.accept_dad: "1"
           net.ipv6.conf.default.accept_dad: "1"
-          # NDP cache tuning for Contabo's `fe80::1` link-local
-          # gateway — Ansible's roles found these necessary or the v6
-          # default route flapped under load.
+          # NDP cache tuning for Contabo's `fe80::1` link-local gateway.
           net.ipv6.neigh.default.base_reachable_time_ms: "120000"
           net.ipv6.neigh.default.gc_stale_time: "240"
           net.ipv6.neigh.default.delay_first_probe_time: "10"
@@ -343,12 +348,19 @@ patches:
   # needed if a node's machineconfig was previously rejected and
   # held in a half-applied state — recover via contabo-reboot-vps
   # or `omnictl machine reboot`.
+  # Keep in sync with tofu/shared/patches/kubespan.yaml — Omni applies THIS.
   - name: kubespan
     inline:
       machine:
         network:
           kubespan:
             enabled: true
+            # false: never steal default route (blackhole history).
+            advertiseKubernetesNetworks: false
+            # Under path MTU 1500; avoids WG+VXLAN fragmentation that
+            # collapses multi-cloud goodput.
+            mtu: 1380
+            allowDownPeerBypass: true
       cluster:
         discovery:
           enabled: true

@@ -13,6 +13,9 @@
 # form is still accepted by v1.13.0 (deprecation, not removal),
 # and works in both maintenance-mode and running-mode parsers.
 #
+# LIVE APPLY PATH: Omni cluster template tofu/shared/clusters/main.yaml
+# (patch name: kubespan). Keep this file aligned when changing MTU/flags.
+#
 # KubeSpan: throughput-oriented WireGuard mesh across every provider.
 # Contabo / OCI / GCP / on-prem peer via discovery.talos.dev — no
 # per-provider VPN. Design goal: high aggregate goodput *regardless of

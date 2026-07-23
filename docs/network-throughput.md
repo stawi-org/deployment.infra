@@ -28,6 +28,12 @@ Pod → Flannel (pod overlay) → node public path
 
 ## Throughput-oriented infrastructure (this repo)
 
+**Applied path:** Omni cluster template
+`tofu/shared/clusters/main.yaml` (patches `machine-kernel-throughput`,
+`machine-tuning`, `kubespan`). Shared files under `tofu/shared/patches/`
+mirror the same settings for review; **Omni does not load those files
+directly** — edit `main.yaml` when changing live cluster knobs.
+
 | Knob | Setting | Why |
 |---|---|---|
 | KubeSpan | enabled, full mesh | Seamless interconnect without per-cloud VPNs |
@@ -35,13 +41,24 @@ Pod → Flannel (pod overlay) → node public path
 | KubeSpan **MTU 1380** | under path 1500 | Avoid fragmentation (kills throughput more than size) |
 | `allowDownPeerBypass` | **true** | Survive partial peer/discovery failures |
 | Flannel public-ip-overwrite | OCI + GCP | Correct underlays under 1:1 NAT |
+| Flannel Backend.MTU | ≤1320–1370 via Flux | Must stay under KubeSpan MTU − VXLAN overhead |
 | UDP **51820** / **4789** | open | WireGuard + VXLAN between sites |
-| TCP **BBR** + **fq** | machine sysctls | High BDP multi-cloud (loss-tolerant vs cubic) |
+| TCP **BBR** + **fq** | machine sysctls + `tcp_bbr` module | High BDP multi-cloud (loss-tolerant vs cubic) |
 | Large TCP windows | up to 128 MiB | Fill pipes Contabo↔OCI↔GCP |
 | `tcp_mtu_probing` | 1 | Adapt if path MTU is lower |
 | `tcp_slow_start_after_idle` | 0 | Keep long-lived streams hot |
-| Topology + `latency-domain` labels | on all nodes | Optional affinity only |
-| Omni twin hygiene | post-apply | Ghost machines must not clog the mesh |
+| Topology + `latency-domain` labels | Contabo/OCI/GCP/on-prem | Optional affinity only |
+| Omni twin hygiene | post-`tofu-apply` | Ghost machines must not clog the mesh |
+
+### Apply path (idempotent)
+
+```text
+merge main → sync-cluster-template (main.yaml patches)
+          → tofu-apply 02-* / 03-talos (labels + per-node patches)
+          → omni-hygiene (dead twins + pins)
+```
+
+Re-running template sync or apply is a no-op when already in sync.
 
 ## What “robust high throughput” means in practice
 

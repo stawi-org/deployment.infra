@@ -9,8 +9,11 @@ machine:
     # archive's image_metadata.json forces bootVolumeType =
     # PARAVIRTUALIZED (see modules/oracle-account-infra/image.tf).
     disk: /dev/sda
+  # LIVE APPLY PATH: Omni cluster template tofu/shared/clusters/main.yaml
+  # (patches machine-kernel-throughput + machine-tuning). Keep this file
+  # aligned when changing sysctls/modules.
   # Note: KubeSpan is configured via inline machine.network.kubespan in
-  # kubespan.yaml (legacy form, kept because v1.13 oracle-arm64
+  # kubespan.yaml / main.yaml (legacy form, kept because v1.13 oracle-arm64
   # maintenance-mode parsers don't recognize the KubeSpanConfig kind).
   # Note: DNS nameservers are configured via ResolverConfig (resolvers.yaml)
   # Note: NTP servers are configured via TimeSyncConfig (timesync.yaml)
