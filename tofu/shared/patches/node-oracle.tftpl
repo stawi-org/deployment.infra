@@ -37,5 +37,6 @@ machine:
 ---
 apiVersion: v1alpha1
 kind: HostnameConfig
+# Talos ≥1.13 rejects `auto` when `hostname` is set ("cannot be set at
+# the same time"). Explicit hostname alone pins the name.
 hostname: ${hostname}
-auto: off

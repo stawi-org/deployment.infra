@@ -67,6 +67,20 @@ aws s3 sync "s3://cluster-tofu-state/${R2_PREFIX}/" "$workdir/" \
   --no-progress \
   >/dev/null
 
+# Fail loud when inventory expects patches but this versioned R2 prefix
+# is empty. After a Talos version bump or cluster-clean-slate of
+# production/per-node-patches/, layer 03 must re-apply to re-render
+# under production/per-node-patches/<talos_version>/. Without this
+# guard the step used to exit green with applied=0 skipped=N and leave
+# Kubernetes nodes without node.stawi.org/* labels (CNPG/affinity
+# mass-Pending) and Contabo stuck on platform vmi* hostnames.
+inventory_count=$(jq -r 'length' "$NODES_JSON")
+r2_patch_count_pre=$(find "$workdir" -maxdepth 1 -type f -name '*.yaml' | wc -l | tr -d ' ')
+if (( inventory_count > 0 && r2_patch_count_pre == 0 )); then
+  echo "[apply-per-node-patches] ERROR: R2 prefix s3://cluster-tofu-state/${R2_PREFIX}/ has 0 patch files but NODES_JSON has ${inventory_count} inventory node(s). Re-apply tofu layer 03-talos so per-node-patches.tf uploads under this talos_version, then re-run sync-cluster-template." >&2
+  exit 1
+fi
+
 # Fetch Omni machine inventory once. Same NDJSON-then-flatten dance
 # as sync-machine-label.sh — omnictl can transiently emit non-JSON
 # (e.g. partial output during the hourly omni-backup snapshot), so
