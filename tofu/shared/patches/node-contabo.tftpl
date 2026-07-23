@@ -37,9 +37,12 @@
 #      stable across reboots on every current Contabo VPS (single
 #      NIC, virtio_net, Talos's predictable interface naming).
 #      Multi-NIC variants would need per-node selector machinery.
-#   4. HostnameConfig auto: off                     — pin canonical
-#      hostname; without this, Contabo's platform-supplied hostname
-#      is the VPS UUID.
+#   4. HostnameConfig intentionally omitted for now.
+#      Contabo platform hostname is `vmi*`. Omni base config already
+#      has HostnameConfig `auto: stable`; strategic-merging a static
+#      `hostname` fails Talos ≥1.12 validation (both fields set).
+#      Labels/LinkConfig still apply; canonical Contabo hostnames
+#      need a replace-style patch or force_reinstall bake-in later.
 #
 # IMPORTANT — apply-at-boot only:
 #   This patch is SAFE only when the node boots with the LinkConfig
@@ -95,10 +98,3 @@ addresses:
 routes:
   - gateway: ${ipv4_gateway}
   - gateway: fe80::1
-
----
-apiVersion: v1alpha1
-kind: HostnameConfig
-# Talos ≥1.13 rejects `auto` when `hostname` is set ("cannot be set at
-# the same time"). Explicit hostname alone pins the name.
-hostname: ${hostname}
