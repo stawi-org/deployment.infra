@@ -127,7 +127,7 @@ The structure is:
 - `contabo/<account>.yaml`: Contabo credentials plus grouped node inventory.
 - `oci/<account>.yaml`: OCI auth, tenancy, network, and node inventory.
 - `onprem/<location>.yaml`: Physical-site inventory and optional hints.
-- `gcp/<account>/nodes.yaml` (R2): GCE workers only; default pack is two Spot `e2-medium` VMs after onboard.
+- `gcp/<account>/nodes.yaml` (R2): GCE workers only; default pack is two Spot `e2-standard-2` (8 GiB) VMs after onboard.
 
 Contabo node names and OCI node names must remain RFC 1123-safe and unique
 within the cluster. The inventory compiler uses the account and node keys to

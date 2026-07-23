@@ -10,7 +10,7 @@ Lifecycle, idempotency, and ghost prevention: **[docs/gcp-lifecycle.md](gcp-life
 | Concern | Owner |
 |---|---|
 | WIF pool / SA / encrypted auth | `scripts/bootstrap-gcp-wif.sh` (once per project) |
-| Default capacity (2× Spot `e2-medium`) | OpenTofu `gcp-account-infra` when R2 nodes are empty |
+| Default capacity (2× Spot `e2-standard-2`, 8 GiB) | OpenTofu `gcp-account-infra` when R2 nodes are empty |
 | Custom size / zone / count | R2 `production/inventory/gcp/<account>/nodes.yaml` |
 | Omni-aware image bytes | `sync-talos-images` (idempotent; weekly + onboard) |
 | Boot which image | OpenTofu: catalog `self_link` or family `stawi-talos` |

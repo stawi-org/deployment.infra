@@ -6,7 +6,8 @@
 # apply uses that map as-is and the nodes-writer persists it.
 
 locals {
-  default_machine_type = "e2-medium"
+  # e2-standard-2 = 2 vCPU / 8 GiB (e2-medium is only 4 GiB).
+  default_machine_type = "e2-standard-2"
   default_boot_disk_gb = 50
   default_node_count   = 2
   default_zone         = "${var.region}-b"

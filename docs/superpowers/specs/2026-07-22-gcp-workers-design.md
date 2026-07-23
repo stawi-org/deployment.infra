@@ -361,7 +361,7 @@ Suggested PR sequence (can be adjusted in the implementation plan):
 | External IP / Flannel public-ip mismatch | `node-gcp.tftpl` annotations; mirror OCI patch lessons |
 | CIDR collision with existing VCNs | Document map; require unique `vpc_cidr` per project |
 | WIF misconfiguration locks CI out | Bootstrap is idempotent; document `gcloud` re-run; keep plan/apply error messages pointing at auth.yaml fields |
-| Cost runaway | Optional budget alert; seed two Spot `e2-medium` only; no auto-scale in v1 |
+| Cost runaway | Optional budget alert; seed two Spot `e2-standard-2` only; no auto-scale in v1 |
 | Spot preemption churn | Expected; tofu recreates; label Spot nodes so operators avoid stateful single-replicas |
 | Scope creep into CP-on-GCP | Hard-fail non-worker roles in module + seed validators |
 
@@ -377,7 +377,7 @@ Suggested PR sequence (can be adjusted in the implementation plan):
 | Question | Decision |
 |---|---|
 | Capacity type | Paid Spot/preemptible GCE workers |
-| Default pack | 2 Spot `e2-medium` workers per empty account |
+| Default pack | 2 Spot `e2-standard-2` (8 GiB) workers per empty account |
 | Auth | Workload Identity Federation |
 | Multi-project | Yes, with OCI-like bootstrap PR + onboard workflow |
 | Roles | Workers only |

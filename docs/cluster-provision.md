@@ -26,8 +26,8 @@ capacity policy in ad-hoc scripts.
 - **New nodes** boot the current resolved image.
 - **Existing nodes** do not reimage when the catalog changes (GCP/OCI
   `ignore_changes` on boot disks). Upgrade Talos via Omni in place.
-- **GCP empty inventory** → module seeds two Spot `e2-medium` workers and
-  writes them to R2 on apply (no Python seed job).
+- **GCP empty inventory** → module seeds two Spot `e2-standard-2` (8 GiB)
+  workers and writes them to R2 on apply (no Python seed job).
 
 ```bash
 # Day-2 scale / repair

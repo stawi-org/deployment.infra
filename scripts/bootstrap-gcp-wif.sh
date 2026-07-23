@@ -578,7 +578,8 @@ Adds SOPS-encrypted WIF auth and registers the account under \`gcp:\` in \`accou
 | service_account | \`${SA_EMAIL}\` |
 | workload_identity_provider | \`${WIF_PROVIDER_RESOURCE}\` |
 
-After merge, \`onboard-gcp\` seeds default Spot capacity (2×e2-medium) and runs \`cluster-provision\` (mode=full, no wipe).
+After merge, \`onboard-gcp\` runs \`cluster-provision\` (mode=full, no wipe).
+OpenTofu seeds default Spot capacity (2×e2-standard-2 / 8 GiB) when inventory is empty.
 EOF
 )
       github_create_pr \
