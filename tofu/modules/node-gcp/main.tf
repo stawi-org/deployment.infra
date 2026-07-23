@@ -116,11 +116,17 @@ locals {
 
   derived_labels = merge(
     {
-      "node.stawi.org/provider" = "gcp"
-      "node.stawi.org/account"  = var.account_key
-      "node.stawi.org/role"     = var.role
-      "node.stawi.org/name"     = var.name
-      "node.stawi.org/spot"     = var.preemptible ? "true" : "false"
+      # Standard topology keys enable topology-aware routing / hints and
+      # affinity so hot paths stay in-region (sub-10ms) instead of WAN.
+      "topology.kubernetes.io/region" = var.region
+      "topology.kubernetes.io/zone"   = var.zone
+      "node.stawi.org/provider"       = "gcp"
+      "node.stawi.org/account"        = var.account_key
+      "node.stawi.org/role"           = var.role
+      "node.stawi.org/name"           = var.name
+      "node.stawi.org/spot"           = var.preemptible ? "true" : "false"
+      # Latency domain for affinity: co-locate chatty pods (see docs/network-latency.md).
+      "node.stawi.org/latency-domain" = "gcp-${var.region}"
       # Databases stay on OCI (and Contabo) — GCP Spot is general workload only.
       "node.stawi.org/db-eligible" = "false"
     },

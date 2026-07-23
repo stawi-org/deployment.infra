@@ -119,6 +119,7 @@ locals {
       "node.stawi.org/account"        = var.account_key
       "node.stawi.org/role"           = var.role
       "node.stawi.org/name"           = var.name
+      "node.stawi.org/latency-domain" = "contabo-${lower(var.region)}"
     },
     # Only the CP role label is set here. The kubelet's system:node:<name>
     # identity is forbidden by NodeRestriction admission from setting

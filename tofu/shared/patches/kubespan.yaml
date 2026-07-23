@@ -37,3 +37,11 @@ machine:
       # Pinned explicitly so a future operator reading this knows
       # the past-incident reason without having to grep history.
       advertiseKubernetesNetworks: false
+      # Multi-cloud WireGuard: leave headroom under typical path MTU
+      # (1500) for WG + possible ISP PPPoE so pods don't fragment on
+      # Contabo↔OCI↔GCP paths. 1380 is the common KubeSpan default for
+      # internet meshes; raising above path MTU causes silent loss.
+      mtu: 1380
+      # Prefer direct peer endpoints when discovery finds them (faster
+      # than hairpinning through an unreachable intermediate).
+      allowDownPeerBypass: true

@@ -56,6 +56,19 @@ For provider-level survivability, the preferred next architecture is multiple Ta
 - GCP workers are IPv4-first in v1 (VPC dual-stack / IPv6 is a follow-up).
 - On-prem inventory records site IPv4/IPv6 CIDRs when known, but individual node IPs are optional last-known hints. The physical network remains responsible for router advertisements, DHCPv6, DNS, firewall policy, and address churn.
 
+## Latency and multi-site mesh
+
+All providers join one cluster via **KubeSpan** (WireGuard) + Flannel. That is
+**seamless** connectivity, not equal latency.
+
+- Hot path (API + DB): co-locate in one **`node.stawi.org/latency-domain`**
+  (typically `oci-eu-frankfurt-1`). Target **sub‑10 ms** for those requests.
+- GCP Paris Spot: elastic workers; **`db-eligible=false`**; not for primary DB.
+- Cross-site RTT (Paris↔Frankfurt, Contabo↔OCI) often **exceeds 10 ms** by
+  physics alone—design those hops out of the critical path.
+
+Full strategy: [docs/network-latency.md](network-latency.md).
+
 ## Sensitive Artifacts
 
 Talos machine configs and `talosconfig` are sensitive. The `publish-talos-configs` workflow encrypts the bundle with age to the dispatching user's GitHub SSH public keys before uploading the artifact.

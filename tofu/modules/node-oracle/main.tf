@@ -158,6 +158,8 @@ locals {
       "node.stawi.org/account"        = var.account_key
       "node.stawi.org/role"           = var.role
       "node.stawi.org/name"           = var.name
+      # Co-locate chatty workloads (API + DB) within this domain.
+      "node.stawi.org/latency-domain" = "oci-${var.region}"
     },
     # See node-contabo/main.tf for why the worker side is empty: kubelet's
     # system:node:<name> identity is forbidden by NodeRestriction from
