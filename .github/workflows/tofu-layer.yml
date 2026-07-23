@@ -221,13 +221,32 @@ jobs:
       # GCP WIF: decrypt repo-resident auth.yaml for the matrix account,
       # then exchange the GitHub OIDC token for a short-lived SA token via
       # google-github-actions/auth. No long-lived GCP keys in secrets.
+      - name: Detect omni-host GCP substrate
+        id: omni_gcp
+        if: inputs.layer == '00-omni-server'
+        run: |
+          set -euo pipefail
+          # Only require GCP WIF when tfvars selects the GCP substrate.
+          provider=$(grep -E '^\s*omni_host_provider\s*=' tofu/layers/00-omni-server/terraform.tfvars \
+            | head -1 | sed -E 's/.*=\s*"?([^"#]+)"?.*/\1/' | tr -d '[:space:]' || true)
+          echo "provider=${provider:-}"
+          if [[ "${provider}" == "gcp" ]]; then
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+            acct=$(grep -E '^\s*omni_host_gcp_account\s*=' tofu/layers/00-omni-server/terraform.tfvars \
+              | head -1 | sed -E 's/.*=\s*"?([^"#]+)"?.*/\1/' | tr -d '[:space:]' || true)
+            echo "account=${acct:-stawi-timber}" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "account=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Stage GCP auth from repo
         id: gcp_auth
-        # 02-gcp-infra: per-matrix account. 00-omni-server: fixed Omni host account (stawi-timber).
-        if: inputs.layer == '02-gcp-infra' || inputs.layer == '00-omni-server'
+        # 02-gcp-infra: per-matrix account. 00-omni-server: only when omni_host_provider=gcp.
+        if: inputs.layer == '02-gcp-infra' || (inputs.layer == '00-omni-server' && steps.omni_gcp.outputs.needed == 'true')
         env:
           SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
-          ACCOUNT:      ${{ inputs.layer == '00-omni-server' && 'stawi-timber' || inputs.account }}
+          ACCOUNT:      ${{ inputs.layer == '00-omni-server' && steps.omni_gcp.outputs.account || inputs.account }}
         run: |
           set -euo pipefail
           if [[ -z "${ACCOUNT}" ]]; then
@@ -287,7 +306,7 @@ jobs:
           PY
 
       - name: Authenticate to Google Cloud (WIF)
-        if: inputs.layer == '02-gcp-infra' || inputs.layer == '00-omni-server'
+        if: inputs.layer == '02-gcp-infra' || (inputs.layer == '00-omni-server' && steps.omni_gcp.outputs.needed == 'true')
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ steps.gcp_auth.outputs.workload_identity_provider }}
