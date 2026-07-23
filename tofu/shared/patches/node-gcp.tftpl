@@ -2,9 +2,16 @@
 # tofu/shared/patches/node-gcp.tftpl
 #
 # Per-GCP-node Talos patch. GCP platform driver handles addresses
-# from instance metadata; we pin labels/annotations and hostname.
+# from instance metadata; we pin labels/annotations only.
 # Flannel public-ip-overwrite is set via derived_annotations when
 # an external IPv4 is present (see node-gcp module).
+#
+# HostnameConfig is intentionally omitted: Omni's base machine
+# config already carries HostnameConfig with `auto: stable`, and
+# Talos configpatcher strategic-merges our document into that one
+# so both `auto` and `hostname` end up set — rejected on Talos
+# ≥1.12 ("cannot be set at the same time"). GCP already reports
+# the inventory hostname via the platform driver.
 
 machine:
   nodeLabels:
@@ -15,8 +22,3 @@ machine:
 %{ for k, v in node_annotations ~}
     ${k}: "${v}"
 %{ endfor ~}
-
----
-apiVersion: v1alpha1
-kind: HostnameConfig
-hostname: ${hostname}
