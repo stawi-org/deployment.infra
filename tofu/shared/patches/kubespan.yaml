@@ -13,9 +13,11 @@
 # form is still accepted by v1.13.0 (deprecation, not removal),
 # and works in both maintenance-mode and running-mode parsers.
 #
-# KubeSpan: WireGuard mesh for low-ops cross-provider connectivity.
-# Contabo public, OCI public, on-prem behind NAT — all peer up via
-# discovery.talos.dev without per-provider VPN wiring.
+# KubeSpan: throughput-oriented WireGuard mesh across every provider.
+# Contabo / OCI / GCP / on-prem peer via discovery.talos.dev — no
+# per-provider VPN. Design goal: high aggregate goodput *regardless of
+# locality* (see docs/network-throughput.md). Latency co-location is
+# optional; the mesh must stay full-mesh and loss-resistant.
 #
 # Past blackhole incident (documented so we don't regress): on a
 # bootstrap node with no reachable peers yet, Talos installed a
@@ -37,11 +39,10 @@ machine:
       # Pinned explicitly so a future operator reading this knows
       # the past-incident reason without having to grep history.
       advertiseKubernetesNetworks: false
-      # Multi-cloud WireGuard: leave headroom under typical path MTU
-      # (1500) for WG + possible ISP PPPoE so pods don't fragment on
-      # Contabo↔OCI↔GCP paths. 1380 is the common KubeSpan default for
-      # internet meshes; raising above path MTU causes silent loss.
+      # Multi-cloud: slightly under 1420 so WG + Flannel/VXLAN + path
+      # MTU quirks do not fragment. Loss from oversize MTU destroys
+      # throughput far more than a few smaller packets.
       mtu: 1380
-      # Prefer direct peer endpoints when discovery finds them (faster
-      # than hairpinning through an unreachable intermediate).
+      # If a peer is down on the mesh, allow non-mesh routes to still
+      # work (robustness when discovery is partial).
       allowDownPeerBypass: true

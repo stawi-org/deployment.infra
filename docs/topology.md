@@ -56,18 +56,19 @@ For provider-level survivability, the preferred next architecture is multiple Ta
 - GCP workers are IPv4-first in v1 (VPC dual-stack / IPv6 is a follow-up).
 - On-prem inventory records site IPv4/IPv6 CIDRs when known, but individual node IPs are optional last-known hints. The physical network remains responsible for router advertisements, DHCPv6, DNS, firewall policy, and address churn.
 
-## Latency and multi-site mesh
+## Multi-site mesh (throughput first)
 
-All providers join one cluster via **KubeSpan** (WireGuard) + Flannel. That is
-**seamless** connectivity, not equal latency.
+All providers join one cluster via **KubeSpan** (WireGuard) + Flannel. Design
+goal: **high sustained throughput and robust any→any connectivity** no matter
+where pods land (Contabo, OCI Frankfurt, GCP Paris, on-prem).
 
-- Hot path (API + DB): co-locate in one **`node.stawi.org/latency-domain`**
-  (typically `oci-eu-frankfurt-1`). Target **sub‑10 ms** for those requests.
-- GCP Paris Spot: elastic workers; **`db-eligible=false`**; not for primary DB.
-- Cross-site RTT (Paris↔Frankfurt, Contabo↔OCI) often **exceeds 10 ms** by
-  physics alone—design those hops out of the critical path.
+- Mesh is full-mesh; BBR + large TCP windows + MTU 1380 favor WAN goodput.
+- Stateful DBs stay on **OCI** for capacity/Spot risk (`db-eligible=false` on GCP),
+  not because the mesh cannot carry remote traffic.
+- Locality labels exist for **optional** affinity only.
 
-Full strategy: [docs/network-latency.md](network-latency.md).
+Primary guide: [docs/network-throughput.md](network-throughput.md).
+Optional co-location: [docs/network-latency.md](network-latency.md).
 
 ## Sensitive Artifacts
 

@@ -38,7 +38,7 @@ Once layer 04 has reconciled, the cluster is self-managing via FluxCD — applic
               +----+-----+----+-----+----------+
                          v
                   Talos nodes + KubeSpan mesh (layer 03)
-                  (locality labels → sub-10ms hot path; see docs/network-latency.md)
+                  (high-throughput multi-site mesh; see docs/network-throughput.md)
                          |
                          v
                   FluxCD (layer 04)
