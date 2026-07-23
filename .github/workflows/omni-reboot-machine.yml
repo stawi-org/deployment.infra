@@ -30,7 +30,7 @@ permissions:
 
 env:
   OMNI_VERSION: v1.9.3
-  TALOS_VERSION: v1.13.0
+  TALOS_VERSION: v1.13.7
 
 jobs:
   reboot:

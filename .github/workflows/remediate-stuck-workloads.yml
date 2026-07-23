@@ -97,18 +97,18 @@ jobs:
             fi
           done
 
-          echo "======== PVC Lost / Pending / Bound-to-missing-PV ========"
-          # After PV delete, PVC often sits Lost/Pending and blocks STS pods.
-          # Post clean-slate rebuild: safe to drop so provisioner recreates.
-          k get pvc -A -o json 2>/dev/null | jq -r --argjson live "$live_json" '
+          echo "======== PVC Lost / Bound-to-missing-PV (not bare Pending) ========"
+          # Bare Pending with empty volumeName is normal while local-path
+          # provisioner works — do NOT delete those (causes STS churn).
+          # Only Lost, or previously-bound PVCs whose phase is no longer Bound.
+          k get pvc -A -o json 2>/dev/null | jq -r '
             .items[]
             | . as $pvc
             | ($pvc.status.phase // "") as $phase
             | ($pvc.spec.volumeName // "") as $vol
             | select(
-                $phase == "Lost" or $phase == "Pending"
-                or ($vol != "" and ($pvc.metadata.annotations["pv.kubernetes.io/bind-completed"] == "yes")
-                    and ($phase != "Bound"))
+                $phase == "Lost"
+                or ($vol != "" and $phase != "Bound")
               )
             | "\($pvc.metadata.namespace)\t\($pvc.metadata.name)\tphase=\($phase)\tvol=\($vol)"
           ' | while IFS=$'\t' read -r ns name rest; do
