@@ -12,12 +12,7 @@ contabo:
       contabo_instance_id: "202727783"
     contabo-bwire-node-2:
       contabo_instance_id: "202727782"
-    # contabo-bwire-node-3 (202727781): historically the Omni Ubuntu host
-    # (00-omni-server). After Omni cutover to GCP (docs/omni-host-gcp.md),
-    # this VPS is reimaged as a Talos worker — enable the entry below and
-    # add the same key under R2 inventory contabo/bwire/nodes.yaml with
-    # role: worker. Until then leave commented so 01-contabo-infra does
-    # not reimage the live Omni host.
-    #
-    # contabo-bwire-node-3:
-    #   contabo_instance_id: "202727781"
+    # contabo-bwire-node-3: former Omni Ubuntu host; now Talos worker
+    # after GCP Omni cutover (docs/omni-host-gcp.md).
+    contabo-bwire-node-3:
+      contabo_instance_id: "202727781"
