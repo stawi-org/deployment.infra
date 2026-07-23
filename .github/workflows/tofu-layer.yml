@@ -221,16 +221,33 @@ jobs:
       # GCP WIF: decrypt repo-resident auth.yaml for the matrix account,
       # then exchange the GitHub OIDC token for a short-lived SA token via
       # google-github-actions/auth. No long-lived GCP keys in secrets.
+      - name: Detect omni-host GCP substrate
+        id: omni_gcp
+        if: inputs.layer == '00-omni-server'
+        run: |
+          set -euo pipefail
+          # Always WIF-auth for 00-omni-server: main.tf declares provider "google"
+          # unconditionally (modules are count-gated). OpenTofu still configures
+          # the provider and requires ADC even when omni_host_provider=contabo|oci.
+          provider=$(grep -E '^\s*omni_host_provider\s*=' tofu/layers/00-omni-server/terraform.tfvars \
+            | head -1 | sed -E 's/.*=\s*"?([^"#]+)"?.*/\1/' | tr -d '[:space:]' || true)
+          acct=$(grep -E '^\s*omni_host_gcp_account\s*=' tofu/layers/00-omni-server/terraform.tfvars \
+            | head -1 | sed -E 's/.*=\s*"?([^"#]+)"?.*/\1/' | tr -d '[:space:]' || true)
+          echo "provider=${provider:-}"
+          echo "needed=true" >> "$GITHUB_OUTPUT"
+          echo "account=${acct:-stawi-timber}" >> "$GITHUB_OUTPUT"
+
       - name: Stage GCP auth from repo
         id: gcp_auth
-        if: inputs.layer == '02-gcp-infra'
+        # 02-gcp-infra: per-matrix account. 00-omni-server: always (google provider always declared).
+        if: inputs.layer == '02-gcp-infra' || (inputs.layer == '00-omni-server' && steps.omni_gcp.outputs.needed == 'true')
         env:
           SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
-          ACCOUNT:      ${{ inputs.account }}
+          ACCOUNT:      ${{ inputs.layer == '00-omni-server' && steps.omni_gcp.outputs.account || inputs.account }}
         run: |
           set -euo pipefail
           if [[ -z "${ACCOUNT}" ]]; then
-            echo "::error::02-gcp-infra requires a non-empty account input (per-account matrix cell)"
+            echo "::error::GCP auth requires a non-empty account (matrix cell or omni host account)"
             exit 1
           fi
           if ! command -v sops >/dev/null 2>&1; then
@@ -286,7 +303,8 @@ jobs:
           PY
 
       - name: Authenticate to Google Cloud (WIF)
-        if: inputs.layer == '02-gcp-infra'
+        # 00-omni-server always needs ADC: provider "google" is always configured.
+        if: inputs.layer == '02-gcp-infra' || (inputs.layer == '00-omni-server' && steps.omni_gcp.outputs.needed == 'true')
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ steps.gcp_auth.outputs.workload_identity_provider }}

@@ -2,11 +2,36 @@ provider "cloudflare" {
   api_token = var.cloudflare_api_token
 }
 
+# Contabo auth from inventory (same source as 01-contabo-infra). Prefer
+# this over TF_VAR CONTABO_* secrets, which drift and caused HTTP 401
+# invalid_grant on omni-host plans while contabo-infra stayed healthy.
+module "contabo_omni_account_state" {
+  count               = var.omni_host_provider == "contabo" ? 1 : 0
+  source              = "../../modules/node-state"
+  provider_name       = "contabo"
+  account             = "bwire"
+  local_inventory_dir = var.local_inventory_dir
+}
+
+locals {
+  contabo_oauth = var.omni_host_provider == "contabo" ? {
+    client_id     = try(module.contabo_omni_account_state[0].auth.auth.oauth2_client_id, var.contabo_client_id)
+    client_secret = try(module.contabo_omni_account_state[0].auth.auth.oauth2_client_secret, var.contabo_client_secret)
+    api_user      = try(module.contabo_omni_account_state[0].auth.auth.oauth2_user, var.contabo_api_user)
+    api_password  = try(module.contabo_omni_account_state[0].auth.auth.oauth2_pass, var.contabo_api_password)
+    } : {
+    client_id     = var.contabo_client_id
+    client_secret = var.contabo_client_secret
+    api_user      = var.contabo_api_user
+    api_password  = var.contabo_api_password
+  }
+}
+
 provider "contabo" {
-  oauth2_client_id     = var.contabo_client_id
-  oauth2_client_secret = var.contabo_client_secret
-  oauth2_user          = var.contabo_api_user
-  oauth2_pass          = var.contabo_api_password
+  oauth2_client_id     = local.contabo_oauth.client_id
+  oauth2_client_secret = local.contabo_oauth.client_secret
+  oauth2_user          = local.contabo_oauth.api_user
+  oauth2_pass          = local.contabo_oauth.api_password
 }
 
 # Latest Ubuntu 24.04 LTS image_id for Contabo's standard VPS pool.
@@ -15,10 +40,10 @@ module "ubuntu_24_04_image_contabo" {
   source = "../../modules/contabo-image-lookup"
 
   name_pattern  = "^ubuntu-24\\.04$"
-  client_id     = var.contabo_client_id
-  client_secret = var.contabo_client_secret
-  api_user      = var.contabo_api_user
-  api_password  = var.contabo_api_password
+  client_id     = local.contabo_oauth.client_id
+  client_secret = local.contabo_oauth.client_secret
+  api_user      = local.contabo_oauth.api_user
+  api_password  = local.contabo_oauth.api_password
 }
 
 # Read bwire OCI auth from R2-backed inventory — same pattern
@@ -157,10 +182,10 @@ module "omni_host_contabo" {
   region                     = var.omni_host_contabo_region
   image_id                   = try(module.ubuntu_24_04_image_contabo[0].image_id, "")
   force_reinstall_generation = var.force_reinstall_generation
-  contabo_client_id          = var.contabo_client_id
-  contabo_client_secret      = var.contabo_client_secret
-  contabo_api_user           = var.contabo_api_user
-  contabo_api_password       = var.contabo_api_password
+  contabo_client_id          = local.contabo_oauth.client_id
+  contabo_client_secret      = local.contabo_oauth.client_secret
+  contabo_api_user           = local.contabo_oauth.api_user
+  contabo_api_password       = local.contabo_oauth.api_password
 
   omni_version                         = var.omni_version
   dex_version                          = var.dex_version
@@ -192,9 +217,65 @@ module "omni_host_contabo" {
   r2_backup_prefix = "production/omni-backups-2026-05-24-contabo"
 }
 
-# DNS records pull the IPs straight from the OCI instance — tofu knows
-# them because the instance exists. AAAA included so clients with v6
-# connectivity hit the VM directly.
+# GCP Always Free–oriented Omni host (STANDARD e2-micro, never Spot).
+# Auth: tofu/shared/accounts/gcp/<omni_host_gcp_account>/auth.yaml (SOPS).
+# Provider ADC is established by tofu-layer WIF for this account.
+module "gcp_omni_account_state" {
+  count               = var.omni_host_provider == "gcp" ? 1 : 0
+  source              = "../../modules/node-state"
+  provider_name       = "gcp"
+  account             = var.omni_host_gcp_account
+  local_inventory_dir = var.local_inventory_dir
+}
+
+provider "google" {
+  # Always declared (providers cannot be count-gated). Modules use count so no
+  # GCE resources are managed when omni_host_provider!=gcp, but OpenTofu still
+  # configures this provider — CI/local must supply ADC/WIF for the account in
+  # omni_host_gcp_account even while production substrate remains Contabo.
+  # Project comes from auth when present, else placeholder (unused for APIs).
+  project = try(module.gcp_omni_account_state[0].auth.auth.project_id, "unused-when-not-gcp")
+  region  = var.omni_host_gcp_region
+}
+
+module "omni_host_gcp" {
+  count  = var.omni_host_provider == "gcp" ? 1 : 0
+  source = "../../modules/omni-host-gcp"
+
+  project_id   = module.gcp_omni_account_state[0].auth.auth.project_id
+  name         = "gcp-${var.omni_host_gcp_account}-omni"
+  region       = var.omni_host_gcp_region
+  zone         = var.omni_host_gcp_zone
+  machine_type = var.omni_host_gcp_machine_type
+
+  omni_version                         = var.omni_version
+  dex_version                          = var.dex_version
+  nginx_version                        = var.nginx_version
+  omni_account_id                      = random_uuid.omni_account_id.result
+  dex_omni_client_secret               = random_password.dex_omni_client_secret.result
+  omni_account_name                    = "stawi"
+  siderolink_api_advertised_host       = "cp.stawi.org"
+  siderolink_wireguard_advertised_host = "cpd.stawi.org"
+  github_oidc_client_id                = var.github_oidc_client_id
+  github_oidc_client_secret            = var.github_oidc_client_secret
+  cf_dns_api_token                     = var.cloudflare_api_token
+  initial_users                        = [for e in split(",", var.omni_initial_users) : trimspace(e) if trimspace(e) != ""]
+  eula_name                            = var.omni_eula_name
+  eula_email                           = var.omni_eula_email
+  etcd_backup_enabled                  = var.etcd_backup_enabled
+  vpn_users                            = var.vpn_users
+  ssh_authorized_keys                  = []
+
+  r2_account_id        = var.r2_account_id
+  r2_access_key_id     = var.r2_access_key_id
+  r2_secret_access_key = var.r2_secret_access_key
+  # Reuse Contabo backup prefix so first boot can restore Omni etcd
+  # and keep machine registrations (cutover continuity).
+  r2_backup_prefix = "production/omni-backups-2026-05-24-contabo"
+}
+
+# DNS records pull the IPs straight from the active omni-host — tofu knows
+# them because the instance exists. AAAA included when the substrate has v6.
 #
 # data sources lookup pre-existing CF records by name so the
 # import {} blocks below can adopt them — earlier failed/cancelled
@@ -227,16 +308,22 @@ locals {
 }
 
 locals {
-  # Active omni-host outputs, substrate-agnostic. Exactly one of the
-  # two modules has count=1; coalescelist picks its outputs.
+  # Active omni-host outputs, substrate-agnostic. Exactly one module has count=1.
   omni_host_ipv4 = coalescelist(
     module.omni_host_contabo[*].ipv4,
     module.omni_host_oci[*].ipv4,
+    module.omni_host_gcp[*].ipv4,
   )[0]
-  omni_host_ipv6 = coalescelist(
-    module.omni_host_contabo[*].ipv6,
-    module.omni_host_oci[*].ipv6,
-  )[0]
+  # GCP v1 has no public IPv6 — filter nulls so coalescelist does not fail.
+  omni_host_ipv6 = try(coalescelist([
+    for ip in concat(
+      module.omni_host_contabo[*].ipv6,
+      module.omni_host_oci[*].ipv6,
+      module.omni_host_gcp[*].ipv6,
+    ) : ip if ip != null
+  ])[0], null)
+  # Plan-time known: whether AAAA records should exist.
+  omni_host_has_ipv6 = var.omni_host_provider != "gcp" && try(module.bwire_account_state.auth.auth.enable_ipv6, true)
 }
 
 import {
@@ -276,12 +363,8 @@ resource "cloudflare_dns_record" "cp_stawi" {
 }
 
 resource "cloudflare_dns_record" "cp_stawi_v6" {
-  # Predicate must be plan-time-known so the import-block targets
-  # cp_stawi_v6[0] / cpd_stawi_v6[0] validate even on a fresh tfstate
-  # (where local.omni_host_ipv6 is "known after apply"). The
-  # bwire auth.yaml's enable_ipv6 flag is read at plan time via the
-  # node-state module, so use that directly.
-  count   = try(module.bwire_account_state.auth.auth.enable_ipv6, true) ? 1 : 0
+  # Predicate must be plan-time-known (not known-after-apply).
+  count   = local.omni_host_has_ipv6 ? 1 : 0
   zone_id = var.cloudflare_zone_id_stawi
   name    = "cp"
   type    = "AAAA"
@@ -306,12 +389,7 @@ resource "cloudflare_dns_record" "cpd_stawi" {
 }
 
 resource "cloudflare_dns_record" "cpd_stawi_v6" {
-  # Predicate must be plan-time-known so the import-block targets
-  # cp_stawi_v6[0] / cpd_stawi_v6[0] validate even on a fresh tfstate
-  # (where local.omni_host_ipv6 is "known after apply"). The
-  # bwire auth.yaml's enable_ipv6 flag is read at plan time via the
-  # node-state module, so use that directly.
-  count   = try(module.bwire_account_state.auth.auth.enable_ipv6, true) ? 1 : 0
+  count   = local.omni_host_has_ipv6 ? 1 : 0
   zone_id = var.cloudflare_zone_id_stawi
   name    = "cpd"
   type    = "AAAA"

@@ -1,10 +1,10 @@
 # .github/workflows/tofu-omni-host.yml
 #
-# Owns the lifecycle of layer 00-omni-server (the Contabo VPS that
-# runs Omni + dex + nginx). Separated from tofu-apply.yml/tofu-plan.yml
-# so a node-only PR can never trigger an omni-host reinstall — that
-# was the failure mode that burned through the Let's Encrypt
-# 5-certs-per-168h quota during the 2026-05-02 reinstall iteration.
+# Owns the lifecycle of layer 00-omni-server (Omni + dex + nginx host on
+# Contabo / OCI / GCP). Separated from tofu-apply.yml/tofu-plan.yml so a
+# node-only PR can never trigger an omni-host reinstall — that was the
+# failure mode that burned through the Let's Encrypt 5-certs-per-168h
+# quota during the 2026-05-02 reinstall iteration.
 #
 # Triggers:
 #   - PR touching omni-host paths → plan
@@ -31,6 +31,7 @@ on:
     paths:
       - tofu/modules/omni-host-oci/**
       - tofu/modules/omni-host-contabo/**
+      - tofu/modules/omni-host-gcp/**
       - tofu/shared/templates/omni-host/**
       - tofu/layers/00-omni-server/**
       - .github/workflows/tofu-omni-host.yml
@@ -39,6 +40,7 @@ on:
     paths:
       - tofu/modules/omni-host-oci/**
       - tofu/modules/omni-host-contabo/**
+      - tofu/modules/omni-host-gcp/**
       - tofu/shared/templates/omni-host/**
       - tofu/layers/00-omni-server/**
       - .github/workflows/tofu-omni-host.yml

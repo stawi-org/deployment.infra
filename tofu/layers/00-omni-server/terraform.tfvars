@@ -1,17 +1,26 @@
-# Substrate hosting omni-host: "contabo" adopts existing VPS 202727781
-# (former bwire-3); "oci" provisions an A1.Flex in OCI bwire.
+# Substrate hosting omni-host:
+#   contabo — existing VPS 202727781 (Ubuntu + docker-compose)
+#   oci     — A1.Flex in bwire (blocked historically by inbound blackholes)
+#   gcp     — STANDARD e2-micro on stawi-timber (Always Free US region + swap)
 #
-# Always Free A1 is 2 OCPU / 12 GB *total* per tenancy (post 2026-06-15).
-# When provider=oci, Omni is sized at 1 OCPU / 6 GB so bwire can keep
-# one Talos control plane at 1/6 (worker removed). Default module
-# ocpus=2 would consume the whole free pool.
+# Cutover to GCP (greenfield restore from Contabo R2 prefix):
+#   1. Ensure bootstrap-gcp-wif has run for stawi-timber (WIF + SA).
+#   2. tofu state rm 'module.omni_host_contabo[0].contabo_instance.this'
+#      (and related) so Contabo VPS is orphaned for later Talos worker use
+#      — do NOT destroy the VPS via tofu if you want to keep the hardware.
+#   3. Set omni_host_provider = "gcp", apply 00-omni-server.
+#   4. DNS A records for cp/cpd flip to the static GCE IP on the same apply.
+#   5. Stop Omni on Contabo (docker compose down) after DNS propagates.
 #
-# History: 2026-05-24 reverted OCI→Contabo after inbound blackhole on
-# eu-frankfurt-1 public IPs. 2026-07-18 re-attempted OCI (worker→Omni
-# 1/6+1/6): instance created at 129.159.221.5 but global probes got
-# "No route to host" on :22/:443/:8090/:8100 — same failure mode.
-# Rolled back to Contabo; OCI instance left powered for diagnosis.
+# Always Free e2-micro: free only in us-west1/us-central1/us-east1; 1 GiB
+# RAM is tight (cloud-init adds 2 GiB swap). Raise machine type if OOM.
+# Production remains Contabo until cutover (docs/omni-host-gcp.md).
 omni_host_provider = "contabo"
+# GCP settings used when omni_host_provider = "gcp":
+omni_host_gcp_account      = "stawi-timber"
+omni_host_gcp_region       = "us-central1"
+omni_host_gcp_zone         = "us-central1-a"
+omni_host_gcp_machine_type = "e2-micro"
 
 # Keep in lock-step with tofu/shared/versions.auto.tfvars.json +
 # workflow OMNI_VERSION (omnictl). This layer does not symlink the
