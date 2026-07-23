@@ -226,23 +226,20 @@ jobs:
         if: inputs.layer == '00-omni-server'
         run: |
           set -euo pipefail
-          # Only require GCP WIF when tfvars selects the GCP substrate.
+          # Always WIF-auth for 00-omni-server: main.tf declares provider "google"
+          # unconditionally (modules are count-gated). OpenTofu still configures
+          # the provider and requires ADC even when omni_host_provider=contabo|oci.
           provider=$(grep -E '^\s*omni_host_provider\s*=' tofu/layers/00-omni-server/terraform.tfvars \
             | head -1 | sed -E 's/.*=\s*"?([^"#]+)"?.*/\1/' | tr -d '[:space:]' || true)
+          acct=$(grep -E '^\s*omni_host_gcp_account\s*=' tofu/layers/00-omni-server/terraform.tfvars \
+            | head -1 | sed -E 's/.*=\s*"?([^"#]+)"?.*/\1/' | tr -d '[:space:]' || true)
           echo "provider=${provider:-}"
-          if [[ "${provider}" == "gcp" ]]; then
-            echo "needed=true" >> "$GITHUB_OUTPUT"
-            acct=$(grep -E '^\s*omni_host_gcp_account\s*=' tofu/layers/00-omni-server/terraform.tfvars \
-              | head -1 | sed -E 's/.*=\s*"?([^"#]+)"?.*/\1/' | tr -d '[:space:]' || true)
-            echo "account=${acct:-stawi-timber}" >> "$GITHUB_OUTPUT"
-          else
-            echo "needed=false" >> "$GITHUB_OUTPUT"
-            echo "account=" >> "$GITHUB_OUTPUT"
-          fi
+          echo "needed=true" >> "$GITHUB_OUTPUT"
+          echo "account=${acct:-stawi-timber}" >> "$GITHUB_OUTPUT"
 
       - name: Stage GCP auth from repo
         id: gcp_auth
-        # 02-gcp-infra: per-matrix account. 00-omni-server: only when omni_host_provider=gcp.
+        # 02-gcp-infra: per-matrix account. 00-omni-server: always (google provider always declared).
         if: inputs.layer == '02-gcp-infra' || (inputs.layer == '00-omni-server' && steps.omni_gcp.outputs.needed == 'true')
         env:
           SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
@@ -306,6 +303,7 @@ jobs:
           PY
 
       - name: Authenticate to Google Cloud (WIF)
+        # 00-omni-server always needs ADC: provider "google" is always configured.
         if: inputs.layer == '02-gcp-infra' || (inputs.layer == '00-omni-server' && steps.omni_gcp.outputs.needed == 'true')
         uses: google-github-actions/auth@v2
         with:

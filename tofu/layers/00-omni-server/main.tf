@@ -229,8 +229,11 @@ module "gcp_omni_account_state" {
 }
 
 provider "google" {
-  # Always declared; only used when omni_host_provider=gcp (module count).
-  # Project comes from auth when present, else placeholder (unused).
+  # Always declared (providers cannot be count-gated). Modules use count so no
+  # GCE resources are managed when omni_host_provider!=gcp, but OpenTofu still
+  # configures this provider — CI/local must supply ADC/WIF for the account in
+  # omni_host_gcp_account even while production substrate remains Contabo.
+  # Project comes from auth when present, else placeholder (unused for APIs).
   project = try(module.gcp_omni_account_state[0].auth.auth.project_id, "unused-when-not-gcp")
   region  = var.omni_host_gcp_region
 }
