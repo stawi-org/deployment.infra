@@ -338,14 +338,17 @@ import {
   id       = "${var.cloudflare_zone_id_stawi}/${each.value}"
 }
 
+# AAAA imports only when the active substrate has public IPv6. GCP Omni
+# has IPv4-only today (count=0 on *_v6); importing into a missing index
+# fails plan with "Configuration for import target does not exist".
 import {
-  for_each = local.cp_aaaa_id == null ? toset([]) : toset([local.cp_aaaa_id])
+  for_each = local.omni_host_has_ipv6 && local.cp_aaaa_id != null ? toset([local.cp_aaaa_id]) : toset([])
   to       = cloudflare_dns_record.cp_stawi_v6[0]
   id       = "${var.cloudflare_zone_id_stawi}/${each.value}"
 }
 
 import {
-  for_each = local.cpd_aaaa_id == null ? toset([]) : toset([local.cpd_aaaa_id])
+  for_each = local.omni_host_has_ipv6 && local.cpd_aaaa_id != null ? toset([local.cpd_aaaa_id]) : toset([])
   to       = cloudflare_dns_record.cpd_stawi_v6[0]
   id       = "${var.cloudflare_zone_id_stawi}/${each.value}"
 }

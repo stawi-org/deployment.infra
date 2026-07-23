@@ -1,22 +1,19 @@
 # Substrate hosting omni-host:
-#   contabo — existing VPS 202727781 (Ubuntu + docker-compose)
+#   contabo — VPS 202727781 (pre-cutover Omni; post-cutover → Talos worker)
 #   oci     — A1.Flex in bwire (blocked historically by inbound blackholes)
 #   gcp     — STANDARD e2-micro on stawi-timber (Always Free US region + swap)
 #
-# Cutover to GCP (greenfield restore from Contabo R2 prefix):
-#   1. Ensure bootstrap-gcp-wif has run for stawi-timber (WIF + SA).
-#   2. tofu state rm 'module.omni_host_contabo[0].contabo_instance.this'
-#      (and related) so Contabo VPS is orphaned for later Talos worker use
-#      — do NOT destroy the VPS via tofu if you want to keep the hardware.
-#   3. Set omni_host_provider = "gcp", apply 00-omni-server.
-#   4. DNS A records for cp/cpd flip to the static GCE IP on the same apply.
-#   5. Stop Omni on Contabo (docker compose down) after DNS propagates.
+# Production cutover Contabo → GCP (2026-07-23):
+#   - Apply with pre_apply_state_rm of module.omni_host_contabo[0].* so the
+#     Contabo VPS is orphaned (kept for Talos worker), never destroyed.
+#   - Omni etcd restore uses R2 prefix production/omni-backups-2026-05-24-contabo.
+#   - After DNS points at GCE: stop Omni on Contabo (docker compose down),
+#     then reimage Contabo as worker (docs/omni-host-gcp.md).
 #
 # Always Free e2-micro: free only in us-west1/us-central1/us-east1; 1 GiB
 # RAM is tight (cloud-init adds 2 GiB swap). Raise machine type if OOM.
-# Production remains Contabo until cutover (docs/omni-host-gcp.md).
-omni_host_provider = "contabo"
-# GCP settings used when omni_host_provider = "gcp":
+# See docs/omni-host-gcp.md for rollback (provider=contabo + re-import).
+omni_host_provider         = "gcp"
 omni_host_gcp_account      = "stawi-timber"
 omni_host_gcp_region       = "us-central1"
 omni_host_gcp_zone         = "us-central1-a"
