@@ -1,0 +1,79 @@
+# Release a machine from its current MachineSet (CP or workers) without
+# deleting the Machine/Link. Used when bootstrap-elect put the wrong
+# nodes into controlplane and inventory-correct nodes need the slots.
+name: omni-release-machineset-node
+on:
+  workflow_dispatch:
+    inputs:
+      machine_ids:
+        description: Whitespace-separated Omni Machine UUIDs to release from MachineSet
+        required: true
+        type: string
+      confirm:
+        description: Type RELEASE to proceed
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  OMNI_VERSION: v1.9.3
+
+jobs:
+  release:
+    if: inputs.confirm == 'RELEASE'
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+      MACHINE_IDS: ${{ inputs.machine_ids }}
+    steps:
+      - name: Install omnictl + yq
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          cat > /usr/local/bin/omnictl <<'WRAP'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /usr/local/bin/omnictl
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.44.6/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Delete MachineSetNodes only
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          for id in $MACHINE_IDS; do
+            if ! [[ "$id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+              echo "::error::bad uuid: $id"
+              exit 1
+            fi
+            echo "::group::release $id"
+            # MachineSetNode id is typically the machine UUID.
+            for kind in machinesetnodes MachineSetNodes.omni.sidero.dev; do
+              if timeout 20 omnictl get "$kind" "$id" -o yaml > /tmp/msn.yaml 2>/dev/null; then
+                echo "found $kind/$id"
+                yq -i 'del(.metadata.finalizers)' /tmp/msn.yaml 2>/dev/null || true
+                timeout 20 omnictl apply -f /tmp/msn.yaml 2>/dev/null || true
+                if timeout 45 omnictl delete "$kind" "$id" --force 2>/tmp/del.err \
+                  || timeout 45 omnictl delete "$kind" "$id" 2>/tmp/del.err \
+                  || grep -qi 'torn down\|not found\|NotFound' /tmp/del.err 2>/dev/null; then
+                  echo "released $kind/$id"
+                else
+                  echo "::warning::delete $kind/$id: $(head -c 300 /tmp/del.err | tr '\n' ' ')"
+                fi
+              else
+                echo "no $kind/$id"
+              fi
+            done
+            # Show current machine status
+            timeout 20 omnictl get machinestatus "$id" -o yaml 2>/dev/null \
+              | yq '{id: .metadata.id, host: .spec.network.hostname, cluster: .spec.cluster, role: .spec.role, connected: .spec.connected}' \
+              || true
+            echo "::endgroup::"
+          done
