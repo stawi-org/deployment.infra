@@ -269,14 +269,18 @@ jobs:
               continue
             fi
 
+            # Note: inside ($alist | …), "." is the address array — bind
+            # inventory .ipv4 to $ip first or index(.ipv4) errors with
+            # "Cannot index array with string \"ipv4\"".
             matched=$(jq -c --arg mid "$mid" --arg h "$mhost" --arg addrs "$maddrs" '
               ($addrs | split(" ") | map(select(length > 0))) as $alist |
               [
                 .[]
+                | .ipv4 as $ip
                 | select(
                     (.omni_machine_id != "" and .omni_machine_id == $mid)
                     or (.host != "" and $h != "" and .host == $h)
-                    or (.ipv4 != "" and ($alist | index(.ipv4)) != null)
+                    or ($ip != "" and ($alist | index($ip)) != null)
                   )
               ]
               | .[0] // empty
