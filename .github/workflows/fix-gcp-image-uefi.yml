@@ -106,23 +106,62 @@ jobs:
           fi
           echo "::notice::source=${gcs_uri}"
 
-          if echo "${features}" | tr ';' '\n' | grep -qx 'UEFI_COMPATIBLE'; then
-            echo "::notice::image already has UEFI_COMPATIBLE — nothing to do"
-            gcloud compute images describe "${image_name}" --project="${PROJECT_ID}" \
-              --format='yaml(name,family,guestOsFeatures,selfLink)'
-            exit 0
+          # Always rebuild from GCS: peel nested tar/gzip until GPT disk.raw,
+          # then re-upload a clean disk.raw.tar.gz (fixes nested-tar boots).
+          stage=$(mktemp -d)
+          gcloud storage cp "${gcs_uri}" "${stage}/in.bin"
+          work="${stage}/blob"
+          cp "${stage}/in.bin" "${work}"
+          for _ in 1 2 3 4 5; do
+            kind=$(file -b "${work}" || true)
+            echo "::notice::unwrap layer: ${kind}"
+            case "${kind}" in
+              *gzip*)
+                gunzip -c "${work}" > "${stage}/unz"
+                mv "${stage}/unz" "${work}"
+                continue
+                ;;
+              *'tar archive'*|*'POSIX tar'*)
+                tar -xf "${work}" -C "${stage}"
+                if [[ -f "${stage}/disk.raw" ]]; then
+                  mv "${stage}/disk.raw" "${work}"
+                else
+                  first=$(tar -tf "${work}" 2>/dev/null | head -1 || true)
+                  mv "${stage}/${first}" "${work}"
+                fi
+                find "${stage}" -mindepth 1 ! -path "${work}" ! -name 'in.bin' -delete 2>/dev/null || true
+                continue
+                ;;
+            esac
+            break
+          done
+          magic=$(xxd -p -l 8 -s 512 "${work}" 2>/dev/null || true)
+          echo "::notice::GPT magic=${magic}"
+          if [[ "${magic}" != "4546492050415254" ]]; then
+            echo "::error::still not a GPT disk after unwrap"
+            file -b "${work}"; xxd -l 64 "${work}" || true
+            exit 1
           fi
+          mkdir -p "${stage}/out"
+          cp --sparse=always "${work}" "${stage}/out/disk.raw"
+          tar -Sczf "${stage}/disk.raw.tar.gz" -C "${stage}/out" disk.raw
+          clean_uri="gs://stawi-talos-images-stawi-timber/fixed-uefi-$(date +%s)-disk.raw.tar.gz"
+          gcloud storage cp "${stage}/disk.raw.tar.gz" "${clean_uri}" --project="${PROJECT_ID}"
+          echo "::notice::uploaded clean image ${clean_uri}"
 
-          echo "::notice::deleting non-UEFI image ${image_name}"
-          gcloud compute images delete "${image_name}" --project="${PROJECT_ID}" --quiet
+          if gcloud compute images describe "${image_name}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
+            echo "::notice::deleting old image ${image_name}"
+            gcloud compute images delete "${image_name}" --project="${PROJECT_ID}" --quiet
+          fi
 
           echo "::notice::creating ${image_name} with ${guest_features}"
           gcloud compute images create "${image_name}" \
             --project="${PROJECT_ID}" \
-            --source-uri="${gcs_uri}" \
+            --source-uri="${clean_uri}" \
             --family="${family}" \
             --guest-os-features="${guest_features}" \
             --architecture=X86_64
+          rm -rf "${stage}"
 
           gcloud compute images describe "${image_name}" --project="${PROJECT_ID}" \
             --format='yaml(name,family,guestOsFeatures,selfLink)'
