@@ -2,13 +2,29 @@
 # scripts/bootstrap-gcp-wif.sh
 #
 # Idempotently configure GCP Workload Identity Federation for GitHub Actions
-# OIDC, then open a PR that lands the encrypted auth + accounts.yaml entry.
+# OIDC, then (only if the account is not already on the base branch) open a
+# PR that lands the encrypted auth + accounts.yaml entry.
 #
 #   GitHub JWT  →  WIF pool/provider (github / github-actions)
 #                       ↓ attribute.repository == stawi-org/deployment.infra
 #                  SA tofu-gcp@PROJECT  (roles/iam.workloadIdentityUser)
 #                       ↓ impersonation
 #                  OpenTofu / image-import ADC in CI
+#
+# ── SAFETY CONTRACT (cluster always stays up) ────────────────────────────
+# This script is SAFE TO RUN AT ANY TIME on a live production project.
+# It MUST NOT and does not:
+#   - create, stop, start, delete, or resize GCE VMs / disks / snapshots
+#   - create or destroy VPCs, subnets, or firewall rules (OpenTofu owns those)
+#   - wipe Omni / Kubernetes / Talos cluster state
+#   - revoke or remove existing IAM bindings (only adds missing ones)
+#   - delete the WIF pool, SA, or image bucket
+#   - run OpenTofu apply or cluster-provision
+#
+# Re-runs only ENSURE (create-if-missing / bind-if-missing) WIF, SA roles,
+# bucket IAM, and budget. If auth already exists on origin/<base> for this
+# --gh-profile, the script skips the git/PR path so onboard-gcp is not
+# re-triggered. Use --force-repo-write to rewrite auth intentionally.
 #
 # Prereqs (everything else is fetched/installed by this script):
 #   - gcloud CLI installed and authed to the target project (Owner or
@@ -19,32 +35,18 @@
 # Standalone Cloud Shell flow (only this file needs to be uploaded):
 #   ./bootstrap-gcp-wif.sh --project YOUR_PROJECT_ID --gh-profile my-acct
 #
-# The script will, on its own:
-#   - install sops into ~/.local/bin if missing
-#   - clone https://github.com/stawi-org/deployment.infra into
-#     ~/deployment.infra when cwd is not already that checkout
-#   - configure WIF / SA / bucket / budget on the GCP project
-#   - write SOPS-encrypted auth + accounts.yaml on a worktree branch
-#   - push and print OPEN: compare URL (PR API if GITHUB_TOKEN set)
-#
 # Encryption uses the public age key in .sops.yaml — no private age key
 # is required on the bootstrap machine.
-#
-# No `gh` CLI / GITHUB_TOKEN required for the default path. The operator's
-# existing git push credentials are sufficient; the script always prints a
-# GitHub "Create PR" / compare URL. Pass GITHUB_TOKEN/GH_TOKEN only if you
-# want the script to open the PR via the REST API.
 #
 # Usage:
 #   ./bootstrap-gcp-wif.sh --project YOUR_PROJECT_ID
 #   ./bootstrap-gcp-wif.sh --project p --gh-profile demo --region europe-west9
-#   ./bootstrap-gcp-wif.sh --project p --repo-path /path/to/checkout
-#   ./bootstrap-gcp-wif.sh --project p --no-push   # local branch only
-#   ./bootstrap-gcp-wif.sh --project p --budget-amount 50 --budget-email you@ex.com
+#   ./bootstrap-gcp-wif.sh --project p --iam-only          # never touch git
+#   ./bootstrap-gcp-wif.sh --project p --force-repo-write  # rewrite auth PR
+#   ./bootstrap-gcp-wif.sh --project p --no-push
 #
 # Re-running is safe. GCP resources are looked up by name; missing ones are
-# created and existing ones updated. The accounts.yaml edit is idempotent.
-# The branch is reused if it already exists.
+# created. Existing IAM is left in place. The branch is reused if present.
 
 set -euo pipefail
 
@@ -78,6 +80,10 @@ NO_PR="false"
 # --no-clone forces fail-fast if no checkout is found (CI / strict mode).
 NO_CLONE="false"
 NO_BUDGET="false"
+# IAM-only: ensure GCP resources; never open a git worktree / PR.
+# Default auto-skips repo write when auth already exists on base branch.
+IAM_ONLY="false"
+FORCE_REPO_WRITE="false"
 # Monthly cost tripwire for Spot workers. Default $50 matches the operator
 # budget target (2×e2-standard-2 pack leaves headroom). Override with
 # --budget-amount or env BUDGET_AMOUNT=N. Not a hard provisioner stop.
@@ -126,6 +132,8 @@ Flags:
   --branch <NAME>        Push branch (default: onboard-gcp-<gh-profile>)
   --no-push              Commit in worktree only; skip push
   --no-pr                Push but do not open a pull request via API
+  --iam-only             Ensure GCP IAM/WIF/bucket/budget only; never write git
+  --force-repo-write     Rewrite auth + accounts PR even if already onboarded
   --budget-amount <USD>  Monthly Cloud Billing budget (default: 50)
   --budget-email <ADDR>  Hint only (billing admins still get default alerts)
   --budget-name <NAME>   Budget display name (default: stawi-gcp-workers)
@@ -134,29 +142,34 @@ Flags:
 
 Cloud Shell (upload only this script to ~):
   ./bootstrap-gcp-wif.sh --project YOUR_PROJECT_ID --gh-profile my-acct
+
+Safe re-run (live cluster — IAM repair only when already onboarded):
+  ./bootstrap-gcp-wif.sh --project P --gh-profile my-acct
 EOF
   exit 1
 }
 
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --project)        PROJECT="$2"; shift 2 ;;
-    --region)         REGION="$2"; shift 2 ;;
-    --gh-profile)     GH_PROFILE="$2"; shift 2 ;;
-    --vpc-cidr)       VPC_CIDR="$2"; shift 2 ;;
-    --repo-path)      REPO_PATH="$2"; shift 2 ;;
-    --clone)          NO_CLONE="false"; shift ;;  # default; kept for older docs/invocations
-    --no-clone)       NO_CLONE="true"; shift ;;
-    --base-branch)    BASE_BRANCH="$2"; shift 2 ;;
-    --branch)         BRANCH="$2"; shift 2 ;;
-    --no-push)        NO_PUSH="true"; shift ;;
-    --no-pr)          NO_PR="true"; shift ;;
-    --budget-amount)  BUDGET_AMOUNT="$2"; shift 2 ;;
-    --budget-email)   BUDGET_EMAIL="$2"; shift 2 ;;
-    --budget-name)    BUDGET_NAME="$2"; shift 2 ;;
-    --no-budget)      NO_BUDGET="true"; shift ;;
-    -h|--help)        usage ;;
-    *)                echo "unknown arg: $1" >&2; usage ;;
+    --project)          PROJECT="$2"; shift 2 ;;
+    --region)           REGION="$2"; shift 2 ;;
+    --gh-profile)       GH_PROFILE="$2"; shift 2 ;;
+    --vpc-cidr)         VPC_CIDR="$2"; shift 2 ;;
+    --repo-path)        REPO_PATH="$2"; shift 2 ;;
+    --clone)            NO_CLONE="false"; shift ;;  # default; kept for older docs/invocations
+    --no-clone)         NO_CLONE="true"; shift ;;
+    --base-branch)      BASE_BRANCH="$2"; shift 2 ;;
+    --branch)           BRANCH="$2"; shift 2 ;;
+    --no-push)          NO_PUSH="true"; shift ;;
+    --no-pr)            NO_PR="true"; shift ;;
+    --iam-only)         IAM_ONLY="true"; shift ;;
+    --force-repo-write) FORCE_REPO_WRITE="true"; shift ;;
+    --budget-amount)    BUDGET_AMOUNT="$2"; shift 2 ;;
+    --budget-email)     BUDGET_EMAIL="$2"; shift 2 ;;
+    --budget-name)      BUDGET_NAME="$2"; shift 2 ;;
+    --no-budget)        NO_BUDGET="true"; shift ;;
+    -h|--help)          usage ;;
+    *)                  echo "unknown arg: $1" >&2; usage ;;
   esac
 done
 
@@ -525,14 +538,28 @@ if gcloud iam workload-identity-pools providers describe "$WIF_PROVIDER" \
     --project="$PROJECT" --location=global \
     --workload-identity-pool="$WIF_POOL" \
     --format='value(name)' >/dev/null 2>&1; then
-  say "  provider exists — reconciling attribute mapping/condition"
-  gcloud iam workload-identity-pools providers update-oidc "$WIF_PROVIDER" \
+  # Only update when out of sync — avoid thrashing a live WIF path that
+  # in-flight GitHub Actions jobs depend on for cluster apply.
+  cur_issuer=$(gcloud iam workload-identity-pools providers describe "$WIF_PROVIDER" \
     --project="$PROJECT" --location=global \
     --workload-identity-pool="$WIF_POOL" \
-    --issuer-uri="$OIDC_ISSUER" \
-    --attribute-mapping="$ATTR_MAPPING" \
-    --attribute-condition="$ATTR_CONDITION" \
-    --quiet
+    --format='value(oidc.issuerUri)' 2>/dev/null || true)
+  cur_cond=$(gcloud iam workload-identity-pools providers describe "$WIF_PROVIDER" \
+    --project="$PROJECT" --location=global \
+    --workload-identity-pool="$WIF_POOL" \
+    --format='value(attributeCondition)' 2>/dev/null || true)
+  if [[ "$cur_issuer" == "$OIDC_ISSUER" && "$cur_cond" == "$ATTR_CONDITION" ]]; then
+    say "  provider exists — issuer/condition already match (no update)"
+  else
+    say "  provider exists — updating issuer/condition to desired (additive reconcile)"
+    gcloud iam workload-identity-pools providers update-oidc "$WIF_PROVIDER" \
+      --project="$PROJECT" --location=global \
+      --workload-identity-pool="$WIF_POOL" \
+      --issuer-uri="$OIDC_ISSUER" \
+      --attribute-mapping="$ATTR_MAPPING" \
+      --attribute-condition="$ATTR_CONDITION" \
+      --quiet
+  fi
 else
   gcloud iam workload-identity-pools providers create-oidc "$WIF_PROVIDER" \
     --project="$PROJECT" --location=global \
@@ -840,11 +867,58 @@ else
 fi
 
 # =========================================================================
-# 5. Repo write phase (isolated worktree)
+# 5. Repo write phase (isolated worktree) — skipped when already onboarded
 # =========================================================================
+# Cluster safety: re-running bootstrap on a project that already has auth
+# on origin/<base> must not rewrite accounts.yaml (that retriggers
+# onboard-gcp → full cluster-provision). IAM ensure above is enough.
+
 say ""
 say "=========================================================="
 say "GCP WIF ready for project [$PROJECT]."
+say "  SAFETY: no GCE VMs/disks/VPCs/firewalls were created, stopped, or deleted."
+
+already_onboarded="false"
+if git -C "$REPO_PATH" rev-parse --verify "origin/${BASE_BRANCH}" >/dev/null 2>&1 \
+    || git -C "$REPO_PATH" fetch origin "$BASE_BRANCH" --quiet 2>/dev/null; then
+  if git -C "$REPO_PATH" cat-file -e "origin/${BASE_BRANCH}:tofu/shared/accounts/gcp/${GH_PROFILE}/auth.yaml" 2>/dev/null; then
+    if git -C "$REPO_PATH" show "origin/${BASE_BRANCH}:tofu/shared/accounts.yaml" 2>/dev/null \
+        | grep -qE "^[[:space:]]*-[[:space:]]+${GH_PROFILE}[[:space:]]*\$"; then
+      already_onboarded="true"
+    fi
+  fi
+elif git -C "$REPO_PATH" rev-parse --verify "refs/heads/${BASE_BRANCH}" >/dev/null 2>&1; then
+  if git -C "$REPO_PATH" cat-file -e "${BASE_BRANCH}:tofu/shared/accounts/gcp/${GH_PROFILE}/auth.yaml" 2>/dev/null; then
+    if git -C "$REPO_PATH" show "${BASE_BRANCH}:tofu/shared/accounts.yaml" 2>/dev/null \
+        | grep -qE "^[[:space:]]*-[[:space:]]+${GH_PROFILE}[[:space:]]*\$"; then
+      already_onboarded="true"
+    fi
+  fi
+fi
+
+SKIP_REPO_WRITE="false"
+if [[ "$IAM_ONLY" == "true" ]]; then
+  SKIP_REPO_WRITE="true"
+  say "skipping git/PR path (--iam-only)"
+elif [[ "$already_onboarded" == "true" && "$FORCE_REPO_WRITE" != "true" ]]; then
+  SKIP_REPO_WRITE="true"
+  say "account '${GH_PROFILE}' already on ${BASE_BRANCH} — IAM ensure only (no repo write)."
+  say "  This avoids re-triggering onboard-gcp / cluster-provision. Use --force-repo-write to rewrite auth."
+fi
+
+if [[ "$SKIP_REPO_WRITE" == "true" ]]; then
+  say ""
+  say "Done (cluster-safe re-run)."
+  say "  project:  $PROJECT ($PROJECT_NUMBER)"
+  say "  SA:       $SA_EMAIL"
+  say "  WIF:      $WIF_PROVIDER_RESOURCE"
+  say "  account:  $GH_PROFILE"
+  say "  region:   $REGION"
+  [[ -n "${BUDGET_ID:-}" ]] && say "  budget:   $BUDGET_ID (USD ${BUDGET_AMOUNT}/mo → $BUDGET_NAME)"
+  say "  compute:  NOT modified (bootstrap never touches VMs/disks/VPC)"
+  exit 0
+fi
+
 say "Writing auth + accounts.yaml on branch $BRANCH (base $BASE_BRANCH)"
 
 WORKTREE=""
@@ -891,7 +965,10 @@ AUTH_FILE="$AUTH_DIR/auth.yaml"
 ACCOUNTS_FILE="$WORKTREE/tofu/shared/accounts.yaml"
 mkdir -p "$AUTH_DIR"
 
-cat > "$AUTH_FILE" <<EOF
+# Preserve existing encrypted auth when values already match (needs decrypt
+# key). Without a private key we still rewrite only for first onboard /
+# --force-repo-write (already gated above).
+desired_plain=$(cat <<EOF
 auth:
   project_id: "${PROJECT}"
   region: "${REGION}"
@@ -899,19 +976,32 @@ auth:
   workload_identity_provider: "${WIF_PROVIDER_RESOURCE}"
   service_account_email: "${SA_EMAIL}"
 EOF
+)
+write_auth="true"
+if [[ -f "$AUTH_FILE" ]] && grep -q '^sops:' "$AUTH_FILE" 2>/dev/null; then
+  if decrypted=$(sops -d --input-type yaml --output-type yaml "$AUTH_FILE" 2>/dev/null); then
+    # Normalize whitespace for compare
+    if [[ "$(printf '%s\n' "$decrypted" | sed '/^$/d')" == "$(printf '%s\n' "$desired_plain" | sed '/^$/d')" ]]; then
+      say "existing auth.yaml already matches desired fields — keeping ciphertext"
+      write_auth="false"
+    else
+      say "existing auth.yaml differs — re-encrypting with new values"
+    fi
+  fi
+fi
 
-# Encrypt in place; .sops.yaml at worktree root is checked out from base.
-# Public age recipients in .sops.yaml are enough — no private key needed.
-if ! (cd "$WORKTREE" && sops -e --input-type yaml --output-type yaml -i \
-  "tofu/shared/accounts/gcp/${GH_PROFILE}/auth.yaml"); then
-  die "sops encrypt failed — check .sops.yaml age recipients and sops version"
+if [[ "$write_auth" == "true" ]]; then
+  printf '%s\n' "$desired_plain" > "$AUTH_FILE"
+  # Encrypt in place; .sops.yaml at worktree root is checked out from base.
+  if ! (cd "$WORKTREE" && sops -e --input-type yaml --output-type yaml -i \
+    "tofu/shared/accounts/gcp/${GH_PROFILE}/auth.yaml"); then
+    die "sops encrypt failed — check .sops.yaml age recipients and sops version"
+  fi
+  if ! grep -q '^sops:' "$AUTH_FILE"; then
+    die "auth.yaml does not look SOPS-encrypted after sops -e (missing sops: key)"
+  fi
+  say "wrote encrypted $AUTH_FILE"
 fi
-# Sanity: encrypted file must not still contain plaintext project id as a bare value
-# under a non-sops structure. Presence of sops: metadata is the reliable signal.
-if ! grep -q '^sops:' "$AUTH_FILE"; then
-  die "auth.yaml does not look SOPS-encrypted after sops -e (missing sops: key)"
-fi
-say "wrote encrypted $AUTH_FILE"
 
 # Idempotent accounts.yaml edit under gcp:
 if ! grep -qE "^[[:space:]]*-[[:space:]]+${GH_PROFILE}[[:space:]]*\$" "$ACCOUNTS_FILE"; then
@@ -1092,6 +1182,7 @@ else
     say "  branch:   $BRANCH (local only — not on GitHub yet)"
     say "  region:   $REGION"
     [[ -n "$BUDGET_ID" ]] && say "  budget:   $BUDGET_ID (USD ${BUDGET_AMOUNT}/mo → $BUDGET_NAME)"
+    say "  compute:  NOT modified (bootstrap never touches VMs/disks/VPC)"
     # Exit 0: GCP bootstrap succeeded; git is a follow-up with a token.
     exit 0
   fi
@@ -1126,3 +1217,4 @@ say "  branch:   $BRANCH"
 say "  region:   $REGION"
 [[ -n "$BUDGET_ID" ]] && say "  budget:   $BUDGET_ID (USD ${BUDGET_AMOUNT}/mo → $BUDGET_NAME)"
 say "  OPEN:     $OPEN_URL"
+say "  compute:  NOT modified (bootstrap never touches VMs/disks/VPC/firewalls)"

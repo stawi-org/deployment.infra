@@ -1,7 +1,20 @@
 # GCP Spot workers — operator go-live
 
-OpenTofu owns desired GCP capacity. Bootstrap is the only one-shot
-script (WIF + SOPS auth + budget tripwire). After that: **apply**, not seed scripts.
+OpenTofu owns desired GCP capacity. Bootstrap configures **IAM/WIF only**
+(WIF + SOPS auth + budget tripwire). After that: **apply**, not seed scripts.
+
+### Safe to re-run anytime
+
+`bootstrap-gcp-wif.sh` **never** stops, deletes, or recreates cluster VMs,
+disks, VPCs, or Omni/Kubernetes state. Re-runs only add missing IAM/WIF
+bindings. If the account is already on `main`, the script **skips the git
+PR path** so `onboard-gcp` / full provision is not re-triggered. Use
+`--iam-only` to force IAM-only, or `--force-repo-write` only when you
+intentionally need a new auth PR.
+
+Cluster day-2 apply (`cluster-provision` mode=`infra` or `full` with
+`wipe_cluster=false`) is desired-state and must not wipe; wipe requires an
+explicit confirm token.
 
 Lifecycle, idempotency, and ghost prevention: **[docs/gcp-lifecycle.md](gcp-lifecycle.md)**.
 
