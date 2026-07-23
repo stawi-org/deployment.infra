@@ -57,13 +57,26 @@ jobs:
               echo "::warning::$p has no resource_changes array — treating as empty plan"
               continue
             fi
-            # Ignore pure R2 nodes.yaml writeback noise is no longer needed
-            # once discovered_at is sticky; still report every non-noop.
-            n=$(jq '[.resource_changes[]? | select(.change.actions != ["no-op"] and .change.actions != ["read"])] | length' "$p")
-            echo "::notice::artifact=$p non-noop-diffs=$n"
+            # Pure ["create"] is expected for newly onboarded accounts /
+            # free-tier seed capacity before the first apply. Fail only on
+            # updates, deletes, or multi-action changes (replace thrash).
+            n=$(jq '[.resource_changes[]?
+              | select(.change.actions != ["no-op"]
+                       and .change.actions != ["read"]
+                       and .change.actions != ["create"])
+              ] | length' "$p")
+            creates=$(jq '[.resource_changes[]? | select(.change.actions == ["create"])] | length' "$p")
+            echo "::notice::artifact=$p thrash-diffs=$n creates=$creates"
+            if [ "$creates" -ne 0 ]; then
+              echo "::notice::allowing $creates pure create(s) (first-time capacity)"
+            fi
             if [ "$n" -ne 0 ]; then
-              jq '.resource_changes[]? | select(.change.actions != ["no-op"] and .change.actions != ["read"]) | {address,actions:.change.actions}' "$p"
-              echo "::error::$p proposes $n changes on a steady-state plan"
+              jq '.resource_changes[]?
+                | select(.change.actions != ["no-op"]
+                         and .change.actions != ["read"]
+                         and .change.actions != ["create"])
+                | {address,actions:.change.actions}' "$p"
+              echo "::error::$p proposes $n update/delete/replace changes on a steady-state plan"
               rc=1
             fi
           done
