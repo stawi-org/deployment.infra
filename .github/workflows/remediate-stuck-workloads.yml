@@ -51,10 +51,11 @@ jobs:
           echo "======== NODES ========"
           k get nodes -o wide || true
 
-          live_nodes=$(k get nodes --no-headers 2>/dev/null \
+          mapfile -t ready_arr < <(k get nodes --no-headers 2>/dev/null \
             | awk '$2=="Ready" {print $1}' | sort -u)
-          echo "Ready nodes:"
-          echo "$live_nodes" | sed 's/^/  /'
+          live_json=$(printf '%s\n' "${ready_arr[@]+"${ready_arr[@]}"}" | jq -R . | jq -s .)
+          echo "Ready nodes (${#ready_arr[@]}):"
+          printf '  %s\n' "${ready_arr[@]+"${ready_arr[@]}"}"
 
           echo "======== DELETE NotReady ghost nodes ========"
           while read -r name status; do
@@ -68,31 +69,74 @@ jobs:
             fi
           done < <(k get nodes --no-headers 2>/dev/null | awk '{print $1, $2}')
 
-          echo "======== Orphan local-path PVs (affinity node gone) ========"
-          k get pv -o json 2>/dev/null | jq -r --argjson live "$(printf '%s\n' $live_nodes | jq -R . | jq -s .)" '
+          echo "======== Orphan PVs (nodeAffinity hostname not Ready) ========"
+          k get pv -o json 2>/dev/null | jq -r --argjson live "$live_json" '
             .items[]
-            | select(.spec.storageClassName == "local-path" or (.metadata.name | test("local-path|pvc-")))
             | . as $pv
-            | ($pv.spec.nodeAffinity.required.nodeSelectorTerms // [])
-              | map(.matchExpressions // [] | map(select(.key=="kubernetes.io/hostname") | .values[]))
-              | flatten
-              | .[]?
-              | select(. as $n | ($live | index($n) | not))
-              | "\($pv.metadata.name)\tnode=\(.)\tphase=\($pv.status.phase // "?")"
+            | (
+                [
+                  ($pv.spec.nodeAffinity.required.nodeSelectorTerms // [])
+                  | .[]?
+                  | (.matchExpressions // [])[]?
+                  | select(.key == "kubernetes.io/hostname")
+                  | (.values // [])[]
+                ]
+                | unique
+                | map(select(. as $n | ($live | index($n) | not)))
+              ) as $bad
+            | select(($bad | length) > 0)
+            | "\($pv.metadata.name)\tnodes=\($bad|join(","))\tphase=\($pv.status.phase // "?")\tsc=\($pv.spec.storageClassName // "?")"
           ' | while IFS=$'\t' read -r pv rest; do
             [[ -z "${pv:-}" ]] && continue
             echo "orphan PV: $pv $rest"
             if [[ "$DRY_RUN" == "true" ]]; then
               echo "  dry-run: would delete pv/$pv"
             else
-              # Drop finalizers if stuck, then delete
               k patch pv "$pv" -p '{"metadata":{"finalizers":null}}' --type=merge 2>/dev/null || true
               k delete pv "$pv" --wait=false || true
             fi
           done
 
-          echo "======== PVC stuck Pending (no volume) — leave for provisioner ========"
-          k get pvc -A --no-headers 2>/dev/null | awk '$3!="Bound" {print}' | head -40 || true
+          echo "======== PVC Lost / Pending / Bound-to-missing-PV ========"
+          # After PV delete, PVC often sits Lost/Pending and blocks STS pods.
+          # Post clean-slate rebuild: safe to drop so provisioner recreates.
+          k get pvc -A -o json 2>/dev/null | jq -r --argjson live "$live_json" '
+            .items[]
+            | . as $pvc
+            | ($pvc.status.phase // "") as $phase
+            | ($pvc.spec.volumeName // "") as $vol
+            | select(
+                $phase == "Lost" or $phase == "Pending"
+                or ($vol != "" and ($pvc.metadata.annotations["pv.kubernetes.io/bind-completed"] == "yes")
+                    and ($phase != "Bound"))
+              )
+            | "\($pvc.metadata.namespace)\t\($pvc.metadata.name)\tphase=\($phase)\tvol=\($vol)"
+          ' | while IFS=$'\t' read -r ns name rest; do
+            [[ -z "${ns:-}" ]] && continue
+            echo "stuck PVC: $ns/$name $rest"
+            if [[ "$DRY_RUN" == "true" ]]; then
+              echo "  dry-run: would delete pvc"
+            else
+              k patch pvc -n "$ns" "$name" -p '{"metadata":{"finalizers":null}}' --type=merge 2>/dev/null || true
+              k delete pvc -n "$ns" "$name" --wait=false || true
+            fi
+          done
+
+          # Also: PVC still Bound but volume PV is gone (race after PV delete)
+          k get pvc -A -o json 2>/dev/null | jq -r '
+            .items[]
+            | select((.status.phase // "") == "Bound")
+            | "\(.metadata.namespace)\t\(.metadata.name)\t\(.spec.volumeName // "")"
+          ' | while IFS=$'\t' read -r ns name vol; do
+            [[ -z "${vol:-}" ]] && continue
+            if ! k get pv "$vol" >/dev/null 2>&1; then
+              echo "PVC Bound to missing PV: $ns/$name vol=$vol"
+              if [[ "$DRY_RUN" != "true" ]]; then
+                k patch pvc -n "$ns" "$name" -p '{"metadata":{"finalizers":null}}' --type=merge 2>/dev/null || true
+                k delete pvc -n "$ns" "$name" --wait=false || true
+              fi
+            fi
+          done
 
           echo "======== Delete Failed pods ========"
           while read -r ns name; do
@@ -104,6 +148,22 @@ jobs:
               k delete pod -n "$ns" "$name" --wait=false || true
             fi
           done < <(k get pods -A --field-selector=status.phase=Failed -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' 2>/dev/null)
+
+          # Pending pods stuck on multi-attach / volume affinity: delete so reschedule
+          echo "======== Delete long-Pending pods (volume/affinity) ========"
+          k get pods -A -o json 2>/dev/null | jq -r '
+            .items[]
+            | select((.status.phase // "") == "Pending")
+            | select((.status.conditions // []) | any(.type=="PodScheduled" and .status=="False" and ((.reason // "")|test("Unschedulable"))))
+            | "\(.metadata.namespace)\t\(.metadata.name)"
+          ' | head -80 | while IFS=$'\t' read -r ns name; do
+            [[ -z "${ns:-}" ]] && continue
+            # Skip pure controller pods without volumes? Still safe to recreate Deployments.
+            echo "unschedulable pod: $ns/$name"
+            if [[ "$DRY_RUN" != "true" ]]; then
+              k delete pod -n "$ns" "$name" --wait=false || true
+            fi
+          done
 
           echo "======== Pending summary (top 40) ========"
           k get pods -A --field-selector=status.phase=Pending --no-headers 2>/dev/null | head -40 || true
