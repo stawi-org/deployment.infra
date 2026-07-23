@@ -241,7 +241,7 @@ gh workflow run cluster-provision.yml -f mode=full -f force_image_sync=true -f d
 
 That runs preflight (including OCI Always Free inventory checks) → image sync → `tofu-apply` (per-account matrix) → cluster template sync → Flux.
 
-**GCP onboard:** run `scripts/bootstrap-gcp-wif.sh` against a project (creates WIF + SA, SOPS auth, PR). After merge, `onboard-gcp.yml` seeds default Spot capacity and runs `cluster-provision`. No long-lived GCP SA JSON keys — CI uses GitHub OIDC → Workload Identity Federation.
+**GCP onboard:** full operator runbook in [docs/gcp-onboard.md](docs/gcp-onboard.md). Short form: merge the peer-provider code to `main` (empty `gcp: []` is fine), then `scripts/bootstrap-gcp-wif.sh --project …` (WIF + SA + SOPS auth PR). After the onboard PR merges, `onboard-gcp.yml` seeds **two Spot e2-medium workers** and runs `cluster-provision`. No long-lived GCP SA JSON keys — CI uses GitHub OIDC → Workload Identity Federation.
 
 Layer-by-layer (still supported): each layer via `workflow_dispatch` of `tofu-plan` / `tofu-apply` → `tofu-layer.yml`.
 

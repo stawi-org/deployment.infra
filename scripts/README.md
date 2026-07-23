@@ -46,10 +46,8 @@ python3 -m unittest scripts.lib.test_oci_free_tier -q
 # or from scripts/lib:
 python3 -m unittest test_oci_free_tier.py -q
 
-# Unit tests for GCP default Spot pack
-python3 -m unittest scripts.lib.test_gcp_default_pack -q
-# or from scripts/lib:
-python3 -m unittest test_gcp_default_pack.py -q
+# Unit tests for GCP default Spot pack (run from scripts/lib so imports resolve)
+cd scripts/lib && python3 -m unittest test_gcp_default_pack.py -q
 ```
 
 ---

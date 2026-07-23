@@ -60,3 +60,7 @@ and pushing, or an image OCID change from step 4.
   `ensure-oci-free-tier-capacity`), then `cluster-provision` mode=infra (or full).
 - Plan-time enforcement lives in `tofu/modules/oracle-account-infra/free-tier.tf`
   and `scripts/lib/oci_free_tier.py` (solo 2/12 or two 1/6; boot ≤196).
+- **New GCP project:** run `scripts/bootstrap-gcp-wif.sh --project …` (WIF +
+  SOPS auth PR). After merge, `onboard-gcp.yml` seeds **two Spot e2-medium
+  workers** and runs `cluster-provision` mode=full. See
+  [docs/gcp-onboard.md](gcp-onboard.md). Empty `gcp: []` skips the GCP matrix.
