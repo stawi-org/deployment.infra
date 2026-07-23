@@ -66,28 +66,20 @@ jobs:
             member=$(tar -tzf /tmp/disk.raw.tar.gz | head -1)
             echo "extracting member=$member"
             tar -xzf /tmp/disk.raw.tar.gz -C /tmp
-            # Find disk.raw-like file
-            find /tmp -maxdepth 2 -type f \( -name 'disk.raw' -o -name '*.raw' -o -name 'gcp*' \) -ls
-            if [[ -f /tmp/disk.raw ]]; then
-              :
-            elif [[ -n "$member" && -f "/tmp/$member" ]]; then
+            ls -la /tmp/disk.raw 2>/dev/null || true
+            if [[ ! -f /tmp/disk.raw && -n "$member" && -f "/tmp/$member" ]]; then
               cp "/tmp/$member" /tmp/disk.raw
-            else
-              # flatten
-              f=$(find /tmp -type f -size +10M | head -1)
-              echo "using large file $f as disk.raw"
-              cp "$f" /tmp/disk.raw
             fi
           fi
           echo "=== disk.raw ==="
           ls -la /tmp/disk.raw || { echo "no disk.raw"; exit 1; }
           file /tmp/disk.raw
           echo "=== MBR (offset 0) ==="
-          xxd -l 64 /tmp/disk.raw
+          xxd -l 64 /tmp/disk.raw || true
           echo "=== GPT header (offset 512) ==="
-          xxd -l 96 -s 512 /tmp/disk.raw
+          xxd -l 96 -s 512 /tmp/disk.raw || true
           # EFI PART magic
-          magic=$(xxd -p -l 8 -s 512 /tmp/disk.raw)
+          magic=$(xxd -p -l 8 -s 512 /tmp/disk.raw || true)
           echo "GPT magic hex=$magic (expect 4546492050415254 = 'EFI PART')"
           echo "=== strings (talos/efi/siderolink) ==="
           strings /tmp/disk.raw | grep -iE 'EFI|Talos|siderolink|GRUB' | head -30 || true
