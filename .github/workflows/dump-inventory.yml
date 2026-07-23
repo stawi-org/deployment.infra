@@ -4,7 +4,7 @@ on:
     inputs:
       provider:
         type: choice
-        options: [contabo, oracle, onprem]
+        options: [contabo, oracle, onprem, gcp]
         required: true
       account:
         type: string
