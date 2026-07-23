@@ -1,28 +1,19 @@
 ---
 # tofu/shared/patches/cluster-network.yaml
 #
-# Cluster-wide dual-stack network, IPv6-first. Matches Ansible's
-# talos_pod_subnets / talos_service_subnets so the same Contabo-backed
-# cluster identity + PKI continues to work.
+# Reference dual-stack + CNI document. LIVE Omni apply path is the
+# dual-stack / related patches inlined in tofu/shared/clusters/main.yaml
+# (Omni cluster-template `file:` resolution is CWD-relative — see
+# main.yaml comments). Keep CIDRs and CNI name in lock-step with that
+# template.
 #
-# /112 is the max service CIDR size for IPv6 in Kubernetes.
-#
-# CNI: Talos's built-in Flannel. Starting with Talos v1.13.0, Flannel
-# CAN opt into NetworkPolicy enforcement by deploying kube-network-
-# policies alongside flanneld via cluster.network.cni.flannel.
-# kubeNetworkPoliciesEnabled. We don't enable it yet: in cluster-
-# reinstall run 25062511933 (and prior runs against gen10 .oci-archive
-# OCI images), v1.13.0 oracle-arm64 maintenance-mode rejects the
-# `cni.flannel` block as an unknown key, even though the schema docs
-# (docs.siderolabs.com/talos/v1.13/reference/configuration/v1alpha1/
-# config) describe exactly that path and Contabo amd64 v1.13.0
-# accepts the same config in mid-life running mode. The mismatch is
-# arch- or platform-specific and unblocking it is a research task,
-# not a v1.13 prerequisite. Without the opt-in, NetworkPolicy
-# resources are silently no-ops — same behavior the cluster has had
-# all along under v1.12.x — so dropping the flag costs no production
-# behavior. Re-enable once the maintenance-mode parser issue is
-# tracked down (or migrate to Cilium for NetworkPolicy regardless).
+# CNI choice for this fleet: Talos built-in Flannel (not Calico).
+# Multi-provider (OCI NAT + Contabo public + GCP Spot) with KubeSpan
+# WireGuard full-mesh means pod traffic already rides encrypted tunnels.
+# Flannel VXLAN on top is simple, dual-stack proven, and does not fight
+# nested encapsulation the way Calico eBPF dataplane does on mixed
+# public/NAT fabrics. NetworkPolicy can be opted in via Flannel's
+# kube-network-policies without changing the CNI. See docs/topology.md.
 
 cluster:
   # Allow workloads on control-plane nodes. Cluster is small (3 CPs, few
@@ -31,9 +22,14 @@ cluster:
   network:
     cni:
       name: flannel
+      # NetworkPolicy via kube-network-policies (Talos ≥1.13). Safe to
+      # enable once all nodes are on ≥1.13.7; no-ops if controllers lag.
+      flannel:
+        kubeNetworkPoliciesEnabled: true
     podSubnets:
-      - fd00:10:244::/48
+      # Match main.yaml dual-stack patch (IPv6-first).
+      - fd00:10:244::/56
       - 10.244.0.0/16
     serviceSubnets:
-      - fd00:10:96::/112
+      - fd00:10:96::/108
       - 10.96.0.0/12

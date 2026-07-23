@@ -57,7 +57,7 @@ talos:
   # `talos_version`. The image inventory in
   # tofu/shared/inventory/talos-images.yaml is built with this same
   # version; mismatch produces an upgrade-on-bootstrap.
-  version: v1.13.6
+  version: v1.13.7
 features:
   # workload-proxy lets `kubectl --kubeconfig <omni-issued>` route via
   # the Omni dashboard's k8s-proxy without needing direct CP IP
@@ -153,6 +153,17 @@ patches:
   # dual-stack at runtime. Adding/removing this patch on a running
   # cluster requires a cluster re-creation (omnictl cluster delete +
   # template sync).
+  # CNI: Flannel (built-in). Stay on Flannel — not Calico/Calico-eBPF —
+  # for multi-provider + KubeSpan (see docs/topology.md). Enable
+  # kube-network-policies so NetworkPolicy objects are enforced.
+  - name: cni-flannel
+    inline:
+      cluster:
+        network:
+          cni:
+            name: flannel
+            flannel:
+              kubeNetworkPoliciesEnabled: true
   - name: dual-stack
     inline:
       cluster:
@@ -349,18 +360,25 @@ patches:
   # held in a half-applied state — recover via contabo-reboot-vps
   # or `omnictl machine reboot`.
   # Keep in sync with tofu/shared/patches/kubespan.yaml — Omni applies THIS.
+  # Talos v1.13 multi-doc KubeSpanConfig (preferred over legacy
+  # machine.network.kubespan). Discovery stays as a strategic merge
+  # on the cluster document — it is not part of KubeSpanConfig.
   - name: kubespan
     inline:
-      machine:
-        network:
-          kubespan:
-            enabled: true
-            # false: never steal default route (blackhole history).
-            advertiseKubernetesNetworks: false
-            # Under path MTU 1500; avoids WG+VXLAN fragmentation that
-            # collapses multi-cloud goodput.
-            mtu: 1380
-            allowDownPeerBypass: true
+      apiVersion: v1alpha1
+      kind: KubeSpanConfig
+      enabled: true
+      # false: never steal default route (blackhole history).
+      advertiseKubernetesNetworks: false
+      # Under path MTU 1500; avoids WG+VXLAN fragmentation that
+      # collapses multi-cloud goodput.
+      mtu: 1380
+      allowDownPeerBypass: true
+      # SideroLink ULA is hub-spoke management, not a peer mesh path.
+      excludeAdvertisedNetworks:
+        - fdae:41e4:649b:9303::/64
+  - name: cluster-discovery
+    inline:
       cluster:
         discovery:
           enabled: true

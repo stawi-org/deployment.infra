@@ -730,3 +730,31 @@ jobs:
             cat "$f" || true
             echo "::endgroup::"
           done
+
+  # After infra apply (e.g. GCP reimage), re-run bootstrap-bind + size
+  # render so new machines join without a hand-dispatched template sync.
+  # tofu-apply already fires sync via workflow_run; this covers direct
+  # tofu-layer dispatches (common for per-account reimage).
+  trigger-cluster-sync:
+    needs: run
+    if: >-
+      always() &&
+      inputs.mode == 'apply' &&
+      needs.run.result == 'success' &&
+      (inputs.layer == '01-contabo-infra' ||
+       inputs.layer == '02-oracle-infra' ||
+       inputs.layer == '02-gcp-infra' ||
+       inputs.layer == '03-talos')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Dispatch sync-cluster-template
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh workflow run sync-cluster-template.yml \
+            --repo "${{ github.repository }}"
+          echo "::notice::dispatched sync-cluster-template after ${{ inputs.layer }} apply"

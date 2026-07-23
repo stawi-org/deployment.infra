@@ -25,7 +25,7 @@ name: stawi-cluster
 kubernetes:
   version: v1.35.2
 talos:
-  version: v1.13.6
+  version: v1.13.7
 features:
   enableWorkloadProxy: true
 patches:
@@ -39,6 +39,10 @@ patches:
         network:
           cni:
             name: flannel
+            # Prefer Flannel over Calico/eBPF for multi-cloud + KubeSpan
+            # (docs/topology.md). NetworkPolicy via kube-network-policies.
+            flannel:
+              kubeNetworkPoliciesEnabled: true
           podSubnets:
             - fd00:10:244::/48
             - 10.244.0.0/16
