@@ -1,0 +1,93 @@
+# One-shot: inspect the GCS Talos disk.raw.tar.gz used for GCE import.
+name: inspect-gcp-disk
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Stage GCP auth
+        id: auth
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+        run: |
+          set -euo pipefail
+          if ! command -v sops >/dev/null; then
+            curl -fsSL -o /usr/local/bin/sops \
+              "https://github.com/getsops/sops/releases/download/v3.11.0/sops-v3.11.0.linux.amd64"
+            chmod +x /usr/local/bin/sops
+          fi
+          scripts/stage-gcp-auth-from-repo.sh /tmp/gcp-auth .
+          python3 <<'PY'
+          import os, yaml
+          a = yaml.safe_load(open("/tmp/gcp-auth/stawi-timber/auth.yaml"))["auth"]
+          mapping = {
+              "project_id": a["project_id"],
+              "workload_identity_provider": a["workload_identity_provider"],
+              "service_account": a["service_account_email"],
+          }
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              for k, v in mapping.items():
+                  print(f"{k}={v}")
+                  f.write(f"{k}={v}\n")
+          PY
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ steps.auth.outputs.workload_identity_provider }}
+          service_account: ${{ steps.auth.outputs.service_account }}
+          project_id: ${{ steps.auth.outputs.project_id }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Inspect archive + disk.raw
+        run: |
+          set -euo pipefail
+          URI='gs://stawi-talos-images-stawi-timber/82e73653fd973b306cb03c670f139f3edda9736c640caabf35811b9fcd4622e7-v1.13.6/42d27ec05008-disk.raw.tar.gz'
+          gcloud storage cp "$URI" /tmp/disk.raw.tar.gz
+          echo "=== archive ==="
+          ls -la /tmp/disk.raw.tar.gz
+          file /tmp/disk.raw.tar.gz
+          echo "=== tar members ==="
+          tar -tzf /tmp/disk.raw.tar.gz || true
+          # Also try as plain gzip raw (if mislabeled)
+          if ! tar -tzf /tmp/disk.raw.tar.gz >/dev/null 2>&1; then
+            echo "not a tar.gz — trying gunzip as raw disk"
+            gunzip -c /tmp/disk.raw.tar.gz > /tmp/disk.raw || true
+          else
+            # Extract first member
+            member=$(tar -tzf /tmp/disk.raw.tar.gz | head -1)
+            echo "extracting member=$member"
+            tar -xzf /tmp/disk.raw.tar.gz -C /tmp
+            # Find disk.raw-like file
+            find /tmp -maxdepth 2 -type f \( -name 'disk.raw' -o -name '*.raw' -o -name 'gcp*' \) -ls
+            if [[ -f /tmp/disk.raw ]]; then
+              :
+            elif [[ -n "$member" && -f "/tmp/$member" ]]; then
+              cp "/tmp/$member" /tmp/disk.raw
+            else
+              # flatten
+              f=$(find /tmp -type f -size +10M | head -1)
+              echo "using large file $f as disk.raw"
+              cp "$f" /tmp/disk.raw
+            fi
+          fi
+          echo "=== disk.raw ==="
+          ls -la /tmp/disk.raw || { echo "no disk.raw"; exit 1; }
+          file /tmp/disk.raw
+          echo "=== MBR (offset 0) ==="
+          xxd -l 64 /tmp/disk.raw
+          echo "=== GPT header (offset 512) ==="
+          xxd -l 96 -s 512 /tmp/disk.raw
+          # EFI PART magic
+          magic=$(xxd -p -l 8 -s 512 /tmp/disk.raw)
+          echo "GPT magic hex=$magic (expect 4546492050415254 = 'EFI PART')"
+          echo "=== strings (talos/efi/siderolink) ==="
+          strings /tmp/disk.raw | grep -iE 'EFI|Talos|siderolink|GRUB' | head -30 || true
