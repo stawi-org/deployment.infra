@@ -69,6 +69,21 @@ After every successful `tofu-apply` → `03-talos`:
 1. **omni-cleanup-dead-twins** — for each hostname with a disconnected cluster member **and** a connected twin, purge the dead UUID (never deletes connected)
 2. **reconcile-omni-machine-ids** — write live UUIDs to R2
 
+## Placement: FR collocation + DBs on OCI
+
+| Workload | Where | Why |
+|---|---|---|
+| Stateful DBs (CNPG, etc.) | **OCI** (`eu-frankfurt-1` today) | Stable capacity; free-tier packing; not Spot |
+| General workers / batch | **GCP Spot** in `europe-west9` (Paris) | Paid elastic capacity near FR / Marseille path |
+| Control plane / Omni | Contabo + OCI policy | Unchanged topology |
+
+GCP has no Marseille region. Paris (`europe-west9`) is the French GCE region
+chosen for collocation with FR/Marseille traffic. Bootstrap defaults to it.
+
+All GCP nodes carry `node.stawi.org/db-eligible=false`. Schedule DBs with a
+nodeSelector/affinity requiring OCI (or `db-eligible=true` when you label OCI
+nodes that way in deployment.manifest).
+
 ## Day-2 operator path (fast)
 
 ```bash
@@ -97,6 +112,7 @@ gh workflow run cluster-provision.yml -f mode=images
 | Custom node count/size | Edit R2 `nodes.yaml` → `mode=infra` |
 | Standard (non-Spot) node | `preemptible: false` on that inventory entry |
 | New provider | Same `provider_data.omni_machine_id` + matcher; wire hygiene already global |
+| Region / collocation | Default **`europe-west9` (Paris)** — nearest GCE region to Marseille (no GCP Marseille zone). **Databases stay on OCI**; GCP nodes have `node.stawi.org/db-eligible=false`. |
 
 ## Failure modes
 

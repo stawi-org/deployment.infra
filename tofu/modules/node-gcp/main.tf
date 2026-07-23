@@ -121,6 +121,8 @@ locals {
       "node.stawi.org/role"     = var.role
       "node.stawi.org/name"     = var.name
       "node.stawi.org/spot"     = var.preemptible ? "true" : "false"
+      # Databases stay on OCI (and Contabo) — GCP Spot is general workload only.
+      "node.stawi.org/db-eligible" = "false"
     },
     var.labels,
   )

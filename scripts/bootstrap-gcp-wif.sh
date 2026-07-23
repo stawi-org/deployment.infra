@@ -31,7 +31,7 @@
 #
 # Usage:
 #   ./scripts/bootstrap-gcp-wif.sh --project YOUR_PROJECT_ID
-#   ./scripts/bootstrap-gcp-wif.sh --project p --gh-profile demo --region europe-west1
+#   ./scripts/bootstrap-gcp-wif.sh --project p --gh-profile demo --region europe-west9
 #   ./scripts/bootstrap-gcp-wif.sh --project p --no-push   # local branch only
 #
 # Re-running is safe. GCP resources are looked up by name; missing ones are
@@ -42,7 +42,9 @@ set -euo pipefail
 
 # -------- defaults --------
 PROJECT=""
-REGION="europe-west1"
+# Closest French GCP region to Marseille (no eu-marseille on GCE).
+# Pair with OCI for databases (eu-frankfurt-1 / future eu-marseille-1).
+REGION="europe-west9"
 VPC_CIDR="10.210.0.0/24"
 GH_PROFILE=""
 REPO_PATH=""
@@ -69,7 +71,7 @@ usage() {
 
 Flags:
   --project <ID>       GCP project id (required)
-  --region <REGION>    Default europe-west1
+  --region <REGION>    Default europe-west9 (Paris FR; nearest to Marseille)
   --gh-profile <NAME>  accounts.yaml key / auth path segment
                        (default: slug of project id last dash segment)
   --vpc-cidr <CIDR>    Default 10.210.0.0/24

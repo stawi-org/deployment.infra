@@ -35,8 +35,13 @@ export GITHUB_TOKEN=...
 ./scripts/bootstrap-gcp-wif.sh \
   --project YOUR_GCP_PROJECT_ID \
   --gh-profile stawi-prod \
-  --region europe-west1
+  --region europe-west9
 ```
+
+Default region is **`europe-west9` (Paris)** — closest French GCE region to
+Marseille (GCP has no Marseille zone). **Databases stay on OCI** (currently
+`eu-frankfurt-1`); GCP nodes are labeled `node.stawi.org/db-eligible=false`
+so CNPG and other stateful DBs must select OCI/Contabo capacity.
 
 Merge the PR. `onboard-gcp` runs `cluster-provision` mode=full:
 
