@@ -634,22 +634,48 @@ ensure_project_role() {
 #   instanceAdmin.v1 — GCE VMs
 #   networkAdmin     — VPC / subnet / firewall
 #   storageAdmin     — disks + custom images (compute.storageAdmin)
-#   storage.objectAdmin — GCS objects for image staging
-#   storage.legacyBucketReader — storage.buckets.get/list so CI can
-#     describe the staging bucket (objectAdmin alone is not enough)
+#   storage.objectAdmin — GCS objects (project-level; bucket IAM also set below)
+#
+# Note: roles/storage.legacyBucketReader is BUCKET-only — it cannot be
+# bound on a project (INVALID_ARGUMENT). Bucket describe/get for CI is
+# granted via bucket IAM after the staging bucket exists.
 for role in \
   roles/compute.instanceAdmin.v1 \
   roles/compute.networkAdmin \
   roles/compute.storageAdmin \
-  roles/storage.objectAdmin \
-  roles/storage.legacyBucketReader
+  roles/storage.objectAdmin
 do
   ensure_project_role "$role"
 done
 
+# Default Compute Engine SA needs actAs so instance create can attach it
+# (node-gcp uses the default CE SA when no service_account block is set).
+CE_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+say "Ensuring actAs on default Compute Engine SA ($CE_SA)"
+if gcloud iam service-accounts get-iam-policy "$CE_SA" --project="$PROJECT" \
+    --flatten='bindings[].members' \
+    --filter="bindings.role=roles/iam.serviceAccountUser AND bindings.members=serviceAccount:${SA_EMAIL}" \
+    --format='value(bindings.role)' 2>/dev/null | grep -qx 'roles/iam.serviceAccountUser'; then
+  say "  serviceAccountUser already bound on default CE SA"
+else
+  if gcloud iam service-accounts add-iam-policy-binding "$CE_SA" \
+      --project="$PROJECT" \
+      --member="serviceAccount:${SA_EMAIL}" \
+      --role="roles/iam.serviceAccountUser" \
+      --quiet >/dev/null 2>/tmp/gcp-ce-sa-bind.err; then
+    say "  bound roles/iam.serviceAccountUser → $CE_SA"
+  else
+    # Some projects disable the default CE SA until first use; non-fatal
+    # if compute will create it later — surface the error clearly.
+    warn "could not bind serviceAccountUser on $CE_SA: $(head -c 200 /tmp/gcp-ce-sa-bind.err 2>/dev/null || true)"
+    warn "VM create may fail until: gcloud iam service-accounts add-iam-policy-binding $CE_SA --member=serviceAccount:${SA_EMAIL} --role=roles/iam.serviceAccountUser --project=$PROJECT"
+  fi
+fi
+
 # Pre-create the image-staging bucket so CI never needs storage.buckets.create.
-# Object writes use objectAdmin; describe uses legacyBucketReader. Lifecycle
-# 30d keeps staged .raw.tar.gz from accumulating forever.
+# Object writes: project objectAdmin + bucket objectAdmin.
+# Bucket describe (gcloud storage buckets describe): bucket legacyBucketReader
+# only (that role is invalid at project scope).
 IMAGE_BUCKET="stawi-talos-images-${GH_PROFILE}"
 say "Ensuring image staging bucket gs://${IMAGE_BUCKET}"
 if gcloud storage buckets describe "gs://${IMAGE_BUCKET}" --project="$PROJECT" >/dev/null 2>&1; then
@@ -663,13 +689,12 @@ else
       --quiet 2>/tmp/gcs-boot-create.err; then
     say "  bucket created"
   else
-    warn "could not create gs://${IMAGE_BUCKET}: $(head -c 200 /tmp/gcs-boot-create.err 2>/dev/null || true)"
-    warn "CI may fail image import until the bucket exists (re-run bootstrap as project Owner)"
+    die "could not create gs://${IMAGE_BUCKET}: $(head -c 400 /tmp/gcs-boot-create.err 2>/dev/null || true)"
   fi
 fi
-if gcloud storage buckets describe "gs://${IMAGE_BUCKET}" --project="$PROJECT" >/dev/null 2>&1; then
-  tmp_lc=$(mktemp)
-  cat >"$tmp_lc" <<'JSON'
+
+tmp_lc=$(mktemp)
+cat >"$tmp_lc" <<'JSON'
 {
   "rule": [
     {
@@ -679,33 +704,40 @@ if gcloud storage buckets describe "gs://${IMAGE_BUCKET}" --project="$PROJECT" >
   ]
 }
 JSON
-  gcloud storage buckets update "gs://${IMAGE_BUCKET}" \
-    --project="$PROJECT" \
-    --lifecycle-file="$tmp_lc" \
-    --quiet >/dev/null 2>&1 \
-    && say "  lifecycle: delete objects after 30d" \
-    || warn "could not set lifecycle on gs://${IMAGE_BUCKET} (non-fatal)"
-  rm -f "$tmp_lc"
+gcloud storage buckets update "gs://${IMAGE_BUCKET}" \
+  --project="$PROJECT" \
+  --lifecycle-file="$tmp_lc" \
+  --quiet >/dev/null 2>&1 \
+  && say "  lifecycle: delete objects after 30d" \
+  || warn "could not set lifecycle on gs://${IMAGE_BUCKET} (non-fatal)"
+rm -f "$tmp_lc"
 
-  # Bucket-scoped IAM (in addition to project roles) so objectAdmin on
-  # the project still works under uniform bucket-level access.
-  for b_role in roles/storage.objectAdmin roles/storage.legacyBucketReader; do
-    if gcloud storage buckets get-iam-policy "gs://${IMAGE_BUCKET}" --project="$PROJECT" \
-        --flatten='bindings[].members' \
-        --filter="bindings.role=${b_role} AND bindings.members:serviceAccount:${SA_EMAIL}" \
-        --format='value(bindings.role)' 2>/dev/null | grep -qx "$b_role"; then
-      say "  bucket IAM $b_role already bound"
-    else
-      gcloud storage buckets add-iam-policy-binding "gs://${IMAGE_BUCKET}" \
-        --member="serviceAccount:${SA_EMAIL}" \
-        --role="$b_role" \
-        --project="$PROJECT" \
-        --quiet >/dev/null 2>/tmp/gcs-bucket-iam.err \
-        && say "  bucket IAM bound $b_role" \
-        || warn "bucket IAM $b_role failed: $(head -c 160 /tmp/gcs-bucket-iam.err 2>/dev/null || true)"
-    fi
-  done
-fi
+# Bucket-scoped IAM — required for CI under uniform bucket-level access.
+# legacyBucketReader MUST be on the bucket resource (not the project).
+ensure_bucket_role() {
+  local b_role="$1"
+  if gcloud storage buckets get-iam-policy "gs://${IMAGE_BUCKET}" --project="$PROJECT" \
+      --flatten='bindings[].members' \
+      --filter="bindings.role=${b_role} AND bindings.members:serviceAccount:${SA_EMAIL}" \
+      --format='value(bindings.role)' 2>/dev/null | grep -qx "$b_role"; then
+    say "  bucket IAM $b_role already bound"
+    return 0
+  fi
+  if gcloud storage buckets add-iam-policy-binding "gs://${IMAGE_BUCKET}" \
+      --member="serviceAccount:${SA_EMAIL}" \
+      --role="$b_role" \
+      --project="$PROJECT" \
+      --quiet >/dev/null 2>/tmp/gcs-bucket-iam.err; then
+    say "  bucket IAM bound $b_role"
+    return 0
+  fi
+  cat /tmp/gcs-bucket-iam.err >&2 || true
+  die "failed to bind $b_role on gs://${IMAGE_BUCKET}"
+}
+
+for b_role in roles/storage.objectAdmin roles/storage.legacyBucketReader; do
+  ensure_bucket_role "$b_role"
+done
 
 WIF_MEMBER="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${WIF_POOL}/attribute.repository/${GITHUB_REPO}"
 say "Ensuring WIF principal binding on SA"
