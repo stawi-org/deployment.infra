@@ -29,11 +29,12 @@ as a Talos node. DNS: `cp.stawi.org` (UI, orange-cloud) and
 
 | Substrate | Status |
 |---|---|
-| **Contabo** VPS `contabo-bwire-node-3` / `202727781` | **Current production** default |
+| **Contabo** VPS `contabo-bwire-node-3` / `202727781` | **Current production** Omni host (Ubuntu). After GCP cutover this VPS becomes a **Talos worker** (not Omni). |
 | **OCI** A1.Flex | Code path exists; historically blocked by eu-frankfurt-1 inbound blackholes |
 | **GCP** STANDARD e2-micro on `stawi-timber` (us-central1) | Module ready; cutover guide [omni-host-gcp.md](omni-host-gcp.md). **Not Spot.** |
 
-Never colocate Omni on Spot Talos workers.
+Never colocate Omni on Spot Talos workers. Contabo cluster nodes always
+use `role-database=false` (CNPG affinity).
 
 ## Kubernetes control-plane boundary
 
