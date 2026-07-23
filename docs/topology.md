@@ -75,6 +75,18 @@ where pods land (Contabo, OCI Frankfurt, GCP Paris, on-prem).
 Primary guide: [docs/network-throughput.md](network-throughput.md).
 Optional co-location: [docs/network-latency.md](network-latency.md).
 
+## CNI choice: Flannel (not Calico / Calico eBPF)
+
+| Option | Fit for this fleet |
+|---|---|
+| **Flannel VXLAN** (current) | **Chosen.** Dual-stack proven; sits cleanly over KubeSpan; minimal moving parts on mixed NAT (OCI) + public (Contabo) + Spot (GCP). |
+| Calico VXLAN/IPIP | Possible but a large migration with little gain while KubeSpan already encrypts node paths. |
+| **Calico eBPF** | **Avoid** for this topology. eBPF dataplane expects consistent L3/direct routing and fights nested encapsulation (WireGuard mesh + multi-provider NAT). Dual-stack + eBPF + cross-cloud is high operational risk. |
+| Cilium | Future option if we want NetworkPolicy + Hubble without Calico; separate design. |
+
+NetworkPolicy is enabled via Talos Flannel’s `kubeNetworkPoliciesEnabled`
+(kube-network-policies), not by switching CNI.
+
 ## Sensitive Artifacts
 
 Talos machine configs and `talosconfig` are sensitive. The `publish-talos-configs` workflow encrypts the bundle with age to the dispatching user's GitHub SSH public keys before uploading the artifact.
