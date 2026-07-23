@@ -1,0 +1,105 @@
+# One-shot: dump Omni ConnectionParams + GCP worker serial console.
+# Used to debug Spot workers that never appear in Omni after reimage.
+name: diag-gcp-join
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  OMNI_VERSION: v1.9.3
+
+jobs:
+  omni:
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+    steps:
+      - name: Install omnictl
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          cat > /usr/local/bin/omnictl <<'WRAP'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /usr/local/bin/omnictl
+
+      - name: ConnectionParams
+        run: omnictl get connectionparams -o yaml || true
+
+      - name: Machines summary
+        run: |
+          set -euo pipefail
+          omnictl get machinestatus -o json \
+            | jq -s '[.[] | {
+                id: .metadata.id,
+                host: .spec.network.hostname,
+                platform: .metadata.labels["omni.sidero.dev/platform"],
+                connected: .spec.connected,
+                cluster: .spec.cluster
+              }]'
+
+  gcp-serial:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Stage GCP auth
+        id: auth
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+        run: |
+          set -euo pipefail
+          if ! command -v sops >/dev/null; then
+            curl -fsSL -o /usr/local/bin/sops \
+              "https://github.com/getsops/sops/releases/download/v3.11.0/sops-v3.11.0.linux.amd64"
+            chmod +x /usr/local/bin/sops
+          fi
+          scripts/stage-gcp-auth-from-repo.sh /tmp/gcp-auth .
+          python3 <<'PY'
+          import os, yaml
+          a = yaml.safe_load(open("/tmp/gcp-auth/stawi-timber/auth.yaml"))["auth"]
+          mapping = {
+              "project_id": a["project_id"],
+              "workload_identity_provider": a["workload_identity_provider"],
+              "service_account": a["service_account_email"],
+          }
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              for k, v in mapping.items():
+                  print(f"{k}={v}")
+                  f.write(f"{k}={v}\n")
+          PY
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ steps.auth.outputs.workload_identity_provider }}
+          service_account: ${{ steps.auth.outputs.service_account }}
+          project_id: ${{ steps.auth.outputs.project_id }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Instance status + serial
+        env:
+          PROJECT_ID: ${{ steps.auth.outputs.project_id }}
+        run: |
+          set -euo pipefail
+          gcloud config set project "$PROJECT_ID"
+          echo "=== instances ==="
+          gcloud compute instances list \
+            --filter='name~gcp-stawi-timber' \
+            --format='table(name,zone,status,networkInterfaces[0].accessConfigs[0].natIP,disks[0].source)'
+          for n in gcp-stawi-timber-node-1 gcp-stawi-timber-node-2; do
+            zone=$(gcloud compute instances list --filter="name=$n" --format='value(zone)' | head -1)
+            echo "==== $n zone=$zone ===="
+            gcloud compute instances describe "$n" --zone="$zone" \
+              --format='yaml(status,scheduling,disks,networkInterfaces,metadata,lastStartTimestamp,cpuPlatform)'
+            echo "--- serial (last 100 lines) ---"
+            gcloud compute instances get-serial-port-output "$n" --zone="$zone" --port=1 2>/dev/null \
+              | tail -100 || echo "(no serial output)"
+          done
