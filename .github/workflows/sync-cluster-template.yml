@@ -199,32 +199,30 @@ jobs:
             --no-progress \
             "s3://cluster-tofu-state/production/" "$tmp/inventory/" >/dev/null
 
-          # Build a unified map {ipv4|hostname → {name, role}}.
-          # `hostname` matches OCI's auto-set hostname (Talos's OCI
-          # platform driver); `ipv4` matches Contabo's, since Talos's
-          # Contabo bare-metal config doesn't get a friendly hostname
-          # until our HostnameConfig patch lands.
+          # Build inventory lookup entries:
+          #   name, role, ipv4, host, omni_machine_id
+          # Match priority (first pass): omni_machine_id pin → hostname → ipv4.
+          # Contabo is ALWAYS worker (never bootstrap-elected CP).
           map_file="$tmp/lookup.json"
           : > "$map_file.work"
           while IFS= read -r f; do
             yq -o=json . "$f" \
-              | jq -r '
+              | jq -c '
                   .nodes // {} | to_entries[] |
-                  . as $entry |
-                  ($entry.value.provider_data.ipv4 // "") as $ipv4 |
-                  ($entry.value.provider_data.hostname // $entry.key) as $host |
                   {
-                    name: $entry.key,
-                    role: ($entry.value.role // "worker"),
-                    ipv4: $ipv4,
-                    host: $host
+                    name: .key,
+                    role: (.value.role // "worker"),
+                    ipv4: (.value.provider_data.ipv4 // ""),
+                    host: (.value.provider_data.hostname // .key),
+                    omni_machine_id: (.value.provider_data.omni_machine_id // "")
                   }
                 ' \
               >> "$map_file.work"
           done < <(find "$tmp/inventory" -name nodes.yaml)
-          # Squash to a JSON array.
           jq -s '.' "$map_file.work" > "$map_file"
           echo "::notice::built inventory lookup with $(jq 'length' "$map_file") node(s)"
+          echo "::notice::inventory controlplanes:"
+          jq -r '.[] | select(.role=="controlplane") | "  \(.name) mid=\(.omni_machine_id) host=\(.host) ipv4=\(.ipv4)"' "$map_file" || true
 
           # Fetch unbound machinestatuses.
           all=$(omnictl get machinestatus -o json 2>/dev/null \
@@ -240,89 +238,75 @@ jobs:
 
           apply_label() {
             local id="$1" role="$2" reason="$3"
-            cat > "$tmp/${id}.yaml" <<MANIFEST
-          metadata:
-            namespace: default
-            type: MachineLabels.omni.sidero.dev
-            id: ${id}
-            labels:
-              node.stawi.org/role: ${role}
-          spec: {}
-          MANIFEST
+            # JSON apply — avoids YAML heredoc indentation bugs in Actions.
+            jq -n \
+              --arg id "$id" \
+              --arg role "$role" \
+              '{
+                metadata: {
+                  namespace: "default",
+                  type: "MachineLabels.omni.sidero.dev",
+                  id: $id,
+                  labels: { "node.stawi.org/role": $role }
+                },
+                spec: {}
+              }' > "$tmp/${id}.json"
             echo "::notice::labelling machine ${id} as role=${role} (${reason})"
-            omnictl apply -f "$tmp/${id}.yaml"
+            omnictl apply -f "$tmp/${id}.json"
           }
 
-          # For each unbound machine, look up its hostname / any of
-          # its CIDR-stripped addresses in the inventory map. If
-          # found, apply role from inventory; otherwise default
-          # to role=worker (safe — never mis-labels as cp).
-          #
-          # JQ-trap note: do NOT use `[.ipv4] | inside($alist)`. JQ's
-          # `inside` reduces to `$alist | contains([.ipv4])`, and
-          # `contains` for string array elements uses substring-
-          # contains semantics — so an empty `.ipv4` matches every
-          # machine ([""] is "contained" in any non-empty string).
-          # The earlier inventory entries that happened to lack
-          # `provider_data.ipv4` (Contabo nodes.yaml just-uploaded
-          # without provider_data; OCI account inventories never
-          # populated by node-state) silently captured every
-          # machine's match. Fix: explicit non-empty check + index.
-          #
-          # JQ-trap #2: inside `($alist | index(.ipv4))`, the `.` in
-          # the index argument refers to the *current input of the
-          # pipe* — i.e. `$alist`, not the parent select() context.
-          # That makes `.ipv4` resolve as `$alist.ipv4` and errors
-          # with "Cannot index array with string ipv4". Bind the
-          # entry's ipv4 into a let-variable before piping so the
-          # value survives the pipe boundary.
-          # First pass: try to match each unbound machine to an inventory
-          # entry by hostname or IPv4.
+          # First pass: match unbound machines to inventory by pin / host / ipv4.
+          # Hard rule: hostname contabo-* or name contabo-* → always worker.
           declare -a unmatched_ids=()
           while IFS= read -r m; do
             mid=$(jq -r '.metadata.id' <<<"$m")
             mhost=$(jq -r '.spec.network.hostname // ""' <<<"$m")
             maddrs=$(jq -r '.spec.network.addresses // [] | map(split("/")[0]) | join(" ")' <<<"$m")
 
-            role=$(jq -r --arg h "$mhost" --arg addrs "$maddrs" '
-              ($addrs | split(" ")) as $alist |
-              [.[] | select(
-                (.host != "" and .host == $h)
-                or (.ipv4 != "" and (.ipv4 as $i | $alist | index($i)))
-              )] | (.[0].role // "")
-            ' "$map_file")
-            inv_name=$(jq -r --arg h "$mhost" --arg addrs "$maddrs" '
-              ($addrs | split(" ")) as $alist |
-              [.[] | select(
-                (.host != "" and .host == $h)
-                or (.ipv4 != "" and (.ipv4 as $i | $alist | index($i)))
-              )] | (.[0].name // "")
+            # Contabo / vmi* Contabo hypervisor names never become CP.
+            if [[ "$mhost" == contabo-* || "$mhost" == vmi* ]]; then
+              apply_label "$mid" "worker" "contabo/vmi hostname hard-rule ($mhost)"
+              continue
+            fi
+
+            matched=$(jq -c --arg mid "$mid" --arg h "$mhost" --arg addrs "$maddrs" '
+              ($addrs | split(" ") | map(select(length > 0))) as $alist |
+              [
+                .[]
+                | select(
+                    (.omni_machine_id != "" and .omni_machine_id == $mid)
+                    or (.host != "" and $h != "" and .host == $h)
+                    or (.ipv4 != "" and ($alist | index(.ipv4)) != null)
+                  )
+              ]
+              | .[0] // empty
             ' "$map_file")
 
-            if [[ -n "$role" ]]; then
+            if [[ -n "$matched" ]]; then
+              role=$(jq -r '.role // "worker"' <<<"$matched")
+              inv_name=$(jq -r '.name // "?"' <<<"$matched")
+              # Inventory Contabo keys never CP even if role drifts.
+              if [[ "$inv_name" == contabo-* ]]; then
+                role=worker
+              fi
               apply_label "$mid" "$role" "matched inventory: ${inv_name}"
             else
               unmatched_ids+=("$mid")
             fi
           done < <(jq -c '.[]' <<<"$all")
 
-          # Second pass: when no machine matched by hostname/IP (typical of
-          # a freshly-rebuilt fleet that registered with SideroLink before
-          # MachineStatus.spec.network.* populated — chicken-and-egg with
-          # cluster bootstrap because Talos won't apply ClusterMachineConfig
-          # until it's assigned to a MachineSet, but assignment requires
-          # role labels), elect the first 3 unmatched as controlplane and
-          # the rest as worker. Once Talos config flows and hostnames
-          # propagate, a subsequent sync run can correct the labels by
-          # matching properly. Without this fallback every unmatched
-          # machine becomes worker and the cluster never gets etcd quorum.
-          cp_needed=3
-          for mid in "${unmatched_ids[@]}"; do
-            if (( cp_needed > 0 )); then
-              apply_label "$mid" "controlplane" "no inventory match — bootstrap-elected as cp ($cp_needed remaining)"
-              cp_needed=$((cp_needed - 1))
+          # Second pass: ONLY inventory controlplane pins may become CP.
+          # Never "first 3 unmatched" — that elected Contabo as etcd CP.
+          # Unmatched non-CP → worker (safe). CP pins that are still
+          # unmatched get controlplane so etcd can form from OCI inventory.
+          cp_ids=$(jq -r '.[] | select(.role=="controlplane" and .omni_machine_id != "") | .omni_machine_id' "$map_file" | sort -u)
+          for mid in "${unmatched_ids[@]:-}"; do
+            [[ -z "$mid" ]] && continue
+            if echo "$cp_ids" | grep -qx "$mid"; then
+              inv_name=$(jq -r --arg mid "$mid" '.[] | select(.omni_machine_id==$mid) | .name' "$map_file" | head -1)
+              apply_label "$mid" "controlplane" "inventory CP pin: ${inv_name:-$mid}"
             else
-              apply_label "$mid" "worker" "no inventory match — defaulting to worker"
+              apply_label "$mid" "worker" "no inventory match — worker (never bootstrap-elect CP)"
             fi
           done
 
