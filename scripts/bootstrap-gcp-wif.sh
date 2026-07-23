@@ -632,7 +632,8 @@ ensure_project_role() {
 
 # Least-privilege-ish set for tofu + image import (not full compute.admin):
 #   instanceAdmin.v1 — GCE VMs
-#   networkAdmin     — VPC / subnet / firewall
+#   networkAdmin     — VPC / subnet / routes (NOT firewalls — see securityAdmin)
+#   securityAdmin    — firewall rules (networkAdmin explicitly excludes them)
 #   storageAdmin     — disks + custom images (compute.storageAdmin)
 #   storage.objectAdmin — GCS objects (project-level; bucket IAM also set below)
 #
@@ -642,6 +643,7 @@ ensure_project_role() {
 for role in \
   roles/compute.instanceAdmin.v1 \
   roles/compute.networkAdmin \
+  roles/compute.securityAdmin \
   roles/compute.storageAdmin \
   roles/storage.objectAdmin
 do
