@@ -1,0 +1,118 @@
+# Post-rebuild / hostname-churn cleanup for app-layer health.
+# Deletes NotReady ghost Node objects, local-path PVs whose affinity
+# targets a missing node, and Failed pods so controllers recreate cleanly.
+name: remediate-stuck-workloads
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "If true, only print what would be deleted"
+        required: false
+        default: "false"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  OMNI_VERSION: v1.9.3
+
+jobs:
+  remediate:
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+      DRY_RUN: ${{ inputs.dry_run }}
+    steps:
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          cat > /usr/local/bin/omnictl <<'WRAP'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /usr/local/bin/omnictl
+          curl -fsSLo /usr/local/bin/kubectl https://dl.k8s.io/release/v1.36.0/bin/linux/amd64/kubectl
+          chmod +x /usr/local/bin/kubectl
+
+      - name: Remediate
+        run: |
+          set -euo pipefail
+          omnictl kubeconfig --cluster stawi --service-account \
+            --user remediate --groups system:masters --ttl 1h \
+            /tmp/kubeconfig.yaml
+          export KUBECONFIG=/tmp/kubeconfig.yaml
+          k() { kubectl --insecure-skip-tls-verify=true "$@"; }
+
+          echo "======== NODES ========"
+          k get nodes -o wide || true
+
+          live_nodes=$(k get nodes --no-headers 2>/dev/null \
+            | awk '$2=="Ready" {print $1}' | sort -u)
+          echo "Ready nodes:"
+          echo "$live_nodes" | sed 's/^/  /'
+
+          echo "======== DELETE NotReady ghost nodes ========"
+          while read -r name status; do
+            [[ -z "${name:-}" ]] && continue
+            [[ "$status" == "Ready" ]] && continue
+            echo "ghost node: $name ($status)"
+            if [[ "$DRY_RUN" == "true" ]]; then
+              echo "  dry-run: would delete node/$name"
+            else
+              k delete node "$name" --wait=false || true
+            fi
+          done < <(k get nodes --no-headers 2>/dev/null | awk '{print $1, $2}')
+
+          echo "======== Orphan local-path PVs (affinity node gone) ========"
+          k get pv -o json 2>/dev/null | jq -r --argjson live "$(printf '%s\n' $live_nodes | jq -R . | jq -s .)" '
+            .items[]
+            | select(.spec.storageClassName == "local-path" or (.metadata.name | test("local-path|pvc-")))
+            | . as $pv
+            | ($pv.spec.nodeAffinity.required.nodeSelectorTerms // [])
+              | map(.matchExpressions // [] | map(select(.key=="kubernetes.io/hostname") | .values[]))
+              | flatten
+              | .[]?
+              | select(. as $n | ($live | index($n) | not))
+              | "\($pv.metadata.name)\tnode=\(.)\tphase=\($pv.status.phase // "?")"
+          ' | while IFS=$'\t' read -r pv rest; do
+            [[ -z "${pv:-}" ]] && continue
+            echo "orphan PV: $pv $rest"
+            if [[ "$DRY_RUN" == "true" ]]; then
+              echo "  dry-run: would delete pv/$pv"
+            else
+              # Drop finalizers if stuck, then delete
+              k patch pv "$pv" -p '{"metadata":{"finalizers":null}}' --type=merge 2>/dev/null || true
+              k delete pv "$pv" --wait=false || true
+            fi
+          done
+
+          echo "======== PVC stuck Pending (no volume) — leave for provisioner ========"
+          k get pvc -A --no-headers 2>/dev/null | awk '$3!="Bound" {print}' | head -40 || true
+
+          echo "======== Delete Failed pods ========"
+          while read -r ns name; do
+            [[ -z "${ns:-}" ]] && continue
+            echo "failed pod: $ns/$name"
+            if [[ "$DRY_RUN" == "true" ]]; then
+              echo "  dry-run: would delete"
+            else
+              k delete pod -n "$ns" "$name" --wait=false || true
+            fi
+          done < <(k get pods -A --field-selector=status.phase=Failed -o jsonpath='{range .items[*]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' 2>/dev/null)
+
+          echo "======== Pending summary (top 40) ========"
+          k get pods -A --field-selector=status.phase=Pending --no-headers 2>/dev/null | head -40 || true
+
+          echo "======== CNPG clusters ========"
+          k get cluster.postgresql.cnpg.io -A -o wide 2>/dev/null || true
+
+          echo "======== Flannel DS ========"
+          k -n kube-system get ds kube-flannel 2>/dev/null || true
+          k -n kube-system get pods -l app=flannel -o wide 2>/dev/null || true
+
+          echo "done dry_run=$DRY_RUN"
