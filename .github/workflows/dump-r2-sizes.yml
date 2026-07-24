@@ -15,36 +15,58 @@ jobs:
           set -euo pipefail
           EP="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
           aws configure set default.s3.addressing_style path
-          echo "=== top-level prefixes (approx via list) ==="
-          # List all object sizes under production/ and summarize by prefix
-          aws s3api list-objects-v2 --bucket cluster-tofu-state --endpoint-url "$EP" --region us-east-1 \
-            --output json > /tmp/all.json || true
+          # Fully paginated listing
           python3 - <<'PY'
-          import json, collections
-          data=json.load(open("/tmp/all.json"))
-          contents=data.get("Contents") or []
+          import boto3, collections, os
+          ep = f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com"
+          s3 = boto3.client("s3", endpoint_url=ep, region_name="us-east-1")
+          paginator = s3.get_paginator("list_objects_v2")
+          contents = []
+          for page in paginator.paginate(Bucket="cluster-tofu-state"):
+              contents.extend(page.get("Contents") or [])
           print(f"object_count={len(contents)}")
-          total=sum(o.get("Size",0) for o in contents)
-          print(f"total_bytes={total} total_gib={total/1024**3:.3f}")
-          # by first 2 path segments
-          by=collections.Counter()
-          by_file=[]
+          total = sum(o.get("Size", 0) for o in contents)
+          print(f"total_bytes={total} total_gib={total/1024**3:.3f} total_gb_decimal={total/1000**3:.3f}")
+          by = collections.Counter()
+          by3 = collections.Counter()
+          by_file = []
           for o in contents:
-            key=o["Key"]; size=o.get("Size",0)
-            parts=key.split("/")
-            pref="/".join(parts[:2]) if len(parts)>=2 else parts[0]
-            by[pref]+=size
-            by_file.append((size,key))
-          print("\n=== by prefix (top 30) ===")
-          for pref,sz in by.most_common(30):
-            print(f"{sz/1024**2:10.1f} MiB  {pref}/")
-          print("\n=== largest 40 objects ===")
-          for size,key in sorted(by_file, reverse=True)[:40]:
-            print(f"{size/1024**2:10.1f} MiB  {key}")
-          # tfstate-specific
+              key = o["Key"]; size = o.get("Size", 0)
+              parts = key.split("/")
+              pref = "/".join(parts[:2]) if len(parts) >= 2 else parts[0]
+              pref3 = "/".join(parts[:3]) if len(parts) >= 3 else pref
+              by[pref] += size
+              by3[pref3] += size
+              by_file.append((size, key))
+          print("\n=== by 2-segment prefix ===")
+          for pref, sz in by.most_common(40):
+              print(f"{sz/1024**2:10.1f} MiB  {pref}/")
+          print("\n=== by 3-segment prefix (top 40) ===")
+          for pref, sz in by3.most_common(40):
+              print(f"{sz/1024**2:10.1f} MiB  {pref}/")
+          print("\n=== largest 50 objects ===")
+          for size, key in sorted(by_file, reverse=True)[:50]:
+              print(f"{size/1024**2:10.1f} MiB  {key}")
           print("\n=== *.tfstate* ===")
-          ts=[(o.get("Size",0),o["Key"]) for o in contents if ".tfstate" in o["Key"]]
-          print(f"count={len(ts)} bytes={sum(s for s,_ in ts)} gib={sum(s for s,_ in ts)/1024**3:.3f}")
-          for size,key in sorted(ts, reverse=True)[:30]:
-            print(f"{size/1024**2:10.1f} MiB  {key}")
+          ts = [(o.get("Size", 0), o["Key"]) for o in contents if ".tfstate" in o["Key"]]
+          print(f"count={len(ts)} gib={sum(s for s,_ in ts)/1024**3:.3f}")
+          for size, key in sorted(ts, reverse=True)[:40]:
+              print(f"{size/1024**2:10.1f} MiB  {key}")
+          print("\n=== inventory/ (incl talos machine configs) ===")
+          inv = [(o.get("Size", 0), o["Key"]) for o in contents if o["Key"].startswith("production/inventory/")]
+          print(f"count={len(inv)} gib={sum(s for s,_ in inv)/1024**3:.3f}")
+          # group by version dir under inventory
+          inv_by = collections.Counter()
+          for size, key in inv:
+              parts = key.split("/")
+              # production/inventory/<provider>/<acct>/...
+              pref = "/".join(parts[:5]) if len(parts) >= 5 else "/".join(parts[:4])
+              inv_by[pref] += size
+          for pref, sz in inv_by.most_common(40):
+              print(f"{sz/1024**2:10.1f} MiB  {pref}")
           PY
+          # Also try image bucket if same credentials work
+          for b in cluster-image-registry stawi-talos-images images; do
+            echo "=== try bucket $b ==="
+            aws s3api list-objects-v2 --bucket "$b" --endpoint-url "$EP" --region us-east-1 --max-items 5 2>&1 | head -5 || true
+          done
