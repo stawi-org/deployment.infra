@@ -6,12 +6,9 @@
 # Flannel public-ip-overwrite is set via derived_annotations when
 # an external IPv4 is present (see node-gcp module).
 #
-# HostnameConfig is intentionally omitted: Omni's base machine
-# config already carries HostnameConfig with `auto: stable`, and
-# Talos configpatcher strategic-merges our document into that one
-# so both `auto` and `hostname` end up set — rejected on Talos
-# ≥1.12 ("cannot be set at the same time"). GCP already reports
-# the inventory hostname via the platform driver.
+# HostnameConfig — pin inventory name (gcp-<acct>-node-N).
+# Replace base auto:stable doc ($patch: delete + static hostname);
+# same pattern as Contabo/OCI (see node-contabo.tftpl).
 
 machine:
   nodeLabels:
@@ -22,3 +19,12 @@ machine:
 %{ for k, v in node_annotations ~}
     ${k}: "${v}"
 %{ endfor ~}
+
+---
+apiVersion: v1alpha1
+kind: HostnameConfig
+$patch: delete
+---
+apiVersion: v1alpha1
+kind: HostnameConfig
+hostname: ${hostname}

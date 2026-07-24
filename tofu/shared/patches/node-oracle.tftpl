@@ -21,10 +21,9 @@
 #      This template closes that gap by routing them through Talos
 #      machine.nodeAnnotations, which kubelet propagates to the K8s
 #      Node object on registration.
-#   3. HostnameConfig intentionally omitted — Omni's base config
-#      already has HostnameConfig `auto: stable`; strategic merge
-#      with a static `hostname` fails validation on Talos ≥1.12.
-#      OCI platform driver already sets the inventory hostname.
+#   3. HostnameConfig — pin inventory name (oci-<acct>-node-N).
+#      Replace base auto:stable doc ($patch: delete + static hostname);
+#      same pattern as Contabo/GCP (see node-contabo.tftpl).
 
 machine:
   nodeLabels:
@@ -35,3 +34,12 @@ machine:
 %{ for k, v in node_annotations ~}
     ${k}: "${v}"
 %{ endfor ~}
+
+---
+apiVersion: v1alpha1
+kind: HostnameConfig
+$patch: delete
+---
+apiVersion: v1alpha1
+kind: HostnameConfig
+hostname: ${hostname}
