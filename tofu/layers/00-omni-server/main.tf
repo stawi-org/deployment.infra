@@ -148,10 +148,10 @@ module "omni_host_oci" {
   r2_access_key_id     = var.r2_access_key_id
   r2_secret_access_key = var.r2_secret_access_key
 
-  # Greenfield 2026-07-18 OCI cutover (worker capacity → Omni). Empty
-  # prefix ⇒ omni-restore finds nothing ⇒ fresh master keys. All Talos
-  # nodes re-register after force_reinstall_generation bumps.
-  r2_backup_prefix = "production/omni-backups-2026-07-18-oci"
+  # Stable Omni host snapshot prefix (hourly tar.gz). Retention is
+  # 7 days on-host prune + R2 lifecycle; do not date-stamp cutovers
+  # into the path (that left multi-GB orphan trees in R2).
+  r2_backup_prefix = "production/omni-backups"
 
   etcd_backup_enabled = var.etcd_backup_enabled
 
@@ -209,12 +209,8 @@ module "omni_host_contabo" {
   r2_access_key_id     = var.r2_access_key_id
   r2_secret_access_key = var.r2_secret_access_key
 
-  # Fresh restore namespace for the 2026-05-24 revert-to-Contabo
-  # (OCI inbound-edge break — see terraform.tfvars). Restore finds
-  # nothing at this prefix → omni-keys generates fresh master keys
-  # → Omni starts clean. Greenfield: every cluster gets re-registered,
-  # no production state lost.
-  r2_backup_prefix = "production/omni-backups-2026-05-24-contabo"
+  # Canonical Omni host snapshot prefix (see omni-host-contabo vars).
+  r2_backup_prefix = "production/omni-backups"
 }
 
 # GCP Always Free–oriented Omni host (STANDARD e2-micro, never Spot).
@@ -269,9 +265,8 @@ module "omni_host_gcp" {
   r2_account_id        = var.r2_account_id
   r2_access_key_id     = var.r2_access_key_id
   r2_secret_access_key = var.r2_secret_access_key
-  # Reuse Contabo backup prefix so first boot can restore Omni etcd
-  # and keep machine registrations (cutover continuity).
-  r2_backup_prefix = "production/omni-backups-2026-05-24-contabo"
+  # Same stable prefix as Contabo so cutovers restore from one place.
+  r2_backup_prefix = "production/omni-backups"
 }
 
 # DNS records pull the IPs straight from the active omni-host — tofu knows

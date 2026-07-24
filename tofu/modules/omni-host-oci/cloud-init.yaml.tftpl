@@ -518,10 +518,7 @@ write_files:
   # Backup script — taken hourly by omni-backup.timer. Stops Omni
   # first so embedded etcd + sqlite snapshots are consistent (a ~30s
   # outage per hour is the cost of a small RPO). Uploads tar.gz to
-  # R2, then prunes all but the most recent 48 snapshots — that's
-  # ~48 hours of rolling history, covering "registered an SA key,
-  # then VPS reinstalled before the next snapshot" which is the
-  # exact gap that bit us on 2026-04-30.
+  # R2, then deletes objects older than RETAIN_DAYS (default 7).
   - path: /usr/local/bin/omni-backup.sh
     permissions: "0755"
     content: |
@@ -564,13 +561,18 @@ write_files:
       aws s3 cp "$tmp/omni-$ts.tar.gz" \
         "s3://$R2_BUCKET/$R2_PREFIX/omni-$ts.tar.gz" \
         --endpoint-url "$R2_ENDPOINT"
-      echo "[omni-backup] pruning all but the latest 48"
+      RETAIN_DAYS="${OMNI_BACKUP_RETAIN_DAYS:-7}"
+      cutoff=$(date -u -d "${RETAIN_DAYS} days ago" +%Y%m%dT%H%M%SZ 2>/dev/null \
+        || date -u -v-"${RETAIN_DAYS}"d +%Y%m%dT%H%M%SZ)
+      echo "[omni-backup] pruning objects older than ${RETAIN_DAYS}d (cutoff=$cutoff)"
       aws s3 ls "s3://$R2_BUCKET/$R2_PREFIX/" --endpoint-url "$R2_ENDPOINT" \
-        | awk '{print $4}' | grep -E '^omni-.*\.tar\.gz$' | sort \
-        | head -n -48 \
+        | awk '{print $4}' | grep -E '^omni-[0-9]{8}T[0-9]{6}Z\.tar\.gz$' | sort \
         | while read -r old; do
-            [ -n "$old" ] && aws s3 rm "s3://$R2_BUCKET/$R2_PREFIX/$old" \
-              --endpoint-url "$R2_ENDPOINT"
+            ts="${old#omni-}"; ts="${ts%.tar.gz}"
+            if [[ "$ts" < "$cutoff" ]]; then
+              echo "[omni-backup] rm $old"
+              aws s3 rm "s3://$R2_BUCKET/$R2_PREFIX/$old" --endpoint-url "$R2_ENDPOINT"
+            fi
           done
       echo "[omni-backup] done"
 

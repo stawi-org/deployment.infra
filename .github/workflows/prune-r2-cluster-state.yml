@@ -1,0 +1,246 @@
+# Maintain s3://cluster-tofu-state hygiene:
+#   1. Migrate Omni host snapshots from dated cutover prefixes into the
+#      stable prefix production/omni-backups/.
+#   2. Age-prune production/omni-backups/ (default retain 7 days).
+#   3. Delete stale cutover backup trees entirely.
+#   4. Delete legacy production/talos-images/ (install media lives in
+#      cluster-image-registry / per-provider image buckets now).
+#   5. Apply R2 lifecycle rules (S3-compatible API) as a safety net.
+#
+# Live Contabo omni-host may still write to a cutover prefix until the
+# next force_reinstall lands cloud-init with the stable prefix. This
+# workflow migrates those uploads hourly/daily so restore always finds
+# objects under production/omni-backups/.
+name: prune-r2-cluster-state
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "If true, only print planned deletes/copies"
+        required: false
+        default: "false"
+        type: string
+      retain_days:
+        description: "Keep omni-YYYYMMDDTHHMMSSZ.tar.gz newer than this many days"
+        required: false
+        default: "7"
+        type: string
+      delete_cutover_prefixes:
+        description: "Delete dated omni-backups-* cutover trees after migrate"
+        required: false
+        default: "true"
+        type: string
+      delete_talos_images:
+        description: "Delete production/talos-images/ (legacy media in state bucket)"
+        required: false
+        default: "true"
+        type: string
+      apply_lifecycle:
+        description: "Upsert R2 bucket lifecycle rules"
+        required: false
+        default: "true"
+        type: string
+  schedule:
+    # Daily 06:15 UTC — after nightly noise, before business hours.
+    - cron: "15 6 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      DRY_RUN: ${{ inputs.dry_run || 'false' }}
+      RETAIN_DAYS: ${{ inputs.retain_days || '7' }}
+      DELETE_CUTOVER: ${{ inputs.delete_cutover_prefixes || 'true' }}
+      DELETE_TALOS_IMAGES: ${{ inputs.delete_talos_images || 'true' }}
+      APPLY_LIFECYCLE: ${{ inputs.apply_lifecycle || 'true' }}
+      STABLE_PREFIX: production/omni-backups
+      BUCKET: cluster-tofu-state
+    steps:
+      - name: Prune / migrate / lifecycle
+        run: |
+          set -euo pipefail
+          EP="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          export AWS_DEFAULT_REGION=auto
+          aws configure set default.s3.addressing_style path
+
+          python3 - <<'PY'
+          import os, sys, boto3
+          from datetime import datetime, timedelta, timezone
+
+          dry = os.environ.get("DRY_RUN", "false").lower() in ("1", "true", "yes")
+          retain_days = int(os.environ.get("RETAIN_DAYS", "7"))
+          delete_cutover = os.environ.get("DELETE_CUTOVER", "true").lower() in ("1", "true", "yes")
+          delete_talos = os.environ.get("DELETE_TALOS_IMAGES", "true").lower() in ("1", "true", "yes")
+          apply_lifecycle = os.environ.get("APPLY_LIFECYCLE", "true").lower() in ("1", "true", "yes")
+          stable = os.environ["STABLE_PREFIX"].rstrip("/")
+          bucket = os.environ["BUCKET"]
+          ep = f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com"
+
+          s3 = boto3.client("s3", endpoint_url=ep, region_name="us-east-1")
+          paginator = s3.get_paginator("list_objects_v2")
+
+          def list_prefix(prefix):
+              keys = []
+              for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                  for o in page.get("Contents") or []:
+                      keys.append(o)
+              return keys
+
+          def delete_key(key):
+              if dry:
+                  print(f"  dry-run: delete s3://{bucket}/{key}")
+                  return
+              s3.delete_object(Bucket=bucket, Key=key)
+              print(f"  deleted {key}")
+
+          def copy_key(src, dst):
+              if dry:
+                  print(f"  dry-run: copy {src} -> {dst}")
+                  return
+              s3.copy_object(
+                  Bucket=bucket,
+                  CopySource={"Bucket": bucket, "Key": src},
+                  Key=dst,
+              )
+              print(f"  copied {src} -> {dst}")
+
+          now = datetime.now(timezone.utc)
+          cutoff = now - timedelta(days=retain_days)
+          # Filename form omni-YYYYMMDDTHHMMSSZ.tar.gz
+          cutoff_token = cutoff.strftime("%Y%m%dT%H%M%SZ")
+          print(f"dry_run={dry} retain_days={retain_days} cutoff_token={cutoff_token}")
+          print(f"stable_prefix={stable}/")
+
+          # --- 1. Discover cutover / legacy Omni backup prefixes ---
+          all_objs = []
+          for page in paginator.paginate(Bucket=bucket, Prefix="production/"):
+              all_objs.extend(page.get("Contents") or [])
+
+          cutover_prefixes = set()
+          for o in all_objs:
+              key = o["Key"]
+              if key.startswith("production/omni-backups-"):
+                  # production/omni-backups-YYYY-MM-DD-.../
+                  parts = key.split("/")
+                  if len(parts) >= 2:
+                      cutover_prefixes.add(parts[0] + "/" + parts[1])
+              # bare production/omni-backups/ without date is stable — not cutover
+
+          # Also treat empty-dated legacy production/omni-backups without files? skip
+          print(f"cutover_prefixes={sorted(cutover_prefixes)}")
+
+          # --- 2. Migrate recent snapshots from cutovers into stable ---
+          migrated = 0
+          for pref in sorted(cutover_prefixes):
+              objs = list_prefix(pref + "/")
+              for o in objs:
+                  key = o["Key"]
+                  name = key.rsplit("/", 1)[-1]
+                  if not name.startswith("omni-") or not name.endswith(".tar.gz"):
+                      continue
+                  # Only migrate objects within retain window (or all if we want history)
+                  ts = name[len("omni-"):-len(".tar.gz")]
+                  if ts < cutoff_token:
+                      continue
+                  dst = f"{stable}/{name}"
+                  # Skip if already present with same size
+                  try:
+                      head = s3.head_object(Bucket=bucket, Key=dst)
+                      if head.get("ContentLength") == o.get("Size"):
+                          continue
+                  except Exception:
+                      pass
+                  print(f"migrate {key}")
+                  copy_key(key, dst)
+                  migrated += 1
+          print(f"migrated={migrated}")
+
+          # --- 3. Age-prune stable prefix ---
+          stable_objs = list_prefix(stable + "/")
+          pruned = 0
+          for o in stable_objs:
+              key = o["Key"]
+              name = key.rsplit("/", 1)[-1]
+              if not name.startswith("omni-") or not name.endswith(".tar.gz"):
+                  continue
+              ts = name[len("omni-"):-len(".tar.gz")]
+              if ts < cutoff_token:
+                  print(f"prune stable {key}")
+                  delete_key(key)
+                  pruned += 1
+          print(f"stable_pruned={pruned}")
+
+          # --- 4. Delete cutover trees (after migrate) ---
+          if delete_cutover:
+              for pref in sorted(cutover_prefixes):
+                  objs = list_prefix(pref + "/")
+                  print(f"delete cutover prefix {pref}/ ({len(objs)} objects)")
+                  for o in objs:
+                      delete_key(o["Key"])
+          else:
+              print("skip cutover delete (DELETE_CUTOVER=false)")
+
+          # --- 5. Delete production/talos-images/ ---
+          if delete_talos:
+              imgs = list_prefix("production/talos-images/")
+              print(f"delete production/talos-images/ ({len(imgs)} objects)")
+              for o in imgs:
+                  delete_key(o["Key"])
+          else:
+              print("skip talos-images delete")
+
+          # --- 6. R2 lifecycle (S3 API) ---
+          # Expire host snapshots under stable prefix after retain_days+1.
+          # Abort incomplete multipart uploads after 1 day.
+          if apply_lifecycle:
+              rules = {
+                  "Rules": [
+                      {
+                          "ID": "omni-host-backups-expire",
+                          "Status": "Enabled",
+                          "Filter": {"Prefix": f"{stable}/"},
+                          "Expiration": {"Days": retain_days + 1},
+                      },
+                      {
+                          "ID": "abort-incomplete-multipart",
+                          "Status": "Enabled",
+                          "Filter": {"Prefix": ""},
+                          "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 1},
+                      },
+                      # Safety: if a cutover prefix reappears, expire quickly.
+                      {
+                          "ID": "omni-cutover-backups-expire",
+                          "Status": "Enabled",
+                          "Filter": {"Prefix": "production/omni-backups-"},
+                          "Expiration": {"Days": 2},
+                      },
+                  ]
+              }
+              print(f"lifecycle rules dry_run={dry}: {rules}")
+              if not dry:
+                  s3.put_bucket_lifecycle_configuration(
+                      Bucket=bucket,
+                      LifecycleConfiguration=rules,
+                  )
+                  print("put_bucket_lifecycle_configuration OK")
+          else:
+              print("skip lifecycle")
+
+          # --- summary ---
+          remaining = list_prefix(stable + "/")
+          total = sum(o.get("Size", 0) for o in remaining)
+          print(f"stable remaining objects={len(remaining)} gib={total/1024**3:.3f}")
+          # whole bucket
+          all_now = []
+          for page in paginator.paginate(Bucket=bucket):
+              all_now.extend(page.get("Contents") or [])
+          t = sum(o.get("Size", 0) for o in all_now)
+          print(f"bucket objects={len(all_now)} gib={t/1024**3:.3f} gb={t/1000**3:.3f}")
+          PY

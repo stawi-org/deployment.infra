@@ -508,10 +508,9 @@ write_files:
   # Backup script — taken hourly by omni-backup.timer. Stops Omni
   # first so embedded etcd + sqlite snapshots are consistent (a ~30s
   # outage per hour is the cost of a small RPO). Uploads tar.gz to
-  # R2, then prunes all but the most recent 48 snapshots — that's
-  # ~48 hours of rolling history, covering "registered an SA key,
-  # then VPS reinstalled before the next snapshot" which is the
-  # exact gap that bit us on 2026-04-30.
+  # R2, then deletes objects older than RETAIN_DAYS (default 7) based
+  # on the UTC timestamp embedded in the object name. R2 lifecycle on
+  # production/omni-backups/ is a belt-and-suspenders expiry.
   - path: /usr/local/bin/omni-backup.sh
     permissions: "0755"
     content: |
@@ -554,13 +553,20 @@ write_files:
       aws s3 cp "$tmp/omni-$ts.tar.gz" \
         "s3://$R2_BUCKET/$R2_PREFIX/omni-$ts.tar.gz" \
         --endpoint-url "$R2_ENDPOINT"
-      echo "[omni-backup] pruning all but the latest 48"
+      # Age-based prune: keep RETAIN_DAYS of hourly snapshots (default 7).
+      # Object names are omni-YYYYMMDDTHHMMSSZ.tar.gz (UTC).
+      RETAIN_DAYS="${OMNI_BACKUP_RETAIN_DAYS:-7}"
+      cutoff=$(date -u -d "${RETAIN_DAYS} days ago" +%Y%m%dT%H%M%SZ 2>/dev/null \
+        || date -u -v-"${RETAIN_DAYS}"d +%Y%m%dT%H%M%SZ)
+      echo "[omni-backup] pruning objects older than ${RETAIN_DAYS}d (cutoff=$cutoff)"
       aws s3 ls "s3://$R2_BUCKET/$R2_PREFIX/" --endpoint-url "$R2_ENDPOINT" \
-        | awk '{print $4}' | grep -E '^omni-.*\.tar\.gz$' | sort \
-        | head -n -48 \
+        | awk '{print $4}' | grep -E '^omni-[0-9]{8}T[0-9]{6}Z\.tar\.gz$' | sort \
         | while read -r old; do
-            [ -n "$old" ] && aws s3 rm "s3://$R2_BUCKET/$R2_PREFIX/$old" \
-              --endpoint-url "$R2_ENDPOINT"
+            ts="${old#omni-}"; ts="${ts%.tar.gz}"
+            if [[ "$ts" < "$cutoff" ]]; then
+              echo "[omni-backup] rm $old"
+              aws s3 rm "s3://$R2_BUCKET/$R2_PREFIX/$old" --endpoint-url "$R2_ENDPOINT"
+            fi
           done
       echo "[omni-backup] done"
 
@@ -611,23 +617,37 @@ write_files:
         exit 1
       fi
       set -a; source /etc/omni/r2.env; set +a
-      # Separate the ls call so we can distinguish "no backup yet"
-      # (legitimate first-boot) from a real failure (auth, network, missing
-      # bucket). A silent failure here would skip restore and let omni-keys
-      # generate a brand-new master key, which the operator wouldn't notice
-      # until they hit a state-mismatch error days later.
-      list=$(aws s3 ls "s3://$R2_BUCKET/$R2_PREFIX/" --endpoint-url "$R2_ENDPOINT") || {
-        echo "[omni-restore] ERROR: aws s3 ls failed — cannot tell if a backup exists, refusing to proceed" >&2
+      # Prefer configured R2_PREFIX (stable production/omni-backups), then
+      # any remaining dated cutover trees. Pick the newest object name
+      # (omni-YYYYMMDDTHHMMSSZ.tar.gz sorts lexicographically by time).
+      search_prefixes=("$R2_PREFIX" "production/omni-backups")
+      # shellcheck disable=SC2012
+      while IFS= read -r p; do
+        [[ -n "$p" ]] && search_prefixes+=("$p")
+      done < <(aws s3 ls "s3://$R2_BUCKET/production/" --endpoint-url "$R2_ENDPOINT" 2>/dev/null \
+        | awk '/PRE omni-backups-/ {print "production/"$2}' | sed 's:/$::' || true)
+      latest=""; latest_prefix=""
+      saw_ls_ok=0
+      for pref in "${search_prefixes[@]}"; do
+        pref="${pref%/}"
+        list=$(aws s3 ls "s3://$R2_BUCKET/$pref/" --endpoint-url "$R2_ENDPOINT" 2>/dev/null) && saw_ls_ok=1 || continue
+        cand=$(echo "$list" | awk '{print $4}' | grep -E '^omni-.*\.tar\.gz$' | sort | tail -1 || true)
+        if [[ -n "$cand" && ( -z "$latest" || "$cand" > "$latest" ) ]]; then
+          latest=$cand
+          latest_prefix=$pref
+        fi
+      done
+      if [[ "$saw_ls_ok" -eq 0 ]]; then
+        echo "[omni-restore] ERROR: aws s3 ls failed on every prefix — refusing to proceed" >&2
         exit 1
-      }
-      latest=$(echo "$list" | awk '{print $4}' | grep -E '^omni-.*\.tar\.gz$' | sort | tail -1)
+      fi
       if [ -z "$latest" ]; then
-        echo "[omni-restore] no backup in s3://$R2_BUCKET/$R2_PREFIX/ — first-boot path, omni-keys will generate fresh keys"
+        echo "[omni-restore] no backup under ${search_prefixes[*]} — first-boot path, omni-keys will generate fresh keys"
         exit 0
       fi
-      echo "[omni-restore] restoring $latest"
+      echo "[omni-restore] restoring s3://$R2_BUCKET/$latest_prefix/$latest"
       tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-      aws s3 cp "s3://$R2_BUCKET/$R2_PREFIX/$latest" "$tmp/$latest" \
+      aws s3 cp "s3://$R2_BUCKET/$latest_prefix/$latest" "$tmp/$latest" \
         --endpoint-url "$R2_ENDPOINT"
       # Backups since 2026-05-01 stage a snapshot rooted at / (so the
       # tarball contains var/lib/omni AND etc/wireguard AND
