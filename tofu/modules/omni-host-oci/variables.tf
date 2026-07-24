@@ -111,7 +111,7 @@ variable "r2_bucket_name" {
 variable "r2_backup_prefix" {
   type        = string
   default     = "production/omni-backups"
-  description = "Object key prefix under r2_bucket_name where omni-*.tar.gz snapshots are written."
+  description = "Stable object key prefix under r2_bucket_name for omni-*.tar.gz host snapshots. Do not date-stamp cutovers into this path; retention is age-based (7d) via on-host prune + R2 lifecycle."
 }
 
 # ---- Omni native etcd backup ------------------------------------------------
