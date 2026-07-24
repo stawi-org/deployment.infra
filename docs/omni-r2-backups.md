@@ -20,13 +20,15 @@ buckets), not under `production/talos-images/` in the state bucket.
 1. **On-host** (`omni-backup.sh`): after each hourly upload, deletes objects
    whose embedded UTC timestamp is older than `OMNI_BACKUP_RETAIN_DAYS`
    (default **7**).
-2. **R2 lifecycle** (set by `prune-r2-cluster-state` workflow): expire
-   `production/omni-backups/*` after **retain_days + 1**, and any recreated
-   `production/omni-backups-*` cutover prefix after **2** days.
-3. **CI** (`.github/workflows/prune-r2-cluster-state.yml`): daily +
-   `workflow_dispatch` — migrate cutovers → stable, age-prune, delete
-   stale cutover trees, delete legacy `production/talos-images/`, upsert
-   lifecycle.
+2. **CI** (`.github/workflows/prune-r2-cluster-state.yml`): daily +
+   `workflow_dispatch` — migrate cutovers → stable, age-prune, optional
+   **daily collapse** (`retain_mode=daily`, default: one snapshot per UTC
+   day for `retain_days`), delete stale cutover trees, delete legacy
+   `production/talos-images/`, try R2 lifecycle upsert.
+3. **R2 lifecycle** (best-effort via S3 API): expire
+   `production/omni-backups/*` after **retain_days + 1**, cutover prefixes
+   after **2** days. S3 tokens often lack this permission — CI prune still
+   enforces retention.
 
 ## Operator commands
 

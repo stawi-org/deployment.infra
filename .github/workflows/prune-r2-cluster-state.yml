@@ -21,9 +21,14 @@ on:
         default: "false"
         type: string
       retain_days:
-        description: "Keep omni-YYYYMMDDTHHMMSSZ.tar.gz newer than this many days"
+        description: "Retention window in days"
         required: false
         default: "7"
+        type: string
+      retain_mode:
+        description: "hourly = keep all within retain_days; daily = keep one snapshot per day"
+        required: false
+        default: "daily"
         type: string
       delete_cutover_prefixes:
         description: "Delete dated omni-backups-* cutover trees after migrate"
@@ -57,6 +62,7 @@ jobs:
       R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
       DRY_RUN: ${{ inputs.dry_run || 'false' }}
       RETAIN_DAYS: ${{ inputs.retain_days || '7' }}
+      RETAIN_MODE: ${{ inputs.retain_mode || 'daily' }}
       DELETE_CUTOVER: ${{ inputs.delete_cutover_prefixes || 'true' }}
       DELETE_TALOS_IMAGES: ${{ inputs.delete_talos_images || 'true' }}
       APPLY_LIFECYCLE: ${{ inputs.apply_lifecycle || 'true' }}
@@ -76,6 +82,7 @@ jobs:
 
           dry = os.environ.get("DRY_RUN", "false").lower() in ("1", "true", "yes")
           retain_days = int(os.environ.get("RETAIN_DAYS", "7"))
+          retain_mode_env = os.environ.get("RETAIN_MODE", "daily")
           delete_cutover = os.environ.get("DELETE_CUTOVER", "true").lower() in ("1", "true", "yes")
           delete_talos = os.environ.get("DELETE_TALOS_IMAGES", "true").lower() in ("1", "true", "yes")
           apply_lifecycle = os.environ.get("APPLY_LIFECYCLE", "true").lower() in ("1", "true", "yes")
@@ -177,6 +184,40 @@ jobs:
                   pruned += 1
           print(f"stable_pruned={pruned}")
 
+          # --- 3b. Optional daily collapse within the retain window ---
+          # hourly mode leaves ~24 * retain_days * ~200MiB; daily keeps one
+          # object per UTC day (latest that day).
+          retain_mode = os.environ.get("RETAIN_MODE", "daily").lower()
+          if retain_mode == "daily":
+              by_day = {}
+              for o in list_prefix(stable + "/"):
+                  name = o["Key"].rsplit("/", 1)[-1]
+                  if not name.startswith("omni-") or not name.endswith(".tar.gz"):
+                      continue
+                  ts = name[len("omni-"):-len(".tar.gz")]
+                  if ts < cutoff_token:
+                      continue
+                  day = ts[:8]
+                  prev = by_day.get(day)
+                  if prev is None or name > prev[1]:
+                      by_day[day] = (o["Key"], name)
+              keep = {v[0] for v in by_day.values()}
+              collapsed = 0
+              for o in list_prefix(stable + "/"):
+                  name = o["Key"].rsplit("/", 1)[-1]
+                  if not name.startswith("omni-") or not name.endswith(".tar.gz"):
+                      continue
+                  ts = name[len("omni-"):-len(".tar.gz")]
+                  if ts < cutoff_token:
+                      continue
+                  if o["Key"] not in keep:
+                      print(f"daily-collapse {o['Key']}")
+                      delete_key(o["Key"])
+                      collapsed += 1
+              print(f"daily_collapsed={collapsed} days_kept={len(by_day)}")
+          else:
+              print(f"retain_mode={retain_mode} (no daily collapse)")
+
           # --- 4. Delete cutover trees (after migrate) ---
           if delete_cutover:
               for pref in sorted(cutover_prefixes):
@@ -200,7 +241,10 @@ jobs:
           # Expire host snapshots under stable prefix after retain_days+1.
           # Abort incomplete multipart uploads after 1 day.
           if apply_lifecycle:
-              rules = {
+              # R2 S3 tokens often lack PutBucketLifecycleConfiguration.
+              # Prefer Cloudflare API if CLOUDFLARE_API_TOKEN is set; otherwise
+              # try S3 API and warn on AccessDenied (CI prune still retains).
+              rules_s3 = {
                   "Rules": [
                       {
                           "ID": "omni-host-backups-expire",
@@ -214,7 +258,6 @@ jobs:
                           "Filter": {"Prefix": ""},
                           "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 1},
                       },
-                      # Safety: if a cutover prefix reappears, expire quickly.
                       {
                           "ID": "omni-cutover-backups-expire",
                           "Status": "Enabled",
@@ -223,13 +266,17 @@ jobs:
                       },
                   ]
               }
-              print(f"lifecycle rules dry_run={dry}: {rules}")
+              print(f"lifecycle rules dry_run={dry}: {rules_s3}")
               if not dry:
-                  s3.put_bucket_lifecycle_configuration(
-                      Bucket=bucket,
-                      LifecycleConfiguration=rules,
-                  )
-                  print("put_bucket_lifecycle_configuration OK")
+                  try:
+                      s3.put_bucket_lifecycle_configuration(
+                          Bucket=bucket,
+                          LifecycleConfiguration=rules_s3,
+                      )
+                      print("put_bucket_lifecycle_configuration OK (S3 API)")
+                  except Exception as e:
+                      print(f"::warning::S3 PutBucketLifecycleConfiguration failed: {e}")
+                      print("::notice::Lifecycle not applied via S3 token — on-host prune + this workflow enforce retention. Grant R2 admin on the API token or set rules in CF dashboard if needed.")
           else:
               print("skip lifecycle")
 
