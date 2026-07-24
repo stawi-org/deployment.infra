@@ -1,0 +1,50 @@
+name: dump-r2-sizes
+on:
+  workflow_dispatch: {}
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+    steps:
+      - name: Summarize s3://cluster-tofu-state sizes
+        run: |
+          set -euo pipefail
+          EP="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          aws configure set default.s3.addressing_style path
+          echo "=== top-level prefixes (approx via list) ==="
+          # List all object sizes under production/ and summarize by prefix
+          aws s3api list-objects-v2 --bucket cluster-tofu-state --endpoint-url "$EP" --region us-east-1 \
+            --output json > /tmp/all.json || true
+          python3 - <<'PY'
+          import json, collections
+          data=json.load(open("/tmp/all.json"))
+          contents=data.get("Contents") or []
+          print(f"object_count={len(contents)}")
+          total=sum(o.get("Size",0) for o in contents)
+          print(f"total_bytes={total} total_gib={total/1024**3:.3f}")
+          # by first 2 path segments
+          by=collections.Counter()
+          by_file=[]
+          for o in contents:
+            key=o["Key"]; size=o.get("Size",0)
+            parts=key.split("/")
+            pref="/".join(parts[:2]) if len(parts)>=2 else parts[0]
+            by[pref]+=size
+            by_file.append((size,key))
+          print("\n=== by prefix (top 30) ===")
+          for pref,sz in by.most_common(30):
+            print(f"{sz/1024**2:10.1f} MiB  {pref}/")
+          print("\n=== largest 40 objects ===")
+          for size,key in sorted(by_file, reverse=True)[:40]:
+            print(f"{size/1024**2:10.1f} MiB  {key}")
+          # tfstate-specific
+          print("\n=== *.tfstate* ===")
+          ts=[(o.get("Size",0),o["Key"]) for o in contents if ".tfstate" in o["Key"]]
+          print(f"count={len(ts)} bytes={sum(s for s,_ in ts)} gib={sum(s for s,_ in ts)/1024**3:.3f}")
+          for size,key in sorted(ts, reverse=True)[:30]:
+            print(f"{size/1024**2:10.1f} MiB  {key}")
+          PY
