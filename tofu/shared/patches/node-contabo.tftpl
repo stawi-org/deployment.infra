@@ -37,12 +37,11 @@
 #      stable across reboots on every current Contabo VPS (single
 #      NIC, virtio_net, Talos's predictable interface naming).
 #      Multi-NIC variants would need per-node selector machinery.
-#   4. HostnameConfig intentionally omitted for now.
-#      Contabo platform hostname is `vmi*`. Omni base config already
-#      has HostnameConfig `auto: stable`; strategic-merging a static
-#      `hostname` fails Talos ≥1.12 validation (both fields set).
-#      Labels/LinkConfig still apply; canonical Contabo hostnames
-#      need a replace-style patch or force_reinstall bake-in later.
+#   4. HostnameConfig — pin inventory name (contabo-<acct>-node-N).
+#      Omni base ships HostnameConfig `auto: stable`. Merging only
+#      `hostname:` leaves both fields set (rejected on Talos ≥1.12).
+#      Replace the whole doc: `$patch: delete` then a clean static
+#      HostnameConfig (Sidero multi-doc patching docs).
 #
 # IMPORTANT — apply-at-boot only:
 #   This patch is SAFE only when the node boots with the LinkConfig
@@ -98,3 +97,13 @@ addresses:
 routes:
   - gateway: ${ipv4_gateway}
   - gateway: fe80::1
+
+---
+# Replace base HostnameConfig (auto:stable) with a static inventory name.
+apiVersion: v1alpha1
+kind: HostnameConfig
+$patch: delete
+---
+apiVersion: v1alpha1
+kind: HostnameConfig
+hostname: ${hostname}

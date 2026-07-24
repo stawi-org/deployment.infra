@@ -16,10 +16,10 @@
 #
 # Provider scoping:
 #   - contabo: render node-contabo.tftpl (LinkConfig + HostnameConfig
-#              + nodeLabels/Annotations)
-#   - oracle:  render node-oracle.tftpl (HostnameConfig +
+#              delete+set + nodeLabels/Annotations)
+#   - oracle:  render node-oracle.tftpl (HostnameConfig delete+set +
 #              nodeLabels/Annotations including flannel overrides)
-#   - gcp:     render node-gcp.tftpl (HostnameConfig +
+#   - gcp:     render node-gcp.tftpl (HostnameConfig delete+set +
 #              nodeLabels/Annotations; platform driver handles addresses)
 #   - onprem:  skip (currently out of scope per 2026-05-03 spec)
 
