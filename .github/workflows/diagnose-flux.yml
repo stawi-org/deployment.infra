@@ -1,0 +1,64 @@
+name: diagnose-flux
+on:
+  workflow_dispatch:
+    inputs:
+      reapply:
+        description: Delete and re-apply FluxInstance to force reconcile
+        type: boolean
+        default: true
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+      OMNI_VERSION: v1.9.3
+      REAPPLY: ${{ inputs.reapply }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install tools + kubeconfig
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          cat > /usr/local/bin/omnictl <<'WRAP'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /usr/local/bin/omnictl
+          curl -fsSLO "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          sudo install -m 0755 kubectl /usr/local/bin/kubectl
+          omnictl kubeconfig --cluster stawi --service-account --user diagnose-flux \
+            --groups system:masters --force "$HOME/.kube/config"
+      - name: Dump flux state
+        run: |
+          set -euo pipefail
+          echo "::group::ns pods deploy"
+          kubectl -n flux-system get deploy,pods,sa,cm -o wide || true
+          echo "::endgroup::"
+          echo "::group::FluxInstance"
+          kubectl -n flux-system get fluxinstance -o yaml || true
+          echo "::endgroup::"
+          echo "::group::operator logs"
+          kubectl -n flux-system logs -l app.kubernetes.io/name=flux-operator --tail=80 || true
+          echo "::endgroup::"
+          echo "::group::events"
+          kubectl -n flux-system get events --sort-by='.lastTimestamp' | tail -40 || true
+          echo "::endgroup::"
+          echo "::group::crds"
+          kubectl get crd | grep -i flux || true
+          echo "::endgroup::"
+      - name: Reapply FluxInstance
+        if: env.REAPPLY == 'true'
+        run: |
+          set -euo pipefail
+          kubectl -n flux-system delete fluxinstance flux --wait=false || true
+          sleep 5
+          kubectl apply -f tofu/layers/04-flux/fluxcd-setup.yaml
+          sleep 30
+          echo "::group::after reapply"
+          kubectl -n flux-system get fluxinstance -o yaml || true
+          kubectl -n flux-system get deploy,pods
+          kubectl -n flux-system logs -l app.kubernetes.io/name=flux-operator --tail=40 || true
+          echo "::endgroup::"
