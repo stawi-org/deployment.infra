@@ -19,26 +19,6 @@ on:
         type: string
         default: ""
         description: "Whitespace-separated FROM TO pairs to `tofu state mv` before plan/apply. Used for in-state refactors (e.g. hoisting a resource out of a module) where rm+import would lose sensitive values. One pair per move; pairs flow left-to-right."
-  # Direct operator dispatch — used for one-off recovery actions that
-  # don't fit the standard plan/apply graph (e.g. -replace= a single
-  # resource without dragging the whole layer chain along).
-  workflow_dispatch:
-    inputs:
-      layer:           { required: true, type: string }
-      mode:            { required: true, type: string, description: "plan | apply" }
-      environment:     { required: false, type: string, default: "production" }
-      extra_plan_args: { required: false, type: string, default: "" }
-      account:         { required: false, type: string, default: "" }
-      pre_apply_state_rm:
-        required: false
-        type: string
-        default: ""
-        description: "Whitespace-separated resource addresses to `tofu state rm` before plan/apply. Recovery / cross-layer move use only."
-      pre_apply_state_mv:
-        required: false
-        type: string
-        default: ""
-        description: "Whitespace-separated FROM TO pairs to `tofu state mv` before plan/apply. Used for in-state refactors (e.g. hoisting a resource out of a module) where rm+import would lose sensitive values. One pair per move; pairs flow left-to-right."
     secrets:
       R2_ACCOUNT_ID:            { required: true }
       R2_ACCESS_KEY_ID:         { required: true }
@@ -67,6 +47,28 @@ on:
       # Repository variable:
       #   OCI_RETAINED_PROFILES   — comma-separated profile names kept provider-only
       #                            for one apply while their resources are destroyed.
+  # Direct operator dispatch — used for one-off recovery actions that
+  # don't fit the standard plan/apply graph (e.g. -replace= a single
+  # resource without dragging the whole layer chain along).
+  # Secrets for dispatch come from the repo/environment automatically
+  # (workflow_dispatch cannot declare secrets: — only workflow_call can).
+  workflow_dispatch:
+    inputs:
+      layer:           { required: true, type: string }
+      mode:            { required: true, type: string, description: "plan | apply" }
+      environment:     { required: false, type: string, default: "production" }
+      extra_plan_args: { required: false, type: string, default: "" }
+      account:         { required: false, type: string, default: "" }
+      pre_apply_state_rm:
+        required: false
+        type: string
+        default: ""
+        description: "Whitespace-separated resource addresses to `tofu state rm` before plan/apply. Recovery / cross-layer move use only."
+      pre_apply_state_mv:
+        required: false
+        type: string
+        default: ""
+        description: "Whitespace-separated FROM TO pairs to `tofu state mv` before plan/apply. Used for in-state refactors (e.g. hoisting a resource out of a module) where rm+import would lose sensitive values. One pair per move; pairs flow left-to-right."
 
 jobs:
   run:
