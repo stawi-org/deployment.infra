@@ -97,4 +97,7 @@ force_image_generation = 12
 #                   (2 OCPU/12GB) + Talos v1.13.6 pin.
 #  21 — 2026-07-18: Omni cutover Contabo→OCI bwire; bwire worker
 #                   removed (Omni 1/6 + CP 1/6); greenfield Omni keys.
-force_reinstall_generation = 21
+#  22 — 2026-07-29: Contabo fleet removed; force-clear stawi + rebootstrap
+#                   OCI CPs after etcd quorum loss (soft-reset left nodes
+#                   stuck ClusterMachine stage=BOOTING).
+force_reinstall_generation = 22
