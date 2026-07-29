@@ -1,0 +1,35 @@
+name: purge-contabo-inventory
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type PURGE to delete production/inventory/contabo/
+        required: true
+        type: string
+jobs:
+  purge:
+    if: inputs.confirm == 'PURGE'
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+    steps:
+      - name: List and delete contabo inventory
+        run: |
+          set -euo pipefail
+          EP="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          echo "=== current contabo inventory ==="
+          aws s3 ls --recursive --endpoint-url "$EP" --region us-east-1 \
+            "s3://cluster-tofu-state/production/inventory/contabo/" || true
+          echo "=== contents of nodes.yaml files ==="
+          aws s3 sync --endpoint-url "$EP" --region us-east-1 \
+            "s3://cluster-tofu-state/production/inventory/contabo/" /tmp/contabo-inv/ || true
+          find /tmp/contabo-inv -type f -print -exec cat {} \;
+          echo "=== deleting prefix production/inventory/contabo/ ==="
+          aws s3 rm --recursive --endpoint-url "$EP" --region us-east-1 \
+            "s3://cluster-tofu-state/production/inventory/contabo/"
+          echo "=== verify gone ==="
+          aws s3 ls --recursive --endpoint-url "$EP" --region us-east-1 \
+            "s3://cluster-tofu-state/production/inventory/contabo/" || echo "prefix empty/gone"
