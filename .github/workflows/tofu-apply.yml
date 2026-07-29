@@ -11,6 +11,7 @@ permissions:
   contents: read
   id-token: write
   pull-requests: write
+  actions: write  # required so nested tofu-layer trigger-cluster-sync can dispatch
 
 # Concurrency is event-aware:
 #   - workflow_dispatch (operator runs tofu-apply directly): grab the
@@ -31,6 +32,7 @@ jobs:
       contents: read
       id-token: write
       pull-requests: write
+      actions: write
     uses: ./.github/workflows/tofu-layer.yml
     with:
       layer: 00-talos-secrets
@@ -78,6 +80,7 @@ jobs:
       contents: read
       id-token: write
       pull-requests: write
+      actions: write
     strategy:
       fail-fast: false
       matrix:
@@ -110,6 +113,7 @@ jobs:
       contents: read
       id-token: write
       pull-requests: write
+      actions: write
     strategy:
       fail-fast: false
       matrix:
@@ -146,6 +150,7 @@ jobs:
       contents: read
       id-token: write
       pull-requests: write
+      actions: write
     strategy:
       fail-fast: false
       matrix:
@@ -168,6 +173,7 @@ jobs:
       contents: read
       id-token: write
       pull-requests: write
+      actions: write
     uses: ./.github/workflows/tofu-layer.yml
     with:
       layer: 02-oci-storage
@@ -190,6 +196,7 @@ jobs:
       contents: read
       id-token: write
       pull-requests: write
+      actions: write
     uses: ./.github/workflows/tofu-layer.yml
     with:
       layer: 03-talos
@@ -206,6 +213,7 @@ jobs:
       contents: read
       id-token: write
       pull-requests: write
+      actions: write
     uses: ./.github/workflows/tofu-layer.yml
     with:
       layer: 04-dns
@@ -239,6 +247,7 @@ jobs:
       contents: read
       id-token: write
       pull-requests: write
+      actions: write
     uses: ./.github/workflows/tofu-layer.yml
     with:
       layer: 04-flux
