@@ -5,24 +5,24 @@ from inventory_yaml import render_nodes_yaml, render_state_yaml, merge_state
 
 def test_render_nodes_yaml_sorted_keys():
     out = render_nodes_yaml(
-        provider="contabo",
-        account="stawi-contabo",
+        provider="oracle",
+        account="stawi-a",
         account_meta={"labels": {"x": "1"}, "annotations": {}},
         nodes={"b-node": {"role": "worker"}, "a-node": {"role": "controlplane"}},
     )
     assert out.index("a-node") < out.index("b-node")
-    assert "account: stawi-contabo" in out
+    assert "account: stawi-a" in out
 
 
 def test_render_state_yaml_with_provider_data():
     out = render_state_yaml(
-        provider="contabo",
-        account="stawi-contabo",
+        provider="oracle",
+        account="stawi-a",
         node_provider_data={
-            "api-1": {"contabo_instance_id": "202727783", "ipv4": "1.2.3.4"},
+            "api-1": {"oci_instance_ocid": "ocid1.instance.oc1..abc", "ipv4": "1.2.3.4"},
         },
     )
-    assert "contabo_instance_id: '202727783'" in out or 'contabo_instance_id: "202727783"' in out
+    assert "oci_instance_ocid: ocid1.instance.oc1..abc" in out or 'oci_instance_ocid: "ocid1.instance.oc1..abc"' in out
 
 
 def test_merge_state_preserves_existing_subtree():

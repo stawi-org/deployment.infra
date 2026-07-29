@@ -1,21 +1,17 @@
 #!/usr/bin/env bash
 # scripts/migrate-auth-to-repo.sh
 #
-# One-shot helper: copy every provider/account auth.yaml from R2, decrypt
-# the contabo entries (they were age-encrypted at rest in R2), then re-
-# encrypt every file with the repo's .sops.yaml rule and drop the result
-# in tofu/shared/accounts/<provider>/<account>/auth.yaml.
+# One-shot helper: copy every provider/account auth.yaml from R2, then
+# re-encrypt every file with the repo's .sops.yaml rule and drop the
+# result in tofu/shared/accounts/<provider>/<account>/auth.yaml.
 #
-# After M2 lands (which flips tofu's auth read path to the repo path),
-# this script becomes obsolete and is removed in PR M3 alongside the R2
-# auth.yaml cleanup workflow.
+# Contabo accounts were removed (fleet cut off). Providers: oracle,
+# onprem, gcp.
 #
 # Prereqs (env):
 #   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY  — R2 bucket creds
 #   R2_ACCOUNT_ID                              — endpoint hostname slug
-#   SOPS_AGE_KEY                               — private age key (needed to
-#                                                decrypt the existing
-#                                                R2-encrypted contabo auth)
+#   SOPS_AGE_KEY                               — private age key
 # Required tools on PATH: aws, sops, yq
 #
 # Run from the repo root.
@@ -24,7 +20,7 @@ set -euo pipefail
 : "${AWS_ACCESS_KEY_ID:?required}"
 : "${AWS_SECRET_ACCESS_KEY:?required}"
 : "${R2_ACCOUNT_ID:?required}"
-: "${SOPS_AGE_KEY:?required (used to decrypt existing R2 contabo auth)}"
+: "${SOPS_AGE_KEY:?required}"
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 cd "$REPO_ROOT"
@@ -33,7 +29,7 @@ cd "$REPO_ROOT"
 ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 BUCKET="cluster-tofu-state"
 
-for prov in contabo oracle onprem; do
+for prov in oracle onprem gcp; do
   mapfile -t accts < <(yq -r ".${prov}[]?" tofu/shared/accounts.yaml)
   for acct in "${accts[@]}"; do
     [[ -z "$acct" ]] && continue
@@ -48,11 +44,7 @@ for prov in contabo oracle onprem; do
       rm -f "$tmp"
       continue
     fi
-    if [[ "$prov" == "contabo" ]]; then
-      sops -d --input-type yaml --output-type yaml "$tmp" > "$dest"
-    else
-      cp "$tmp" "$dest"
-    fi
+    cp "$tmp" "$dest"
     rm -f "$tmp"
     sops -e --input-type yaml --output-type yaml -i "$dest"
     echo "  wrote encrypted $dest"

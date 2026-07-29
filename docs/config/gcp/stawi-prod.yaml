@@ -3,7 +3,7 @@
 #
 # Region: europe-west9 (Paris) — closest French GCE region to Marseille.
 # CNPG affinity (deployment.manifests) requires role-database=true and
-# provider NotIn contabo. GCP nodes force role-database=false so Postgres
+# role-database=true (OCI only). GCP nodes force role-database=false so Postgres
 # stays on OCI.
 gcp:
   accounts:

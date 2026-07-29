@@ -2,50 +2,6 @@ provider "cloudflare" {
   api_token = var.cloudflare_api_token
 }
 
-# Contabo auth from inventory (same source as 01-contabo-infra). Prefer
-# this over TF_VAR CONTABO_* secrets, which drift and caused HTTP 401
-# invalid_grant on omni-host plans while contabo-infra stayed healthy.
-module "contabo_omni_account_state" {
-  count               = var.omni_host_provider == "contabo" ? 1 : 0
-  source              = "../../modules/node-state"
-  provider_name       = "contabo"
-  account             = "bwire"
-  local_inventory_dir = var.local_inventory_dir
-}
-
-locals {
-  contabo_oauth = var.omni_host_provider == "contabo" ? {
-    client_id     = try(module.contabo_omni_account_state[0].auth.auth.oauth2_client_id, var.contabo_client_id)
-    client_secret = try(module.contabo_omni_account_state[0].auth.auth.oauth2_client_secret, var.contabo_client_secret)
-    api_user      = try(module.contabo_omni_account_state[0].auth.auth.oauth2_user, var.contabo_api_user)
-    api_password  = try(module.contabo_omni_account_state[0].auth.auth.oauth2_pass, var.contabo_api_password)
-    } : {
-    client_id     = var.contabo_client_id
-    client_secret = var.contabo_client_secret
-    api_user      = var.contabo_api_user
-    api_password  = var.contabo_api_password
-  }
-}
-
-provider "contabo" {
-  oauth2_client_id     = local.contabo_oauth.client_id
-  oauth2_client_secret = local.contabo_oauth.client_secret
-  oauth2_user          = local.contabo_oauth.api_user
-  oauth2_pass          = local.contabo_oauth.api_password
-}
-
-# Latest Ubuntu 24.04 LTS image_id for Contabo's standard VPS pool.
-module "ubuntu_24_04_image_contabo" {
-  count  = var.omni_host_provider == "contabo" ? 1 : 0
-  source = "../../modules/contabo-image-lookup"
-
-  name_pattern  = "^ubuntu-24\\.04$"
-  client_id     = local.contabo_oauth.client_id
-  client_secret = local.contabo_oauth.client_secret
-  api_user      = local.contabo_oauth.api_user
-  api_password  = local.contabo_oauth.api_password
-}
-
 # Read bwire OCI auth from R2-backed inventory — same pattern
 # 02-oracle-infra uses. node-state reads s3://cluster-tofu-state/
 # production/inventory/oracle/bwire/auth.yaml (pre-staged by the
@@ -161,58 +117,6 @@ module "omni_host_oci" {
   ssh_authorized_keys = ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID5xol7Isv6niRCRydIo4LRrKxWD3p8WBMXe/IGYK0JD bwire517@gmail.com"]
 }
 
-# Adopt the existing Contabo VPS rather than creating a new one.
-# omni_host_contabo_vps_id defaults to "202727781". The for_each gate
-# matches the count gate on module.omni_host_contabo — when
-# omni_host_provider="oci", the target module instance doesn't exist
-# and the import would error with "Configuration for import target
-# does not exist". The import is a no-op once the resource is in state.
-import {
-  for_each = var.omni_host_provider == "contabo" ? toset([var.omni_host_contabo_vps_id]) : toset([])
-  to       = module.omni_host_contabo[0].contabo_instance.this
-  id       = each.value
-}
-
-module "omni_host_contabo" {
-  count  = var.omni_host_provider == "contabo" ? 1 : 0
-  source = "../../modules/omni-host-contabo"
-
-  vps_id                     = var.omni_host_contabo_vps_id
-  name                       = "contabo-bwire-node-3"
-  region                     = var.omni_host_contabo_region
-  image_id                   = try(module.ubuntu_24_04_image_contabo[0].image_id, "")
-  force_reinstall_generation = var.force_reinstall_generation
-  contabo_client_id          = local.contabo_oauth.client_id
-  contabo_client_secret      = local.contabo_oauth.client_secret
-  contabo_api_user           = local.contabo_oauth.api_user
-  contabo_api_password       = local.contabo_oauth.api_password
-
-  omni_version                         = var.omni_version
-  dex_version                          = var.dex_version
-  nginx_version                        = var.nginx_version
-  omni_account_id                      = random_uuid.omni_account_id.result
-  dex_omni_client_secret               = random_password.dex_omni_client_secret.result
-  omni_account_name                    = "stawi"
-  siderolink_api_advertised_host       = "cp.stawi.org"
-  siderolink_wireguard_advertised_host = "cpd.stawi.org"
-  github_oidc_client_id                = var.github_oidc_client_id
-  github_oidc_client_secret            = var.github_oidc_client_secret
-  cf_dns_api_token                     = var.cloudflare_api_token
-  initial_users                        = [for e in split(",", var.omni_initial_users) : trimspace(e) if trimspace(e) != ""]
-  eula_name                            = var.omni_eula_name
-  eula_email                           = var.omni_eula_email
-  etcd_backup_enabled                  = var.etcd_backup_enabled
-  vpn_users                            = var.vpn_users
-  ssh_authorized_keys                  = [] # public SSH off post-bootstrap; admin via WG
-
-  r2_account_id        = var.r2_account_id
-  r2_access_key_id     = var.r2_access_key_id
-  r2_secret_access_key = var.r2_secret_access_key
-
-  # Canonical Omni host snapshot prefix (see omni-host-contabo vars).
-  r2_backup_prefix = "production/omni-backups"
-}
-
 # GCP Always Free–oriented Omni host (STANDARD e2-micro, never Spot).
 # Auth: tofu/shared/accounts/gcp/<omni_host_gcp_account>/auth.yaml (SOPS).
 # Provider ADC is established by tofu-layer WIF for this account.
@@ -228,7 +132,7 @@ provider "google" {
   # Always declared (providers cannot be count-gated). Modules use count so no
   # GCE resources are managed when omni_host_provider!=gcp, but OpenTofu still
   # configures this provider — CI/local must supply ADC/WIF for the account in
-  # omni_host_gcp_account even while production substrate remains Contabo.
+  # omni_host_gcp_account when substrate is oci (plan-time provider config).
   # Project comes from auth when present, else placeholder (unused for APIs).
   project = try(module.gcp_omni_account_state[0].auth.auth.project_id, "unused-when-not-gcp")
   region  = var.omni_host_gcp_region
@@ -265,7 +169,7 @@ module "omni_host_gcp" {
   r2_account_id        = var.r2_account_id
   r2_access_key_id     = var.r2_access_key_id
   r2_secret_access_key = var.r2_secret_access_key
-  # Same stable prefix as Contabo so cutovers restore from one place.
+  # Stable Omni host snapshot prefix (hourly tar.gz).
   r2_backup_prefix = "production/omni-backups"
 }
 
@@ -305,14 +209,12 @@ locals {
 locals {
   # Active omni-host outputs, substrate-agnostic. Exactly one module has count=1.
   omni_host_ipv4 = coalescelist(
-    module.omni_host_contabo[*].ipv4,
     module.omni_host_oci[*].ipv4,
     module.omni_host_gcp[*].ipv4,
   )[0]
   # GCP v1 has no public IPv6 — filter nulls so coalescelist does not fail.
   omni_host_ipv6 = try(coalescelist([
     for ip in concat(
-      module.omni_host_contabo[*].ipv6,
       module.omni_host_oci[*].ipv6,
       module.omni_host_gcp[*].ipv6,
     ) : ip if ip != null

@@ -35,8 +35,8 @@ document is the checklist if the repository is ever made **public**.
    `encrypted_regex: '^(.*)$'` — full-file encryption of values.
 2. **`.gitignore`**: `credentials/`, `providers/`, `**/.terraform/`,
    `*.tfstate*`, `terraform.tfvars.local`, apply-stage scratch.
-3. **CI secrets**: Contabo/Cloudflare/R2/Omni/Flux material via Actions
-   secrets, not repo files.
+3. **CI secrets**: Cloudflare/R2/Omni/Flux material via Actions secrets,
+   not repo files.
 4. **No SA JSON for GCP**: WIF only (`bootstrap-gcp-wif.sh`).
 5. **Sensitive tofu outputs**: bastion PEMs marked `sensitive = true`
    (still in remote state — protect the R2 bucket).

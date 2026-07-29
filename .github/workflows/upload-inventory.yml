@@ -12,10 +12,10 @@ on:
   workflow_dispatch:
     inputs:
       provider:
-        description: "Provider directory (contabo|oracle|onprem)"
+        description: "Provider directory (oracle|onprem|gcp)"
         required: true
         type: choice
-        options: [contabo, oracle, onprem]
+        options: [oracle, onprem, gcp]
       account:
         description: "Account / location key (no slashes; e.g. bwire)"
         required: true
@@ -43,7 +43,7 @@ jobs:
         run: |
           set -euo pipefail
           # Strict input validation — every value used in a path is whitelisted.
-          case "$PROVIDER" in contabo|oracle|onprem) ;; *) echo "::error::bad provider"; exit 2 ;; esac
+          case "$PROVIDER" in oracle|onprem|gcp) ;; *) echo "::error::bad provider"; exit 2 ;; esac
           case "$ACCOUNT"  in *[!a-zA-Z0-9._-]*|""|.*) echo "::error::bad account"; exit 2 ;; esac
 
           tmp_plain=$(mktemp)

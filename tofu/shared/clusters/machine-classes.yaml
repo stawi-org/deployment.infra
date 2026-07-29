@@ -3,7 +3,7 @@
 # tofu/shared/clusters/**.
 #
 # Selector keys match the labels tofu's per-node `derived_labels`
-# emits — see `tofu/modules/node-{contabo,oracle,onprem}/main.tf`.
+# emits — see `tofu/modules/node-{oracle,gcp}/main.tf`.
 # Layer-03's `null_resource.omnictl_machine_labels` reconciles those
 # labels onto each registered Omni Machine, so machines end up in the
 # `cp` or `workers` set automatically.

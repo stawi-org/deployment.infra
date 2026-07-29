@@ -32,13 +32,9 @@ jobs:
   # Gate the whole workflow on the configured Omni-host substrate.
   # This sync only makes sense for the OCI substrate, whose instance
   # gets an *ephemeral* public IP that rotates on every recreate —
-  # the self-heal cron exists to converge DNS to the new IP. The
-  # Contabo substrate is an *adopted* VPS with a static IP that never
-  # rotates, and layer-00 tofu already pins cp/cpd DNS to it
-  # (omni_host_ipv4 = coalescelist(contabo, oci)), so this OCI-only
-  # discovery would query an instance that doesn't exist. Read the
-  # committed tfvars and skip unless provider == oci; the job
-  # self-activates if the operator flips back to OCI.
+  # the self-heal cron exists to converge DNS to the new IP. GCP Omni
+  # uses a static external IP managed by layer-00 tofu. Read the
+  # committed tfvars and skip unless provider == oci.
   preflight:
     runs-on: ubuntu-latest
     outputs:
@@ -53,7 +49,7 @@ jobs:
           # Anchor to a non-comment line (comments start with #) and
           # take the quoted value. tail -1 guards against a stray
           # duplicate; the variable validation in variables.tf already
-          # constrains it to contabo|oci.
+          # constrains it to oci|gcp.
           provider=$(grep -E '^[[:space:]]*omni_host_provider[[:space:]]*=' "$tfvars" \
             | sed -E 's/.*=[[:space:]]*"([^"]+)".*/\1/' | tail -1)
           echo "::notice::omni_host_provider=${provider:-(unset)}"

@@ -161,14 +161,11 @@ jobs:
             --from-literal=R2_ACCOUNT_ID="$R2_ACCOUNT_ID" \
             --dry-run=client -o yaml | kubectl apply -f -
 
-      - name: Clear stuck flux-operator pods on Contabo nodes
+      - name: Clear stuck flux-operator pods
         run: |
           set -euo pipefail
-          # Old pods scheduled to Contabo nodes get stuck in
-          # ContainerCreating because flannel's v6 init fails on
-          # those nodes (Contabo doesn't deliver SLAAC IPv6) and
-          # CNI never registers. Deleting them lets the new
-          # nodeSelector-pinned pod take their place cleanly.
+          # Non-Running operator pods (e.g. after dead-node schedule)
+          # block upgrade; force-delete so a healthy replica can start.
           kubectl -n flux-system delete pod -l app.kubernetes.io/name=flux-operator \
             --field-selector status.phase!=Running --grace-period=0 --force 2>&1 || true
 

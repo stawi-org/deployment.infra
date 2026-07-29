@@ -164,7 +164,7 @@ jobs:
       #   s3://cluster-tofu-state/production/<provider>/<account>/nodes.yaml
       # which are written by every prior tofu-apply. Each entry has
       # both the operator-declared `role` AND the observed
-      # `provider_data.{ipv4, ipv6, contabo_instance_id}`. We build
+      # `provider_data.{ipv4, ipv6, omni_machine_id, ...}`. We build
       # a (hostname-or-ipv4) → role map, then look up each unbound
       # machine's MachineStatus.spec.network.{hostname,addresses} in
       # the map and apply the right label.
@@ -202,7 +202,6 @@ jobs:
           # Build inventory lookup entries:
           #   name, role, ipv4, host, omni_machine_id
           # Match priority (first pass): omni_machine_id pin → hostname → ipv4.
-          # Contabo is ALWAYS worker (never bootstrap-elected CP).
           map_file="$tmp/lookup.json"
           : > "$map_file.work"
           while IFS= read -r f; do
@@ -256,18 +255,11 @@ jobs:
           }
 
           # First pass: match unbound machines to inventory by pin / host / ipv4.
-          # Hard rule: hostname contabo-* or name contabo-* → always worker.
           declare -a unmatched_ids=()
           while IFS= read -r m; do
             mid=$(jq -r '.metadata.id' <<<"$m")
             mhost=$(jq -r '.spec.network.hostname // ""' <<<"$m")
             maddrs=$(jq -r '.spec.network.addresses // [] | map(split("/")[0]) | join(" ")' <<<"$m")
-
-            # Contabo / vmi* Contabo hypervisor names never become CP.
-            if [[ "$mhost" == contabo-* || "$mhost" == vmi* ]]; then
-              apply_label "$mid" "worker" "contabo/vmi hostname hard-rule ($mhost)"
-              continue
-            fi
 
             # Note: inside ($alist | …), "." is the address array — bind
             # inventory .ipv4 to $ip first or index(.ipv4) errors with
@@ -289,10 +281,6 @@ jobs:
             if [[ -n "$matched" ]]; then
               role=$(jq -r '.role // "worker"' <<<"$matched")
               inv_name=$(jq -r '.name // "?"' <<<"$matched")
-              # Inventory Contabo keys never CP even if role drifts.
-              if [[ "$inv_name" == contabo-* ]]; then
-                role=worker
-              fi
               apply_label "$mid" "$role" "matched inventory: ${inv_name}"
             else
               unmatched_ids+=("$mid")
@@ -300,7 +288,6 @@ jobs:
           done < <(jq -c '.[]' <<<"$all")
 
           # Second pass: ONLY inventory controlplane pins may become CP.
-          # Never "first 3 unmatched" — that elected Contabo as etcd CP.
           # Unmatched non-CP → worker (safe). CP pins that are still
           # unmatched get controlplane so etcd can form from OCI inventory.
           cp_ids=$(jq -r '.[] | select(.role=="controlplane" and .omni_machine_id != "") | .omni_machine_id' "$map_file" | sort -u)

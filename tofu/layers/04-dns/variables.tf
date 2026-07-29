@@ -20,7 +20,7 @@ variable "cp_dns_zones" {
   default     = []
   description = <<-EOT
     Cloudflare zones to publish cluster DNS into, computed from every
-    load-balancer node across every provider (Contabo + OCI + on-prem).
+    load-balancer node across every provider (OCI + GCP + on-prem).
 
     Per zone:
       - <prod_label>.<zone>  round-robin A/AAAA across nodes carrying

@@ -18,11 +18,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        layer: [01-contabo-infra, 02-oracle-infra, 02-onprem-infra, 02-gcp-infra, 03-talos]
+        layer: [02-oracle-infra, 02-onprem-infra, 02-gcp-infra, 03-talos]
     steps:
       - uses: actions/checkout@v5
-      # Per-account-state layers (01-contabo-infra, 02-oracle-infra,
-      # 02-onprem-infra, 02-gcp-infra) upload one artifact per account
+      # Per-account-state layers (02-oracle-infra, 02-onprem-infra,
+      # 02-gcp-infra) upload one artifact per account
       # (tfplan-<layer>-<acct>); 03-talos uploads a single
       # tfplan-<layer>. Glob with `*` so the regression check covers
       # every per-account artifact while staying a single download for

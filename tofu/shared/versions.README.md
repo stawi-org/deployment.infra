@@ -25,7 +25,7 @@ steps and similar.
 
 1. Edit one field in `versions.auto.tfvars.json`.
 2. Open a PR. Merge.
-3. Re-run `tofu-apply.yml`. Talos in-place upgrade fires for Contabo
+3. Re-run `tofu-apply.yml`. Talos in-place upgrade fires for
    nodes (talosctl upgrade --image, no disk wipe). OCI currently
    destroy+creates because `image_id` is in the OCI reinstall marker
    triggers — flatten that separately if a fully in-place upgrade

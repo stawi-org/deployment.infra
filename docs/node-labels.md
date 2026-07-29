@@ -15,17 +15,18 @@ nodeAffinity:
           - key: node.stawi.org/role-database
             operator: In
             values: ["true"]
-          - key: node.stawi.org/provider
-            operator: NotIn
-            values: [contabo]
 ```
+
+Historical manifests may also use `provider NotIn [contabo]`; Contabo has
+been removed from this fleet. Prefer `role-database=true` alone for new
+affinity rules.
 
 | Label | Meaning | Infra sets |
 |---|---|---|
-| `node.stawi.org/role-database` | CNPG may schedule here | **`true` on OCI**; **`false` on Contabo + GCP** (forced, inventory cannot enable DB on GCP/Contabo) |
-| `node.stawi.org/provider` | cloud ownership | `oracle` / `contabo` / `gcp` / `onprem` |
+| `node.stawi.org/role-database` | CNPG may schedule here | **`true` on OCI**; **`false` on GCP** (forced, inventory cannot enable DB on GCP Spot) |
+| `node.stawi.org/provider` | cloud ownership | `oracle` / `gcp` / `onprem` |
 
-Policy: **Postgres off Contabo** (and not on GCP Spot). See manifests
+Policy: **Postgres on OCI only** (not on GCP Spot). See manifests
 `docs/capacity/hot-db-p99-sla.md`.
 
 ## Used by other manifests

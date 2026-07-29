@@ -8,7 +8,7 @@ on:
       mode:             { required: true, type: string, description: "plan | apply" }
       environment:      { required: false, type: string, default: "" }
       extra_plan_args:  { required: false, type: string, default: "", description: "Extra args appended to tofu plan (e.g. -replace=foo.bar). Recovery use only." }
-      account:          { required: false, type: string, default: "", description: "Account key for per-account-state layers (01-contabo-infra, 02-oracle-infra, 02-onprem-infra, 02-gcp-infra). When non-empty, the Init step overrides the backend key to production/<layer>-<account>.tfstate and TF_VAR_account_key is exported so the layer's variable validation accepts the run." }
+      account:          { required: false, type: string, default: "", description: "Account key for per-account-state layers (02-oracle-infra, 02-onprem-infra, 02-gcp-infra). When non-empty, the Init step overrides the backend key to production/<layer>-<account>.tfstate and TF_VAR_account_key is exported so the layer's variable validation accepts the run." }
       pre_apply_state_rm:
         required: false
         type: string
@@ -43,10 +43,6 @@ on:
       R2_ACCOUNT_ID:            { required: true }
       R2_ACCESS_KEY_ID:         { required: true }
       R2_SECRET_ACCESS_KEY:     { required: true }
-      CONTABO_CLIENT_ID:        { required: false }
-      CONTABO_CLIENT_SECRET:    { required: false }
-      CONTABO_API_USER:         { required: false }
-      CONTABO_API_PASSWORD:     { required: false }
       CLOUDFLARE_API_TOKEN:     { required: false }
       FLUX_GITHUB_APP_ID:               { required: false }
       FLUX_GITHUB_APP_INSTALLATION_ID:  { required: false }
@@ -61,10 +57,6 @@ on:
       # under OMNI_DEX_*.
       OMNI_DEX_GITHUB_CLIENT_ID:     { required: false }
       OMNI_DEX_GITHUB_CLIENT_SECRET: { required: false }
-      # Operator SSH public key authorised for root login on the
-      # omni-host VPS — diagnostics only (Omni stack troubleshooting).
-      # Used by 00-omni-server; other layers ignore.
-      CONTABO_PUBLIC_SSH_KEY:        { required: false }
       # Service-account key minted in the Omni dashboard (Operator
       # role). Used by layer-03's cluster.tf null_resources to apply
       # machine-classes, sync the cluster template, and label
@@ -91,7 +83,7 @@ jobs:
           tofu_version: "1.10.0"
 
       - name: Sync R2 inventory to /tmp/inventory/ (node-state module reads from here)
-        if: inputs.layer == '00-omni-server' || inputs.layer == '01-contabo-infra' || inputs.layer == '02-oci-storage' || inputs.layer == '02-oracle-infra' || inputs.layer == '02-onprem-infra' || inputs.layer == '02-gcp-infra' || inputs.layer == '03-talos'
+        if: inputs.layer == '00-omni-server' || inputs.layer == '02-oci-storage' || inputs.layer == '02-oracle-infra' || inputs.layer == '02-onprem-infra' || inputs.layer == '02-gcp-infra' || inputs.layer == '03-talos'
         env:
           AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -228,7 +220,7 @@ jobs:
           set -euo pipefail
           # Always WIF-auth for 00-omni-server: main.tf declares provider "google"
           # unconditionally (modules are count-gated). OpenTofu still configures
-          # the provider and requires ADC even when omni_host_provider=contabo|oci.
+          # the provider and requires ADC even when omni_host_provider=oci.
           provider=$(grep -E '^\s*omni_host_provider\s*=' tofu/layers/00-omni-server/terraform.tfvars \
             | head -1 | sed -E 's/.*=\s*"?([^"#]+)"?.*/\1/' | tr -d '[:space:]' || true)
           acct=$(grep -E '^\s*omni_host_gcp_account\s*=' tofu/layers/00-omni-server/terraform.tfvars \
@@ -324,12 +316,11 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           AWS_EC2_METADATA_DISABLED: "true"
         run: |
-          # Per-account-state layers (01-contabo-infra, 02-oracle-infra,
-          # 02-onprem-infra, 02-gcp-infra) split state by account. Match the
-          # partial-backend key the Init step builds so we clear the right
-          # lock object.
+          # Per-account-state layers (02-oracle-infra, 02-onprem-infra,
+          # 02-gcp-infra) split state by account. Match the partial-backend
+          # key the Init step builds so we clear the right lock object.
           case "${{ inputs.layer }}" in
-            01-contabo-infra|02-oracle-infra|02-onprem-infra|02-gcp-infra)
+            02-oracle-infra|02-onprem-infra|02-gcp-infra)
               if [[ -n "${{ inputs.account }}" ]]; then
                 LOCK_KEY="production/${{ inputs.layer }}-${{ inputs.account }}.tfstate.tflock"
               else
@@ -352,16 +343,16 @@ jobs:
           AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           # Required at init too — per-account-state layers
-          # (01-contabo-infra, 02-oracle-infra, 02-onprem-infra,
-          # 02-gcp-infra) have provider/module for_each blocks that
-          # transitively depend on var.account_key. Tofu evaluates
-          # provider configuration at init to decide which provider
-          # plugins to install, so the variable must be set even though
-          # init normally doesn't read input variables. Without this,
-          # init errors with "Unable to compute static value:
-          # local.<provider>_account_keys depends on var.account_key
-          # which is not available". Harmless on layers that don't
-          # declare the variable (Tofu ignores unrecognized TF_VAR_*).
+          # (02-oracle-infra, 02-onprem-infra, 02-gcp-infra) have
+          # provider/module for_each blocks that transitively depend on
+          # var.account_key. Tofu evaluates provider configuration at
+          # init to decide which provider plugins to install, so the
+          # variable must be set even though init normally doesn't read
+          # input variables. Without this, init errors with "Unable to
+          # compute static value: local.<provider>_account_keys depends
+          # on var.account_key which is not available". Harmless on
+          # layers that don't declare the variable (Tofu ignores
+          # unrecognized TF_VAR_*).
           TF_VAR_account_key:    ${{ inputs.account }}
         # Retry tofu init up to 3 times — provider signature/checksum
         # fetches from github.com (releases assets) and registry.opentofu.org
@@ -370,18 +361,18 @@ jobs:
         # killed an entire reinstall apply chain. Transient; a retry
         # 30s later succeeds.
         #
-        # 01-contabo-infra, 02-oracle-infra, 02-onprem-infra and
-        # 02-gcp-infra are partial backends (no `key` in backend.tf):
-        # this step supplies key=production/<layer>-<account>.tfstate via
-        # -backend-config so each account has its own state file.
-        # -reconfigure is required because the on-runner
-        # .terraform/terraform.tfstate (cached from the previous matrix
-        # cell, if any) holds a different backend key. Other layers fall
-        # through to the original single-key behavior.
+        # 02-oracle-infra, 02-onprem-infra and 02-gcp-infra are partial
+        # backends (no `key` in backend.tf): this step supplies
+        # key=production/<layer>-<account>.tfstate via -backend-config
+        # so each account has its own state file. -reconfigure is
+        # required because the on-runner .terraform/terraform.tfstate
+        # (cached from the previous matrix cell, if any) holds a
+        # different backend key. Other layers fall through to the
+        # original single-key behavior.
         run: |
           set +e
           case "${{ inputs.layer }}" in
-            01-contabo-infra|02-oracle-infra|02-onprem-infra|02-gcp-infra)
+            02-oracle-infra|02-onprem-infra|02-gcp-infra)
               if [[ -n "${{ inputs.account }}" ]]; then
                 backend_args=(
                   -backend-config="key=production/${{ inputs.layer }}-${{ inputs.account }}.tfstate"
@@ -508,11 +499,6 @@ jobs:
           TF_VAR_cloudflare_zone_id_stawi:       ${{ vars.CLOUDFLARE_ZONE_ID_STAWI }}
           TF_VAR_github_oidc_client_id:          ${{ secrets.OMNI_DEX_GITHUB_CLIENT_ID }}
           TF_VAR_github_oidc_client_secret:      ${{ secrets.OMNI_DEX_GITHUB_CLIENT_SECRET }}
-          TF_VAR_contabo_public_ssh_key:         ${{ secrets.CONTABO_PUBLIC_SSH_KEY }}
-          TF_VAR_contabo_client_id:              ${{ secrets.CONTABO_CLIENT_ID }}
-          TF_VAR_contabo_client_secret:          ${{ secrets.CONTABO_CLIENT_SECRET }}
-          TF_VAR_contabo_api_user:               ${{ secrets.CONTABO_API_USER }}
-          TF_VAR_contabo_api_password:           ${{ secrets.CONTABO_API_PASSWORD }}
           # Operator identity for Sidero EULA + Omni initial-admin
           # promotion. Stored as repo Variables (not secrets) — the
           # values aren't sensitive, just operator-specific.
@@ -525,11 +511,10 @@ jobs:
           # omni-backups/. Reuses the workflow's existing R2 credential.
           TF_VAR_r2_access_key_id:               ${{ secrets.R2_ACCESS_KEY_ID }}
           TF_VAR_r2_secret_access_key:           ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          # Per-account-state layers (01-contabo-infra, 02-oracle-infra,
-          # 02-onprem-infra, 02-gcp-infra) read var.account_key to scope
-          # their for_each maps to a single account; harmless on layers
-          # that don't declare the variable (Terraform ignores
-          # unrecognized TF_VAR_*).
+          # Per-account-state layers (02-oracle-infra, 02-onprem-infra,
+          # 02-gcp-infra) read var.account_key to scope their for_each
+          # maps to a single account; harmless on layers that don't
+          # declare the variable (Terraform ignores unrecognized TF_VAR_*).
           TF_VAR_account_key:                      ${{ inputs.account }}
           # sops provider (node-state auth decrypt) + any CLI sops use.
           SOPS_AGE_KEY:                            ${{ secrets.SOPS_AGE_KEY }}
@@ -639,12 +624,6 @@ jobs:
           # apply time too (the local-exec provisioners run during
           # apply, not plan).
           OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
-          # Contabo API creds — needed at apply time when the ensure_image
-          # null_resource provisioner calls ensure-image.sh.
-          TF_VAR_contabo_client_id:     ${{ secrets.CONTABO_CLIENT_ID }}
-          TF_VAR_contabo_client_secret: ${{ secrets.CONTABO_CLIENT_SECRET }}
-          TF_VAR_contabo_api_user:      ${{ secrets.CONTABO_API_USER }}
-          TF_VAR_contabo_api_password:  ${{ secrets.CONTABO_API_PASSWORD }}
         run: |
           set -uo pipefail
           # Stream tofu output to console + capture for post-mortem
@@ -656,12 +635,9 @@ jobs:
           rc=${PIPESTATUS[0]}
 
           # Worker-isolation post-mortem applies only to 02-oracle-infra.
-          # Contabo (layer 01) and Talos (layer 03) already implement
-          # worker warn-and-continue inside their own provisioner scripts
-          # (modules/node-contabo/ensure-image.sh, scripts/talos-apply-or-
-          # upgrade.sh). The oracle layer uses tofu's native oci provider
-          # whose error model is fail-the-apply binary, so we have to
-          # decide soft-vs-hard fail here at the workflow level.
+          # The oracle layer uses tofu's native oci provider whose error
+          # model is fail-the-apply binary, so we have to decide
+          # soft-vs-hard fail here at the workflow level.
           if [[ "$LAYER" != "02-oracle-infra" ]]; then
             exit "$rc"
           fi
@@ -715,22 +691,6 @@ jobs:
           echo "::warning::Worker-only create failure(s): ${worker_keys[*]}. Continuing per worker-isolation policy — affected workers absent from tfstate, downstream layers will skip them."
           exit 0
 
-      # When a local-exec provisioner has sensitive env vars, Terraform
-      # suppresses its stdout/stderr entirely — which makes it
-      # impossible to see what the script reported. modules/node-contabo/
-      # ensure-image.sh tees its output to /tmp/ensure-image-*.log. Dump
-      # those here so they appear in the job log regardless of whether
-      # Apply succeeded or failed.
-      - name: Dump ensure-image provisioner logs
-        if: always() && inputs.layer == '01-contabo-infra'
-        run: |
-          shopt -s nullglob
-          for f in /tmp/ensure-image-*.log; do
-            echo "::group::$f"
-            cat "$f" || true
-            echo "::endgroup::"
-          done
-
   # After infra apply (e.g. GCP reimage), re-run bootstrap-bind + size
   # render so new machines join without a hand-dispatched template sync.
   # tofu-apply already fires sync via workflow_run; this covers direct
@@ -741,8 +701,7 @@ jobs:
       always() &&
       inputs.mode == 'apply' &&
       needs.run.result == 'success' &&
-      (inputs.layer == '01-contabo-infra' ||
-       inputs.layer == '02-oracle-infra' ||
+      (inputs.layer == '02-oracle-infra' ||
        inputs.layer == '02-gcp-infra' ||
        inputs.layer == '03-talos')
     runs-on: ubuntu-latest

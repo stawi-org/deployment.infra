@@ -3,7 +3,7 @@
 
 Walks production inventory layout:
 
-  <inventory-root>/{oracle,contabo,onprem}/<account>/nodes.yaml
+  <inventory-root>/{oracle,onprem,gcp}/<account>/nodes.yaml
 
 For each node, resolves the best Omni Machine UUID via omni_machine_match
 and writes:
@@ -34,7 +34,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 from omni_machine_match import match_machine  # noqa: E402
 
-PROVIDERS = ("oracle", "contabo", "onprem")
+PROVIDERS = ("oracle", "onprem", "gcp")
 
 
 def _load_machines(path: Path) -> list:
