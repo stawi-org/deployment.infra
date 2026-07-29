@@ -1,0 +1,63 @@
+name: fix-coredns-flannel
+on:
+  workflow_dispatch: {}
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+      OMNI_VERSION: v1.9.3
+    steps:
+      - name: Tools + kubeconfig
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          cat > /usr/local/bin/omnictl <<'WRAP'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /usr/local/bin/omnictl
+          curl -fsSLo /usr/local/bin/kubectl https://dl.k8s.io/release/v1.36.0/bin/linux/amd64/kubectl
+          chmod +x /usr/local/bin/kubectl
+          omnictl kubeconfig --cluster stawi --service-account --user fix \
+            --groups system:masters --force "$HOME/.kube/config"
+      - name: GCP flannel logs
+        run: |
+          set -euo pipefail
+          for p in $(kubectl -n kube-system get pods -l app=flannel -o wide \
+            | awk '/gcp-stawi/ {print $1}'); do
+            echo "==== $p ===="
+            kubectl -n kube-system logs "$p" -c kube-flannel --tail=40 || true
+          done
+      - name: Prefer CoreDNS on working flannel nodes (OCI)
+        run: |
+          set -euo pipefail
+          # Soft preference: avoid GCP nodes where flannel has no subnet.env
+          kubectl -n kube-system patch deploy coredns --type=strategic -p '{
+            "spec": {
+              "template": {
+                "spec": {
+                  "affinity": {
+                    "nodeAffinity": {
+                      "requiredDuringSchedulingIgnoredDuringExecution": {
+                        "nodeSelectorTerms": [{
+                          "matchExpressions": [{
+                            "key": "node.stawi.org/provider",
+                            "operator": "In",
+                            "values": ["oracle"]
+                          }]
+                        }]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }'
+          kubectl -n kube-system delete pods -l k8s-app=kube-dns --force --grace-period=0 || true
+          sleep 20
+          kubectl -n kube-system get pods -l k8s-app=kube-dns -o wide
+          kubectl get pods -n kube-system -o wide | head -30
