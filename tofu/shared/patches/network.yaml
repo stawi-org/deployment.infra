@@ -61,7 +61,10 @@ ingress:
 
 ---
 
-# Allow etcd communication
+# Allow etcd communication (peers + local clients).
+# Cross-tenancy CP peers dial over KubeSpan ULA after WG decrypt —
+# without that subnet, multi-CP HA fails host-firewall even when
+# WireGuard is up. Keep in sync with main.yaml etcd-peer-ingress.
 apiVersion: v1alpha1
 kind: NetworkRuleConfig
 name: etcd-ingress
@@ -72,9 +75,11 @@ portSelector:
   protocol: tcp
 ingress:
   - subnet: 10.244.0.0/16      # Pod subnet IPv4
-  - subnet: fd00:10:244::/48   # Pod subnet IPv6
+  - subnet: fd00:10:244::/56   # Pod subnet IPv6 (matches main dual-stack)
   - subnet: 10.96.0.0/12       # Service subnet IPv4
-  - subnet: fd00:10:96::/112   # Service subnet IPv6
+  - subnet: fd00:10:96::/108   # Service subnet IPv6
+  - subnet: 10.0.0.0/8         # OCI private (same-tenancy)
+  - subnet: fd3e:fe7:a8b8:8602::/64  # KubeSpan ULA (multi-CP HA)
 
 ---
 

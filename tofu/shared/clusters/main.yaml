@@ -435,6 +435,40 @@ patches:
         grow: true
       filesystem:
         type: xfs
+  # Etcd peer HA across OCI tenancies (different VCNs): private 10.x
+  # peer URLs are unreachable cross-account, and SideroLink is hub-
+  # spoke only. Advertise the KubeSpan ULA so peers dial over the
+  # full-mesh WireGuard (UDP 51820 already open). Prefix is this
+  # cluster's KubeSpan network — verify with
+  # `talosctl get addresses | grep kubespan` if etcd peers fail after
+  # a full cluster recreate. Talos host firewall (default-deny) must
+  # also allow etcd from that ULA — see etcd-peer-ingress.
+  - name: etcd-advertise-kubespan
+    inline:
+      cluster:
+        etcd:
+          advertisedSubnets:
+            - "fd3e:fe7:a8b8:8602::/64"
+  - name: etcd-peer-ingress
+    inline:
+      apiVersion: v1alpha1
+      kind: NetworkRuleConfig
+      name: etcd-peer-ingress
+      portSelector:
+        ports:
+          - 2379
+          - 2380
+        protocol: tcp
+      ingress:
+        # KubeSpan ULA (cross-tenancy peers after WG decrypt)
+        - subnet: "fd3e:fe7:a8b8:8602::/64"
+        # Same-VCN OCI private
+        - subnet: 10.0.0.0/8
+        # Pod/service (metrics / local clients)
+        - subnet: 10.244.0.0/16
+        - subnet: fd00:10:244::/56
+        - subnet: 10.96.0.0/12
+        - subnet: fd00:10:96::/108
 # NOTE: Flux extraManifests was removed 2026-05-01 (1+ hour cluster
 # bootstrap stall — a 656KB manifest in cluster.extraManifests caused
 # timing issues on slow OCI ARM nodes). Flux is now installed via
@@ -447,43 +481,21 @@ patches:
 ---
 # Control-plane machine set.
 #
-# size:1 reflects a deliberate architectural choice for this cluster.
-# With CPs spread across Contabo (public IPv4) and OCI (NAT'd private
-# IPv4 + ephemeral public IPv4), etcd peer URLs that work for one
-# provider are unreachable from the other:
-#   - Public IPv4 on Contabo → not reachable on OCI peers (their
-#     "public IPv4" is a NAT translation; inbound from internet doesn't
-#     hit the Talos node).
-#   - Private IPv4 on OCI → not reachable from Contabo (different VPC).
-#   - SideroLink ULA (fdae:.../64) — was the "obvious" pick because
-#     every CP has one and the WG mesh proves omni-host reaches each
-#     peer. But Omni's siderolink is hub-and-spoke, and the WG peer
-#     allowed-ips on each Talos node only cover the omni-host's own
-#     /128, so cross-CP packets get dropped at the WG layer even with
-#     IPv6 forwarding enabled on the hub. Proven empirically 2026-05:
-#     after gen=8 OCI bump + IPv6-forwarding on the hub, etcd ports
-#     2379/2380 stayed `connection refused` on every CP indefinitely.
-#
-# Single-CP avoids the cross-provider etcd peering problem entirely.
-# Trade-off: no HA — losing the CP loses the cluster API until it
-# recovers — but the omni-backup tarball captures /var/lib/omni
-# hourly, so a CP-host failure is recoverable via Contabo PUT-based
-# reinstall + omni-restore. We'll re-introduce HA as part of a
-# separate KubeSpan-or-equivalent full-mesh PR.
-#
-# Current sole CP: contabo-bwire-node-2 (Talos; Contabo bare-VPS).
+# Target HA: 3 control planes on OCI (bwire + alimbacho67 ×2), peered
+# over KubeSpan (etcd-advertise-kubespan + etcd-peer-ingress). Contabo
+# CPs were removed with the Contabo cutoff — do not re-add cross-
+# provider CPs without re-validating etcd peer reachability.
 #
 # size is rendered at sync time by .github/workflows/sync-cluster-
 # template.yml — it counts R2-inventory nodes with role=controlplane
 # AND provider_data.status=running. The integer here is a
 # validation-only placeholder; edits to it are overwritten on every
 # sync. To change the intended CP count, edit the R2 inventory
-# (providers/config/<provider>/<account>.yaml → upload-inventory.yml
-# → R2) and let the next sync render the new size.
+# (role=controlplane on the desired nodes) and re-run sync.
 kind: ControlPlane
 machineClass:
   name: cp
-  size: 1
+  size: 3
 
 ---
 # Worker machine set.
