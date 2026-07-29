@@ -26,9 +26,15 @@ GCE VM. The Talos worker pack stays on Spot separately.
 
 Shared docker-compose / Omni templates unchanged.
 
-## Cutover Contabo → GCP (production)
+## Production substrate
 
-Omni etcd restore uses the Contabo R2 backup prefix so machine pins can survive.
+Omni runs on **GCP** (`omni_host_provider = "gcp"`). Contabo VPS fleet and
+the Contabo Omni substrate path were removed after the Contabo nodes were
+cut off. Historical cutover notes below are retained for context only.
+
+## Historical: Cutover Contabo → GCP
+
+Omni etcd restore used a Contabo-era R2 backup prefix so machine pins could survive.
 
 1. **Prereq:** `bootstrap-gcp-wif.sh` completed for stawi-timber (WIF, SA, firewall roles).
 2. **Plan only (no cutover yet):**

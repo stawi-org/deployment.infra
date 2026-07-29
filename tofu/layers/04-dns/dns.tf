@@ -16,7 +16,7 @@
 #
 # Runs in 04-dns (carved out of 03-talos in 2026-05) so a Cloudflare
 # API failure no longer blocks Talos config apply. LB nodes can come
-# from any provider; this layer reads contabo/oracle/onprem remote
+# from any provider; this layer reads oracle/onprem/gcp remote
 # states directly (see main.tf).
 
 locals {

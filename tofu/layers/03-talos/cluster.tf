@@ -17,7 +17,7 @@
 #     target_label_selectors keyed on this.
 # The rest of `derived_labels` (provider, account, topology.*) now
 # flows to the K8s Node object via Talos `machine.nodeLabels` in
-# per-node patches (see tofu/shared/patches/node-{contabo,oracle}.tftpl
+# per-node patches (see tofu/shared/patches/node-{oracle,gcp}.tftpl
 # and tofu/layers/03-talos/per-node-patches.tf). This reconciler
 # matches nodes to Omni Machines by hostname → machine ID and
 # applies the two labels via `omnictl apply` of a MachineLabels
@@ -52,7 +52,7 @@ locals {
   #
   # Other labels — provider, account, topology.kubernetes.io/* —
   # moved to Talos `machine.nodeLabels` via per-node patches in
-  # tofu/shared/patches/node-{contabo,oracle}.tftpl. K8s Node
+  # tofu/shared/patches/node-{oracle,gcp}.tftpl. K8s Node
   # labels live on the K8s API; Omni Machine labels live on Omni's
   # inventory; previously these were conflated and synced together
   # to Omni only, leaving K8s Node labels orphaned.

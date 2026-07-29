@@ -16,10 +16,10 @@ on:
   workflow_dispatch:
     inputs:
       provider:
-        description: Provider directory (oracle|contabo|onprem)
+        description: Provider directory (oracle|onprem|gcp)
         required: true
         type: choice
-        options: [oracle, contabo, onprem]
+        options: [oracle, onprem, gcp]
       account:
         description: Account key (e.g. bwire)
         required: true

@@ -8,7 +8,7 @@
 # template.
 #
 # CNI choice for this fleet: Talos built-in Flannel (not Calico).
-# Multi-provider (OCI NAT + Contabo public + GCP Spot) with KubeSpan
+# Multi-provider (OCI NAT + GCP Spot) with KubeSpan
 # WireGuard full-mesh means pod traffic already rides encrypted tunnels.
 # Flannel VXLAN on top is simple, dual-stack proven, and does not fight
 # nested encapsulation the way Calico eBPF dataplane does on mixed

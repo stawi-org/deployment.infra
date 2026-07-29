@@ -1,8 +1,10 @@
 # Declares which provider/account keys exist. The node-state module uses
 # these to know which R2 keys to read. Edit this file to onboard a new
 # account; the inventory tree is seeded separately by seed-inventory.sh.
-contabo:
-  - bwire
+#
+# Contabo was removed (nodes cut off). Active compute: OCI + GCP.
+# On-prem inventory remains for site declarations; it is not provisioned
+# as fleet capacity in the same way as OCI/GCP.
 oracle:
   - bwire
   - brianelvis33

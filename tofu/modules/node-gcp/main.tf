@@ -115,7 +115,6 @@ locals {
   ipv4 = coalesce(local.public_ip, local.private_ip)
 
   # Label contract matches deployment.manifests CNPG affinity:
-  #   role-database In ["true"] AND provider NotIn ["contabo"]
   # GCP must never advertise role-database=true (inventory cannot override).
   derived_labels = merge(
     var.labels,

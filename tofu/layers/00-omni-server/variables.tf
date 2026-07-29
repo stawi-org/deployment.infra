@@ -17,7 +17,7 @@ variable "cloudflare_zone_id_stawi" {
 variable "local_inventory_dir" {
   type        = string
   default     = "/tmp/inventory"
-  description = "Local mirror of the R2 inventory bucket. node-state reads/writes here; the workflow `aws s3 sync`s it before init. Contabo OAuth2 creds for the bwire account live under this dir at contabo/bwire/auth.yaml (sopsed)."
+  description = "Local mirror of the R2 inventory bucket. node-state reads/writes here; the workflow `aws s3 sync`s it before init."
 }
 
 variable "github_oidc_client_id" {
@@ -71,9 +71,9 @@ variable "sops_age_key" {
 }
 
 # ---- R2 backup / restore -----------------------------------------------------
-# Threaded into module.omni_host_oci / module.omni_host_contabo so the on-host omni-backup.sh /
-# omni-restore.sh pair can write to / read from R2 without baking
-# credentials into a script committed to the repo.
+# Threaded into module.omni_host_oci / module.omni_host_gcp so the on-host
+# omni-backup.sh / omni-restore.sh pair can write to / read from R2 without
+# baking credentials into a script committed to the repo.
 
 variable "r2_access_key_id" {
   type        = string
@@ -109,16 +109,16 @@ variable "vpn_users" {
 variable "nginx_version" {
   type        = string
   default     = "1.27-alpine"
-  description = "Nginx image tag passed to omni-host-contabo. Reverse-proxies cp.<zone> to Omni's loopback UI."
+  description = "Nginx image tag passed to omni-host modules. Reverse-proxies cp.<zone> to Omni's loopback UI."
 }
 
 variable "omni_host_provider" {
-  description = "Substrate hosting omni-host: contabo (existing VPS), oci (A1.Flex), or gcp (Always Free e2-micro / STANDARD GCE)."
+  description = "Substrate hosting omni-host: oci (A1.Flex) or gcp (Always Free e2-micro / STANDARD GCE)."
   type        = string
-  default     = "oci"
+  default     = "gcp"
   validation {
-    condition     = contains(["contabo", "oci", "gcp"], var.omni_host_provider)
-    error_message = "omni_host_provider must be 'contabo', 'oci', or 'gcp'."
+    condition     = contains(["oci", "gcp"], var.omni_host_provider)
+    error_message = "omni_host_provider must be 'oci' or 'gcp'."
   }
 }
 
@@ -143,72 +143,4 @@ variable "omni_host_gcp_machine_type" {
   description = "GCE machine type. e2-micro = Always Free eligible (1 GiB + swap); e2-small/medium if free tier is insufficient."
   type        = string
   default     = "e2-micro"
-}
-
-variable "omni_host_contabo_vps_id" {
-  description = "Contabo VPS ID adopted as the omni-host when omni_host_provider=='contabo'."
-  type        = string
-  default     = "202727781"
-}
-
-variable "omni_host_contabo_region" {
-  description = "Contabo region for the omni-host VPS."
-  type        = string
-  default     = "EU"
-}
-
-# Defaulted to empty so the unconditional provider "contabo" block in
-# main.tf can initialize when omni_host_provider="oci" without
-# requiring operator-supplied creds. The actual Contabo API is never
-# called with these values when count-gated modules have count=0;
-# Task 11's tfvars flip is what activates the contabo path and
-# requires real creds in the workflow's environment.
-variable "contabo_client_id" {
-  type      = string
-  sensitive = true
-  default   = ""
-}
-
-variable "contabo_client_secret" {
-  type      = string
-  sensitive = true
-  default   = ""
-}
-
-variable "contabo_api_user" {
-  type      = string
-  sensitive = true
-  default   = ""
-}
-
-variable "contabo_api_password" {
-  type      = string
-  sensitive = true
-  default   = ""
-}
-
-variable "force_reinstall_generation" {
-  description = <<-EOT
-    Operator escape hatch for forcing a fleet-wide Contabo VPS
-    reinstall on next apply, decoupled from schematic_id changes.
-    Bump in terraform.tfvars (e.g. 1 → 2) to invalidate every
-    null_resource.ensure_image trigger; ensure-image.sh runs with
-    FORCE_REINSTALL=1 and PUTs unconditionally regardless of
-    current imageId.
-
-    Use cases:
-      - Recover from "stuck Talos" / lost SideroLink registration.
-      - Refresh kernel cmdline after Omni's join token rotates.
-      - Smoke-test reinstall paths.
-
-    Routine reinstalls driven by a real schematic change still fire
-    automatically through the target_image_id trigger; this knob
-    only matters for "want a reinstall NOW".
-  EOT
-  type        = number
-  default     = 1
-  validation {
-    condition     = var.force_reinstall_generation >= 1
-    error_message = "force_reinstall_generation must be >= 1."
-  }
 }

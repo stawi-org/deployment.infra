@@ -151,7 +151,6 @@ locals {
 
   # CNPG (deployment.manifests) requires:
   #   node.stawi.org/role-database In ["true"]
-  #   node.stawi.org/provider NotIn ["contabo"]
   # OCI nodes are the database plane; always set role-database=true here
   # (inventory cannot unset it).
   derived_labels = merge(

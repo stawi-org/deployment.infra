@@ -15,20 +15,19 @@
 # node-state because the path shapes are incompatible.
 #
 # Provider scoping:
-#   - contabo: render node-contabo.tftpl (LinkConfig + HostnameConfig
-#              delete+set + nodeLabels/Annotations)
 #   - oracle:  render node-oracle.tftpl (HostnameConfig delete+set +
 #              nodeLabels/Annotations including flannel overrides)
 #   - gcp:     render node-gcp.tftpl (HostnameConfig delete+set +
 #              nodeLabels/Annotations; platform driver handles addresses)
 #   - onprem:  skip (currently out of scope per 2026-05-03 spec)
+# Contabo was removed (fleet cut off).
 
 locals {
   # Filter to providers we render patches for. On-prem nodes are
   # silently skipped — they currently aren't part of the cluster.
   per_node_patch_eligible = {
     for k, v in local.all_nodes_from_state : k => v
-    if contains(["contabo", "oracle", "gcp"], try(v.provider, ""))
+    if contains(["oracle", "gcp"], try(v.provider, ""))
   }
 
   # Render the right template per node based on provider. Each
@@ -36,55 +35,20 @@ locals {
   # envelope yet).
   per_node_patches_rendered = {
     for k, v in local.per_node_patch_eligible : k => (
-      v.provider == "contabo" ? templatefile(
-        "${path.module}/../../shared/patches/node-contabo.tftpl",
+      v.provider == "gcp" ? templatefile(
+        "${path.module}/../../shared/patches/node-gcp.tftpl",
         {
           hostname         = k
           node_labels      = try(v.derived_labels, {})
           node_annotations = try(v.derived_annotations, {})
-          ipv4             = try(v.ipv4, "")
-          ipv4_cidr        = try(v.ipv4_cidr, 0)
-          ipv4_gateway     = try(v.ipv4_gateway, "")
-          # Canonicalize Contabo's expanded IPv6 form to the
-          # compressed RFC 5952 representation. Contabo's API returns
-          # `2a02:c207:2272:7782:0000:0000:0000:0001` which Talos's
-          # multi-doc machineconfig parser silently drops as an
-          # AddressSpec (v4 from the same doc IS emitted; v6 is not).
-          # cidrhost(prefix, 1) round-trips through Go's netip package,
-          # which always emits the compressed `2a02:c207:2272:7782::1`
-          # form — exactly what the Ansible inventory feeds and what
-          # the Talos parser handles cleanly.
-          ipv6 = try(v.ipv6, "") == "" ? "" : cidrhost(
-            format("%s/%d", v.ipv6, try(v.ipv6_cidr, 64)),
-            1,
-          )
-          ipv6_cidr    = try(v.ipv6_cidr, 0)
-          ipv6_gateway = try(v.ipv6_gateway, "")
-          # Network form for kubelet validSubnets — first 4 hextets +
-          # `::/64`. Mirrors antinvestor/deployments' working Jinja
-          # equivalent: `host_v6.split(':')[:4] | join(':') + '::/64'`.
-          ipv6_network = try(v.ipv6, "") == "" ? "" : format(
-            "%s::/%d",
-            join(":", slice(split(":", v.ipv6), 0, 4)),
-            try(v.ipv6_cidr, 64),
-          )
         },
-        ) : (
-        v.provider == "gcp" ? templatefile(
-          "${path.module}/../../shared/patches/node-gcp.tftpl",
-          {
-            hostname         = k
-            node_labels      = try(v.derived_labels, {})
-            node_annotations = try(v.derived_annotations, {})
-          },
-          ) : templatefile(
-          "${path.module}/../../shared/patches/node-oracle.tftpl",
-          {
-            hostname         = k
-            node_labels      = try(v.derived_labels, {})
-            node_annotations = try(v.derived_annotations, {})
-          },
-        )
+        ) : templatefile(
+        "${path.module}/../../shared/patches/node-oracle.tftpl",
+        {
+          hostname         = k
+          node_labels      = try(v.derived_labels, {})
+          node_annotations = try(v.derived_annotations, {})
+        },
       )
     )
   }
@@ -106,32 +70,5 @@ resource "aws_s3_object" "per_node_patch" {
     sha     = sha256(each.value)
     node    = each.key
     version = var.talos_version
-  }
-
-  # Defends against rendering a malformed LinkConfig if upstream
-  # node-contabo state predates T4 (which added ipv4_cidr/gateway,
-  # ipv6_cidr/gateway). Without this, a stale state would render
-  # `address: <ip>/0, gateway: ""` — silently wrong. Layer-03's
-  # tofu plan fails loud here so the operator re-applies the
-  # affected node-contabo per-account state first.
-  #
-  # On-prem and oracle nodes are unaffected (oracle has no LinkConfig
-  # docs in its template; on-prem is filtered out of
-  # per_node_patch_eligible). Only Contabo nodes go through this
-  # check.
-  lifecycle {
-    precondition {
-      condition = (
-        try(local.all_nodes_from_state[each.key].provider, "") != "contabo"
-        ) || (
-        try(local.all_nodes_from_state[each.key].ipv4, "") != "" &&
-        try(local.all_nodes_from_state[each.key].ipv4_cidr, null) != null &&
-        try(local.all_nodes_from_state[each.key].ipv4_gateway, "") != "" &&
-        try(local.all_nodes_from_state[each.key].ipv6, "") != "" &&
-        try(local.all_nodes_from_state[each.key].ipv6_cidr, null) != null &&
-        try(local.all_nodes_from_state[each.key].ipv6_gateway, "") != ""
-      )
-      error_message = "Contabo node ${each.key} has incomplete network state in the upstream tfstate (one of ipv4/ipv4_cidr/ipv4_gateway/ipv6/ipv6_cidr/ipv6_gateway is null/empty). Re-apply the node-contabo's owning layer (01-contabo-infra-<account>) — its postcondition (added in T4) will refuse the apply if Contabo's API is returning incomplete data, or it will repopulate the output with the new schema if the state was simply pre-T4."
-    }
   }
 }
