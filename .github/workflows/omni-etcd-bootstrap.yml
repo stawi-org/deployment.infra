@@ -1,0 +1,102 @@
+# One-shot: run talosctl bootstrap against a single control-plane node
+# when Omni ClusterBootstrapStatus is stuck at bootstrapped=true but
+# etcd on the live CP is still Preparing ("waiting to join").
+#
+# Requires Admin OMNI_SERVICE_ACCOUNT_KEY (user keys get PermissionDenied
+# on bootstrap for Omni-managed clusters).
+name: omni-etcd-bootstrap
+on:
+  workflow_dispatch:
+    inputs:
+      machine_id:
+        description: Omni Machine UUID of the sole control-plane to bootstrap
+        required: true
+        type: string
+      confirm:
+        description: Type BOOTSTRAP to proceed
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  OMNI_VERSION: v1.9.3
+  TALOSCTL_VERSION: v1.13.7
+
+jobs:
+  bootstrap:
+    if: inputs.confirm == 'BOOTSTRAP'
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+      MACHINE_ID: ${{ inputs.machine_id }}
+    steps:
+      - name: Install omnictl + talosctl
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl.real \
+            "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          cat > /usr/local/bin/omnictl <<'WRAP'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          WRAP
+          chmod +x /usr/local/bin/omnictl
+          curl -fsSL -o /usr/local/bin/talosctl \
+            "https://github.com/siderolabs/talos/releases/download/${TALOSCTL_VERSION}/talosctl-linux-amd64"
+          chmod +x /usr/local/bin/talosctl
+          omnictl --version | head -1
+          talosctl version --client | head -3
+
+      - name: Verify single CP + bootstrap
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          mid="$MACHINE_ID"
+          if ! [[ "$mid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            echo "::error::bad machine_id"
+            exit 1
+          fi
+
+          echo "::group::cluster + CP membership"
+          omnictl get clusterstatus stawi -o yaml | head -40 || true
+          cps=$(omnictl get machinesetnodes -o json 2>/dev/null \
+            | jq -rs '[.[] | select(.metadata.labels["omni.sidero.dev/machine-set"]=="stawi-control-planes") | .metadata.id]')
+          echo "CP machinesetnodes: $cps"
+          count=$(jq -r 'length' <<<"$cps")
+          if [[ "$count" -ne 1 ]]; then
+            echo "::error::expected exactly 1 CP machinesetnode, got $count — demote extras first"
+            exit 1
+          fi
+          only=$(jq -r '.[0]' <<<"$cps")
+          if [[ "$only" != "$mid" ]]; then
+            echo "::error::machineset CP is $only but machine_id is $mid"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+          omnictl talosconfig --cluster stawi --force /tmp/talosconfig
+          export TALOSCONFIG=/tmp/talosconfig
+
+          echo "::group::pre bootstrap services"
+          talosctl --nodes "$mid" services || true
+          echo "::endgroup::"
+
+          echo "::group::talosctl bootstrap"
+          if talosctl --nodes "$mid" bootstrap; then
+            echo "::notice::bootstrap succeeded"
+          else
+            rc=$?
+            echo "::warning::bootstrap exit $rc — checking if etcd already up"
+          fi
+          echo "::endgroup::"
+
+          sleep 10
+          echo "::group::post bootstrap"
+          talosctl --nodes "$mid" services || true
+          talosctl --nodes "$mid" etcd members || true
+          omnictl get clusterstatus stawi -o yaml | head -40 || true
+          omnictl get clustermachinestatus "$mid" -o yaml | head -40 || true
+          echo "::endgroup::"
