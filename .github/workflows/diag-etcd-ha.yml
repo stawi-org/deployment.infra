@@ -1,0 +1,47 @@
+name: diag-etcd-ha
+on:
+  workflow_dispatch: {}
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    env:
+      OMNI_ENDPOINT: https://cp.stawi.org
+      OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+      OMNI_VERSION: v1.9.3
+      TALOSCTL_VERSION: v1.13.7
+    steps:
+      - name: tools
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/omnictl.real "https://github.com/siderolabs/omni/releases/download/${OMNI_VERSION}/omnictl-linux-amd64"
+          chmod +x /usr/local/bin/omnictl.real
+          cat > /usr/local/bin/omnictl <<'W'
+          #!/bin/bash
+          exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
+          W
+          chmod +x /usr/local/bin/omnictl
+          curl -fsSL -o /usr/local/bin/talosctl "https://github.com/siderolabs/talos/releases/download/${TALOSCTL_VERSION}/talosctl-linux-amd64"
+          chmod +x /usr/local/bin/talosctl
+          omnictl talosconfig --cluster stawi --force /tmp/talosconfig
+          export TALOSCONFIG=/tmp/talosconfig
+          BWIRE=f90ea925-dc1a-4c5a-8d6f-012c526e399e
+          A1=130d809d-adde-4997-a0bb-6d76fdd1351b
+          A2=3aa972be-5c2d-4444-a041-66d79218522a
+          echo "=== etcd members via bwire ==="
+          talosctl --nodes "$BWIRE" etcd members || true
+          echo "=== services bwire ==="
+          talosctl --nodes "$BWIRE" services etcd || true
+          echo "=== services a1 ==="
+          talosctl --nodes "$A1" services etcd || true
+          echo "=== services a2 ==="
+          talosctl --nodes "$A2" services etcd || true
+          echo "=== kubespan peers bwire ==="
+          talosctl --nodes "$BWIRE" get kubespanpeerstatuses 2>&1 | head -30 || true
+          echo "=== addresses bwire (kubespan/etcd related) ==="
+          talosctl --nodes "$BWIRE" get addresses 2>&1 | head -40 || true
+          echo "=== dmesg a1 etcd ==="
+          talosctl --nodes "$A1" dmesg 2>&1 | grep -i etcd | tail -25 || true
+          echo "=== dmesg a2 etcd ==="
+          talosctl --nodes "$A2" dmesg 2>&1 | grep -i etcd | tail -25 || true
+          echo "=== dmesg bwire etcd ==="
+          talosctl --nodes "$BWIRE" dmesg 2>&1 | grep -i etcd | tail -15 || true
