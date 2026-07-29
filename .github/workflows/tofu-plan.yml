@@ -11,6 +11,7 @@ permissions:
   contents: read
   id-token: write
   pull-requests: write
+  actions: write
 
 concurrency:
   group: tofu-plan-${{ github.ref }}
@@ -28,6 +29,7 @@ jobs:
       contents: read
       id-token: write
       pull-requests: write
+      actions: write
     uses: ./.github/workflows/tofu-layer.yml
     with: { layer: 00-talos-secrets, mode: plan }
     secrets: inherit
@@ -60,6 +62,7 @@ jobs:
       contents: read
       id-token: write
       pull-requests: write
+      actions: write
     strategy:
       fail-fast: false
       matrix:
@@ -89,6 +92,7 @@ jobs:
       contents: read
       id-token: write
       pull-requests: write
+      actions: write
     strategy:
       fail-fast: false
       matrix:
@@ -123,6 +127,7 @@ jobs:
       contents: read
       id-token: write
       pull-requests: write
+      actions: write
     strategy:
       fail-fast: false
       matrix:
@@ -138,6 +143,7 @@ jobs:
       contents: read
       id-token: write
       pull-requests: write
+      actions: write
     # Mirror tofu-apply.yml's failure-isolation semantics: any matrix
     # cell failure surfaces as a non-success aggregate result. Use
     # != 'cancelled' so the talos plan still runs as long as none of
@@ -155,6 +161,7 @@ jobs:
       contents: read
       id-token: write
       pull-requests: write
+      actions: write
     # DNS apply is independent of talos config apply success — a talos
     # failure does not block DNS reconciliation. Same != 'cancelled'
     # gate as talos to keep the plan running through transient failures.
@@ -171,6 +178,7 @@ jobs:
       contents: read
       id-token: write
       pull-requests: write
+      actions: write
     uses: ./.github/workflows/tofu-layer.yml
     with: { layer: 04-flux, mode: plan }
     secrets: inherit
