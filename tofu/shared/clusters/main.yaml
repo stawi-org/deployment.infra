@@ -435,22 +435,12 @@ patches:
         grow: true
       filesystem:
         type: xfs
-  # Etcd peer HA across OCI tenancies (different VCNs): private 10.x
-  # peer URLs are unreachable cross-account, and SideroLink is hub-
-  # spoke only. Advertise the KubeSpan ULA so peers dial over the
-  # full-mesh WireGuard (UDP 51820 already open). Prefix is this
-  # cluster's KubeSpan network — verify with
-  # `talosctl get addresses | grep kubespan` if etcd peers fail after
-  # a full cluster recreate. Talos host firewall (default-deny) must
-  # also allow etcd from that ULA — see etcd-peer-ingress.
-  - name: etcd-advertise-kubespan
-    inline:
-      cluster:
-        etcd:
-          advertisedSubnets:
-            # Live prefix: kubespan/fd29:d269:1ad7:8d02:…/64 (2026-07-29).
-            # Wrong prefix leaves etcd on 10.0.2.x and cross-tenancy joins hang.
-            - "fd29:d269:1ad7:8d02::/64"
+  # Host firewall for etcd peer ports. NetworkRuleConfig is safe on
+  # every machine (workers never listen on 2379/2380). Keep cluster-
+  # wide so any node can accept encrypted peer traffic after KubeSpan
+  # decrypt. Do NOT put cluster.etcd.* here — Talos rejects etcd
+  # config on worker machines ("etcd config is only allowed on
+  # control plane machines") and workers stick at Config Apply Failed.
   - name: etcd-peer-ingress
     inline:
       apiVersion: v1alpha1
@@ -484,9 +474,10 @@ patches:
 # Control-plane machine set.
 #
 # Target HA: 3 control planes on OCI (bwire + alimbacho67 ×2), peered
-# over KubeSpan (etcd-advertise-kubespan + etcd-peer-ingress). Contabo
-# CPs were removed with the Contabo cutoff — do not re-add cross-
-# provider CPs without re-validating etcd peer reachability.
+# over KubeSpan (etcd-advertise-kubespan below + etcd-peer-ingress
+# cluster-wide). Contabo CPs were removed with the Contabo cutoff —
+# do not re-add cross-provider CPs without re-validating etcd peer
+# reachability.
 #
 # size is rendered at sync time by .github/workflows/sync-cluster-
 # template.yml — it counts R2-inventory nodes with role=controlplane
@@ -498,6 +489,23 @@ kind: ControlPlane
 machineClass:
   name: cp
   size: 3
+# CP-only: etcd advertise settings. Must not be under Cluster patches.
+patches:
+  # Etcd peer HA across OCI tenancies (different VCNs): private 10.x
+  # peer URLs are unreachable cross-account, and SideroLink is hub-
+  # spoke only. Advertise the KubeSpan ULA so peers dial over the
+  # full-mesh WireGuard (UDP 51820 already open). Prefix is this
+  # cluster's KubeSpan network — verify with
+  # `talosctl get addresses | grep kubespan` if etcd peers fail after
+  # a full cluster recreate.
+  - name: etcd-advertise-kubespan
+    inline:
+      cluster:
+        etcd:
+          advertisedSubnets:
+            # Live prefix: kubespan/fd29:d269:1ad7:8d02:…/64 (2026-07-29).
+            # Wrong prefix leaves etcd on 10.0.2.x and cross-tenancy joins hang.
+            - "fd29:d269:1ad7:8d02::/64"
 
 ---
 # Worker machine set.
