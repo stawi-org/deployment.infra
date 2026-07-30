@@ -42,7 +42,7 @@ cluster-provision / tofu-apply
 | Force reinstall | destroy + create | **new** UUID | wait for connected twin | pin **cleared** then re-pinned by hygiene |
 | Add node (inventory) | create | new | poll until connected | pin after hygiene |
 | Remove node | destroy | becomes disconnected | — | entry removed; hygiene drops twin if live hostname gone |
-
+| Disable all workers (keep account / Omni host) | `nodes: {}` + `annotations.node.stawi.org/workers-enabled: "false"` | destroy pack | release MSNs then delete Machines | no re-seed of default Spot pack |
 ## Why Spot uses STOP, not DELETE
 
 `instance_termination_action = STOP` (GCP default for Spot):

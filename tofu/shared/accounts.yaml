@@ -2,7 +2,10 @@
 # these to know which R2 keys to read. Edit this file to onboard a new
 # account; the inventory tree is seeded separately by seed-inventory.sh.
 #
-# Contabo was removed (nodes cut off). Active compute: OCI + GCP.
+# Contabo was removed (nodes cut off). Cluster Talos nodes: OCI only
+# for now (GCP Spot workers disabled via inventory annotation
+# node.stawi.org/workers-enabled=false on stawi-timber). GCP account
+# remains for Omni host WIF/auth (omni_host_provider=gcp).
 # On-prem inventory remains for site declarations; it is not provisioned
 # as fleet capacity in the same way as OCI/GCP.
 oracle:

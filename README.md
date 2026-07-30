@@ -117,7 +117,7 @@ The structure is:
 
 - `oracle/<account>/nodes.yaml`: OCI auth is separate; tenancy/network/node inventory here.
 - `onprem/<location>/nodes.yaml`: Physical-site inventory and optional hints.
-- `gcp/<account>/nodes.yaml`: GCE workers only; default pack is two Spot `e2-standard-2` (8 GiB) VMs after onboard.
+- `gcp/<account>/nodes.yaml`: GCE workers only; default pack is two Spot `e2-standard-2` (8 GiB) VMs after onboard. Set `annotations.node.stawi.org/workers-enabled: "false"` with `nodes: {}` to destroy/keep zero workers while retaining the account for Omni host / WIF.
 
 OCI and GCP node names must remain RFC 1123-safe and unique within the
 cluster. The inventory compiler uses the account and node keys to render
