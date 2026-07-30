@@ -12,15 +12,16 @@ after the VPS fleet was cut off):
    labels, annotations, role, and region. Layer `03-talos` can render matching
    Talos node configs, but config application is manual because physical
    networks are not reachable from GitHub Actions by default.
-3. **GCP workers**: layer `02-gcp-infra` provisions paid GCE VMs across GCP
-   projects. Auth is multi-project Workload Identity Federation (no long-lived
+3. **GCP workers** (optional capacity): layer `02-gcp-infra` can provision paid
+   GCE VMs. Auth is multi-project Workload Identity Federation (no long-lived
    SA JSON keys). Empty accounts seed a default pack of **two Spot
-   `e2-standard-2` (8 GiB) workers** (OpenTofu defaults) in **`europe-west9`
-   (Paris)** by default. Spot uses **STOP** on preemption (not DELETE) so
-   Talos/Omni identity survives; post-apply Omni twin cleanup is automatic. v1
-   is **workers only** (no control plane / etcd on GCE). **CNPG** selects nodes
-   with `node.stawi.org/role-database=true` (see [docs/node-labels.md](node-labels.md));
-   GCP forces `role-database=false`, OCI forces `true`.
+   `e2-standard-2` (8 GiB) workers** unless
+   `annotations.node.stawi.org/workers-enabled: "false"` (no VMs; account kept
+   for Omni host / WIF). Spot uses **STOP** on preemption (not DELETE). v1 is
+   **workers only** (no control plane / etcd on GCE). **CNPG** selects
+   `node.stawi.org/role-database=true` ([node-labels.md](node-labels.md)); GCP
+   forces `role-database=false`. **Current fleet (2026-07):** Talos nodes are
+   **OCI-only**; GCP Spot workers are disabled on `stawi-timber`.
 
 The canonical inventory lives under R2 `production/inventory/` for per-account
 node state:
