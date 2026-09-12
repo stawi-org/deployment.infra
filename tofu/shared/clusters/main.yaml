@@ -369,7 +369,7 @@ patches:
       kind: KubeSpanConfig
       enabled: true
       # false: never steal default route (blackhole history).
-      advertiseKubernetesNetworks: false
+      advertiseKubernetesNetworks: true
       # Under path MTU 1500; avoids WG+VXLAN fragmentation that
       # collapses multi-cloud goodput.
       mtu: 1280
