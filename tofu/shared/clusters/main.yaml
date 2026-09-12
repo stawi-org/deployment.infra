@@ -175,7 +175,9 @@ patches:
             - fd00:10:96::/108
             - 10.96.0.0/12
           # MTU note: pod traffic crosses KubeSpan WireGuard tunnels
-          # cluster-wide. KubeSpan MTU is 1380 (see kubespan patch);
+          # cluster-wide. KubeSpan MTU is 1280 (see kubespan patch): measured
+          # 2026-09-12 with DF pings over the tunnel — several OCI peers drop
+          # anything above ~1232 payload, so 1380 blackholed TLS handshakes;
           # Flannel VXLAN adds ~50 bytes, so Backend.MTU must stay
           # ≤ ~1330 to avoid cross-node TCP/TLS blackholes. Flux
           # patches kube-flannel-cfg net-conf.json (deployment.manifest
@@ -370,7 +372,7 @@ patches:
       advertiseKubernetesNetworks: false
       # Under path MTU 1500; avoids WG+VXLAN fragmentation that
       # collapses multi-cloud goodput.
-      mtu: 1380
+      mtu: 1280
       allowDownPeerBypass: true
       # Note: excludeAdvertisedNetworks is documented on Talos ≥1.13 but
       # Omni's cluster-template decoder (v1.9.3) rejects the key as
