@@ -19,12 +19,12 @@
 # Guard is threefold:
 #   1. cluster.discovery + service registry enabled (cluster-discovery
 #      patch in main.yaml).
-#   2. advertiseKubernetesNetworks: false — never steal default route.
+#   2. advertiseKubernetesNetworks: true — never steal default route.
 #   3. allowDownPeerBypass: true — partial mesh still routes.
 
 apiVersion: v1alpha1
 kind: KubeSpanConfig
 enabled: true
-advertiseKubernetesNetworks: false
+advertiseKubernetesNetworks: true
 mtu: 1280
 allowDownPeerBypass: true
