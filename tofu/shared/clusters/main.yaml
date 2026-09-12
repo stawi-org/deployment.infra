@@ -455,7 +455,7 @@ patches:
         protocol: tcp
       ingress:
         # KubeSpan ULA (cross-tenancy peers after WG decrypt)
-        - subnet: "fd29:d269:1ad7:8d02::/64"
+        - subnet: "fda0:ead6:bdaa:c402::/64"
         # Same-VCN OCI private
         - subnet: 10.0.0.0/8
         # Pod/service (metrics / local clients)
@@ -505,9 +505,9 @@ patches:
       cluster:
         etcd:
           advertisedSubnets:
-            # Live prefix: kubespan/fd29:d269:1ad7:8d02:…/64 (2026-07-29).
+            # Live prefix: kubespan/fda0:ead6:bdaa:c402:…/64 (2026-09-12 rebuild; the ULA is derived from the cluster id and changes on every cluster recreate).
             # Wrong prefix leaves etcd on 10.0.2.x and cross-tenancy joins hang.
-            - "fd29:d269:1ad7:8d02::/64"
+            - "fda0:ead6:bdaa:c402::/64"
 
 ---
 # Worker machine set.
