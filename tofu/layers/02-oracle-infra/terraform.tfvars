@@ -94,7 +94,7 @@ force_image_generation = 12
 #                   01-contabo-infra gen=23 PUT-reinstall.
 #  19 — prior fleet roll.
 #  20 — 2026-07-09: clean-slate rebuild after Always Free resize
-#                   (2 OCPU/12GB) + Talos v1.13.6 pin.
+#                   (2 OCPU/12GB) + Talos v1.14.6 pin.
 #  21 — 2026-07-18: Omni cutover Contabo→OCI bwire; bwire worker
 #                   removed (Omni 1/6 + CP 1/6); greenfield Omni keys.
 #  22 — 2026-07-29: Contabo fleet removed; force-clear stawi + rebootstrap

@@ -59,7 +59,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  OMNI_VERSION: v1.9.3 # Pinned to match the omnictl used in sync-talos-images.
+  OMNI_VERSION: v1.13.3 # Pinned to match the omnictl used in sync-talos-images.
 
 jobs:
   sync:
@@ -743,7 +743,7 @@ jobs:
           if omnictl --cluster stawi cluster kubeconfig --force \
               > "$KUBECONFIG_TMP" 2>/dev/null; then
             curl -fsSL -o /usr/local/bin/kubectl \
-              "https://dl.k8s.io/release/v1.35.2/bin/linux/amd64/kubectl"
+              "https://dl.k8s.io/release/v1.37.1/bin/linux/amd64/kubectl"
             chmod +x /usr/local/bin/kubectl
             kubectl --kubeconfig "$KUBECONFIG_TMP" --insecure-skip-tls-verify \
               get nodes -o wide || true

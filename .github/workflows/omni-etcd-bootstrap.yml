@@ -21,8 +21,8 @@ permissions:
   contents: read
 
 env:
-  OMNI_VERSION: v1.9.3
-  TALOSCTL_VERSION: v1.13.7
+  OMNI_VERSION: v1.13.3
+  TALOSCTL_VERSION: v1.14.6
 
 jobs:
   bootstrap:

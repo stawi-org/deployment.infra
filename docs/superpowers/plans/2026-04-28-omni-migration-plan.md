@@ -39,8 +39,8 @@ Reference spec: `docs/superpowers/specs/2026-04-28-omni-migration-design.md`.
 ```json
 {
   "talos_version": "v1.13.0",
-  "kubernetes_version": "v1.35.2",
-  "flux_version": "v2.4.0",
+  "kubernetes_version": "v1.37.1",
+  "flux_version": "v2.10.0",
   "omni_version": "v1.4.6",
   "dex_version": "v2.41.1",
   "cloudflared_version": "2025.10.1"
@@ -884,7 +884,7 @@ Apply runs after the existing antinvestor-cluster is torn down
 kind: Cluster
 name: stawi-cluster
 kubernetes:
-  version: v1.35.2
+  version: v1.37.1
 talos:
   version: v1.13.0
 features:

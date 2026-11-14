@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 env:
-  OMNI_VERSION: v1.9.3
+  OMNI_VERSION: v1.13.3
 
 jobs:
   ensure:
@@ -31,7 +31,7 @@ jobs:
           exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
           WRAP
           chmod +x /usr/local/bin/omnictl
-          curl -fsSLo /usr/local/bin/kubectl https://dl.k8s.io/release/v1.36.0/bin/linux/amd64/kubectl
+          curl -fsSLo /usr/local/bin/kubectl https://dl.k8s.io/release/v1.37.1/bin/linux/amd64/kubectl
           chmod +x /usr/local/bin/kubectl
           curl -fsSL https://raw.githubusercontent.com/fluxcd/flux2/main/install/flux.sh | bash
 

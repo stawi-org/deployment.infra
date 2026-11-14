@@ -15,7 +15,7 @@ omni_host_gcp_machine_type = "e2-micro"
 # Keep in lock-step with tofu/shared/versions.auto.tfvars.json +
 # workflow OMNI_VERSION (omnictl). This layer does not symlink the
 # full versions auto-file (would inject undeclared talos/k8s keys).
-omni_version = "v1.9.3"
+omni_version = "v1.13.3"
 
 # bwire_availability_domain_index defaults to 0 (first AD). The
 # module auto-discovers ADs via oci_identity_availability_domains

@@ -231,12 +231,12 @@ gh workflow run cluster-provision.yml \
   -f mode=full -f force_image_sync=true -f deploy_flux=true
 ```
 
-Omni/omnictl pin: **v1.9.3**. Talos **v1.13.6** / k8s **v1.36.0**.
+Omni/omnictl pin: **v1.13.3**. Talos **v1.14.6** / k8s **v1.37.1**.
 
 Legacy multi-step (still works):
 
 ```
-gh workflow run sync-talos-images.yml -f talos_version=v1.13.6 -f force=true
+gh workflow run sync-talos-images.yml -f talos_version=v1.14.6 -f force=true
 gh workflow run tofu-apply.yml
 gh workflow run omni-force-cluster-clear.yml -f confirm=stawi
 gh workflow run sync-cluster-template.yml
