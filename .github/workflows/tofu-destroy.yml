@@ -221,18 +221,7 @@ jobs:
           UPST_FILE="$HOME/.oci/upst_bwire.token"
           if [[ -f "$UPST_FILE" ]]; then
             # Decode UPST JWT to get user OCID from 'sub' claim
-            USER_OCID=$(python3 -c "
-import sys, json, base64
-with open('$UPST_FILE') as f:
-    token = f.read().strip()
-parts = token.split('.')
-if len(parts) >= 2:
-    payload = parts[1]
-    payload += '=' * ((4 - len(payload) % 4) % 4)
-    decoded = base64.urlsafe_b64decode(payload)
-    claims = json.loads(decoded)
-    print(claims.get('sub', ''))
-")
+            USER_OCID=$(python3 -c "import sys, json, base64; f=open('$UPST_FILE'); t=f.read().strip(); f.close(); p=t.split('.'); print(json.loads(base64.urlsafe_b64decode(p[1]+'='*((4-len(p[1])%4)%4)).decode()).get('sub','')) if len(p)>=2 else print('')")
             if [[ -n "$USER_OCID" && "$USER_OCID" != "null" ]]; then
               echo "Found user OCID: $USER_OCID"
               # Add user to bwire profile in config
