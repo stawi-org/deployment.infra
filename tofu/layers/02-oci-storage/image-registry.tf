@@ -45,9 +45,10 @@ resource "oci_objectstorage_bucket" "cluster_image_registry" {
   # Anonymous GETs allowed (cross-account image-import + the
   # pkgs.stawi.org CF custom domain don't need OCI credentials),
   # anonymous LISTs denied (still requires authenticated CLI).
-  access_type  = "ObjectRead"
-  storage_tier = "Standard"
-  versioning   = "Disabled"
+  access_type    = "ObjectRead"
+  storage_tier   = "Standard"
+  versioning     = "Disabled"
+  force_destroy  = true
 }
 
 resource "oci_objectstorage_bucket" "cluster_state_storage" {
