@@ -1,0 +1,265 @@
+# .github/workflows/tofu-destroy.yml
+name: tofu-destroy
+on:
+  workflow_dispatch:
+    inputs:
+      layer:
+        required: true
+        type: string
+        description: "Layer to destroy (e.g., 04-flux, 04-dns, 03-talos, 02-oci-storage, 02-oracle-infra, 02-onprem-infra, 02-gcp-infra, 00-talos-secrets, 00-omni-server)"
+      account:
+        required: false
+        type: string
+        default: ""
+        description: "Account key for per-account-state layers (02-oracle-infra, 02-onprem-infra, 02-gcp-infra)"
+      environment:
+        required: false
+        type: string
+        default: "production"
+        description: "GitHub environment for secrets"
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      id-token: write   # for OIDC to OCI
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: opentofu/setup-opentofu@v2
+        with:
+          tofu_version: "1.10.0"
+
+      - name: Sync R2 inventory to /tmp/inventory/
+        if: inputs.layer == '00-omni-server' || inputs.layer == '02-oci-storage' || inputs.layer == '02-oracle-infra' || inputs.layer == '02-onprem-infra' || inputs.layer == '02-gcp-infra' || inputs.layer == '03-talos'
+        env:
+          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
+          R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/inventory
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/" /tmp/inventory/ \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --region us-east-1 \
+            --delete
+
+      - name: OCI workload-identity federation
+        if: inputs.layer == '02-oracle-infra' || inputs.layer == '00-omni-server' || inputs.layer == '02-oci-storage'
+        env:
+          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
+          R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
+          SOPS_AGE_KEY:          ${{ secrets.SOPS_AGE_KEY }}
+        run: |
+          set -euo pipefail
+          if ! command -v sops >/dev/null 2>&1; then
+            curl -fsSL -o /usr/local/bin/sops \
+              "https://github.com/getsops/sops/releases/download/v3.11.0/sops-v3.11.0.linux.amd64"
+            chmod +x /usr/local/bin/sops
+          fi
+          AUTH_MERGED=$(mktemp -d)
+          scripts/stage-oracle-auth-from-repo.sh "$AUTH_MERGED" .
+          ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          R2_AUTH=$(mktemp -d)
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/oracle/" "${R2_AUTH}/" \
+            --endpoint-url "$ENDPOINT" --region us-east-1 \
+            --exclude "*" --include "*/auth.yaml" || true
+          if [[ -d "$R2_AUTH" ]]; then
+            for d in "$R2_AUTH"/*/; do
+              [[ -d "$d" ]] || continue
+              acct=$(basename "$d")
+              if [[ ! -f "$AUTH_MERGED/$acct/auth.yaml" && -f "$d/auth.yaml" ]]; then
+                mkdir -p "$AUTH_MERGED/$acct"
+                cp "$d/auth.yaml" "$AUTH_MERGED/$acct/auth.yaml"
+                echo "::notice::using legacy R2 auth for $acct (not in repo)"
+              fi
+            done
+          fi
+          AUTH_JSON=$(python3 scripts/build-oci-auth-json.py "${AUTH_MERGED}")
+          if [[ "$AUTH_JSON" == "[]" ]]; then
+            echo "::notice::no OCI auth profiles (repo SOPS or R2) — skipping WIF setup"
+          else
+            echo "$AUTH_JSON" > /tmp/oci_auth_accounts.json
+            scripts/configure-oci-wif.sh /tmp/oci_auth_accounts.json
+          fi
+
+      - name: Detect omni-host GCP substrate
+        id: omni_gcp
+        if: inputs.layer == '00-omni-server'
+        run: |
+          set -euo pipefail
+          provider=$(grep -E '^\s*omni_host_provider\s*=' tofu/layers/00-omni-server/terraform.tfvars \
+            | head -1 | sed -E 's/.*=\s*"?([^"#]+)"?.*/\1/' | tr -d '[:space:]' || true)
+          acct=$(grep -E '^\s*omni_host_gcp_account\s*=' tofu/layers/00-omni-server/terraform.tfvars \
+            | head -1 | sed -E 's/.*=\s*"?([^"#]+)"?.*/\1/' | tr -d '[:space:]' || true)
+          echo "provider=${provider:-}"
+          echo "needed=true" >> "$GITHUB_OUTPUT"
+          echo "account=${acct:-stawi-timber}" >> "$GITHUB_OUTPUT"
+
+      - name: Stage GCP auth from repo
+        id: gcp_auth
+        if: inputs.layer == '02-gcp-infra' || (inputs.layer == '00-omni-server' && steps.omni_gcp.outputs.needed == 'true')
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+          ACCOUNT:      ${{ inputs.layer == '00-omni-server' && steps.omni_gcp.outputs.account || inputs.account }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${ACCOUNT}" ]]; then
+            echo "::error::GCP auth requires a non-empty account (matrix cell or omni host account)"
+            exit 1
+          fi
+          if ! command -v sops >/dev/null 2>&1; then
+            sudo curl -fsSL -o /usr/local/bin/sops \
+              https://github.com/getsops/sops/releases/download/v3.11.0/sops-v3.11.0.linux.amd64
+            sudo chmod +x /usr/local/bin/sops
+          fi
+          pip install --quiet pyyaml
+          scripts/stage-gcp-auth-from-repo.sh /tmp/gcp-auth .
+          auth_file="/tmp/gcp-auth/${ACCOUNT}/auth.yaml"
+          if [[ ! -f "$auth_file" ]]; then
+            echo "::error::missing staged GCP auth for account=${ACCOUNT} (expected ${auth_file}). Empty gcp matrix should skip this job; onboard via bootstrap-gcp-wif first."
+            exit 1
+          fi
+          python3 - "$auth_file" <<'PY'
+          import os, sys, yaml
+          path = sys.argv[1]
+          with open(path) as f:
+              doc = yaml.safe_load(f) or {}
+          auth = doc.get("auth") or {}
+          required = (
+              "project_id",
+              "region",
+              "workload_identity_provider",
+              "service_account_email",
+          )
+          missing = [k for k in required if not auth.get(k)]
+          if missing:
+              print(f"::error::GCP auth missing fields: {missing}", file=sys.stderr)
+              sys.exit(1)
+          out = os.environ["GITHUB_OUTPUT"]
+          envf = os.environ["GITHUB_ENV"]
+          mapping = {
+              "project_id": auth["project_id"],
+              "region": auth["region"],
+              "workload_identity_provider": auth["workload_identity_provider"],
+              "service_account": auth["service_account_email"],
+          }
+          with open(out, "a") as f:
+              for k, v in mapping.items():
+                  f.write(f"{k}={v}\n")
+          with open(envf, "a") as f:
+              f.write(f"GOOGLE_CLOUD_PROJECT={mapping['project_id']}\n")
+              f.write(f"CLOUDSDK_CORE_PROJECT={mapping['project_id']}\n")
+              f.write(f"GOOGLE_CLOUD_REGION={mapping['region']}\n")
+          print(
+              f"::notice::staged GCP WIF project={mapping['project_id']} "
+              f"sa={mapping['service_account']}",
+              file=sys.stderr,
+          )
+          PY
+
+      - name: Authenticate to Google Cloud (WIF)
+        if: inputs.layer == '02-gcp-infra' || (inputs.layer == '00-omni-server' && steps.omni_gcp.outputs.needed == 'true')
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ steps.gcp_auth.outputs.workload_identity_provider }}
+          service_account: ${{ steps.gcp_auth.outputs.service_account }}
+          project_id: ${{ steps.gcp_auth.outputs.project_id }}
+
+      - name: Clear stale state lock
+        env:
+          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
+        run: |
+          case "${{ inputs.layer }}" in
+            02-oracle-infra|02-onprem-infra|02-gcp-infra)
+              if [[ -n "${{ inputs.account }}" ]]; then
+                LOCK_KEY="production/${{ inputs.layer }}-${{ inputs.account }}.tfstate.tflock"
+              else
+                LOCK_KEY="production/${{ inputs.layer }}.tfstate.tflock"
+              fi
+              ;;
+            *)
+              LOCK_KEY="production/${{ inputs.layer }}.tfstate.tflock"
+              ;;
+          esac
+          aws s3 rm "s3://cluster-tofu-state/${LOCK_KEY}" \
+            --endpoint-url "https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com" \
+            --region us-east-1 \
+            2>&1 | grep -v "NoSuchKey\|^$" || true
+
+      - name: Init
+        working-directory: tofu/layers/${{ inputs.layer }}
+        env:
+          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          TF_VAR_account_key:    ${{ inputs.account }}
+        run: |
+          set +e
+          case "${{ inputs.layer }}" in
+            02-oracle-infra|02-onprem-infra|02-gcp-infra)
+              if [[ -n "${{ inputs.account }}" ]]; then
+                backend_args=(
+                  -backend-config="key=production/${{ inputs.layer }}-${{ inputs.account }}.tfstate"
+                  -reconfigure
+                )
+              else
+                backend_args=()
+              fi
+              ;;
+            *)
+              backend_args=()
+              ;;
+          esac
+          for attempt in 1 2 3; do
+            tofu init \
+              -input=false \
+              -backend-config="endpoints={s3=\"https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com\"}" \
+              "${backend_args[@]}"
+            rc=$?
+            if [[ $rc -eq 0 ]]; then
+              break
+            fi
+            if [[ $attempt -lt 3 ]]; then
+              echo "::warning::tofu init failed (rc=$rc) — retrying in 30s (attempt $attempt/3)"
+              sleep 30
+              rm -rf .terraform
+            fi
+          done
+          exit "$rc"
+
+      - name: Destroy
+        working-directory: tofu/layers/${{ inputs.layer }}
+        env:
+          AWS_ACCESS_KEY_ID:           ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY:       ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          TF_VAR_r2_account_id:        ${{ secrets.R2_ACCOUNT_ID }}
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_github_app_id:              ${{ secrets.FLUX_GITHUB_APP_ID }}
+          TF_VAR_github_app_installation_id: ${{ secrets.FLUX_GITHUB_APP_INSTALLATION_ID }}
+          TF_VAR_github_app_private_key:     ${{ secrets.FLUX_GITHUB_APP_PRIVATE_KEY }}
+          TF_VAR_sops_age_key:               ${{ secrets.SOPS_AGE_KEY }}
+          TF_VAR_etcd_backup_r2_access_key_id:     ${{ secrets.ETCD_BACKUP_R2_ACCESS_KEY_ID }}
+          TF_VAR_etcd_backup_r2_secret_access_key: ${{ secrets.ETCD_BACKUP_R2_SECRET_ACCESS_KEY }}
+          TF_VAR_age_recipients:                   ${{ vars.SOPS_AGE_RECIPIENTS }}
+          TF_VAR_cloudflare_account_id:          ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          TF_VAR_cloudflare_zone_id_antinvestor: ${{ vars.CLOUDFLARE_ZONE_ID_ANTINVESTOR }}
+          TF_VAR_cloudflare_zone_id_stawi:       ${{ vars.CLOUDFLARE_ZONE_ID_STAWI }}
+          TF_VAR_github_oidc_client_id:          ${{ secrets.OMNI_DEX_GITHUB_CLIENT_ID }}
+          TF_VAR_github_oidc_client_secret:      ${{ secrets.OMNI_DEX_GITHUB_CLIENT_SECRET }}
+          TF_VAR_omni_eula_name:                 ${{ vars.OMNI_EULA_NAME }}
+          TF_VAR_omni_eula_email:                ${{ vars.OMNI_EULA_EMAIL }}
+          TF_VAR_omni_initial_users:             ${{ vars.OMNI_INITIAL_USERS }}
+          TF_VAR_r2_access_key_id:               ${{ secrets.R2_ACCESS_KEY_ID }}
+          TF_VAR_r2_secret_access_key:           ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          TF_VAR_account_key:                      ${{ inputs.account }}
+          SOPS_AGE_KEY:                            ${{ secrets.SOPS_AGE_KEY }}
+          OMNI_SERVICE_ACCOUNT_KEY:                ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
+        run: |
+          set -uo pipefail
+          tofu destroy -input=false -auto-approve
