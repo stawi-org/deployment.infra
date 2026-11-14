@@ -31,7 +31,7 @@ jobs:
         with:
           tofu_version: "1.10.0"
 
-      - name: Clear stuck Oracle inventory (failed accounts) - BEFORE sync
+      - name: Clear stuck Oracle state + inventory (failed accounts) - BEFORE sync
         if: inputs.layer == '02-oracle-infra' && (inputs.account == 'alimbacho67' || inputs.account == 'allanofwiti')
         env:
           AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -40,12 +40,23 @@ jobs:
           R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
         run: |
           set -euo pipefail
-          echo "Clearing stuck inventory for ${{ inputs.account }} from R2..."
+          echo "Clearing stuck state and inventory for ${{ inputs.account }} from R2..."
+          # Delete state file
+          aws s3 rm "s3://cluster-tofu-state/production/02-oracle-infra-${{ inputs.account }}.tfstate" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --region us-east-1 \
+            2>&1 | grep -v "NoSuchKey\|^$" || true
+          # Delete state lock if exists
+          aws s3 rm "s3://cluster-tofu-state/production/02-oracle-infra-${{ inputs.account }}.tfstate.tflock" \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --region us-east-1 \
+            2>&1 | grep -v "NoSuchKey\|^$" || true
+          # Delete inventory
           aws s3 rm "s3://cluster-tofu-state/production/inventory/oracle/${{ inputs.account }}/nodes.yaml" \
             --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
             --region us-east-1 \
             2>&1 | grep -v "NoSuchKey\|^$" || true
-          echo "Cleared inventory for ${{ inputs.account }} from R2"
+          echo "Cleared state and inventory for ${{ inputs.account }} from R2"
 
       - name: Sync R2 inventory to /tmp/inventory/
         if: inputs.layer == '00-omni-server' || inputs.layer == '02-oci-storage' || inputs.layer == '02-oracle-infra' || inputs.layer == '02-onprem-infra' || inputs.layer == '02-gcp-infra' || inputs.layer == '03-talos'
