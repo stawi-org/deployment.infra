@@ -26,7 +26,7 @@ jobs:
           chmod +x /usr/local/bin/yq
       
       - name: Seed inventory
-        if: ${{ inputs.dry_run == 'false' }}
+        if: ${{ inputs.dry_run != 'true' }}
         env:
           R2_ENDPOINT_URL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
         run: |
