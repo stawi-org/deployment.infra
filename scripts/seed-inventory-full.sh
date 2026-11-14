@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Full inventory seeding script for all accounts
 # Usage: ./seed-inventory-full.sh [--dry-run]
-# Requires: R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ACCOUNT_ID env vars
+# Requires: R2_ENDPOINT_URL, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY env vars
 
 set -euo pipefail
 
@@ -11,8 +11,8 @@ if [[ "${1:-}" == "--dry-run" ]]; then
 fi
 
 : "${R2_ENDPOINT_URL:?R2_ENDPOINT_URL required}"
-: "${R2_ACCESS_KEY_ID:?R2_ACCESS_KEY_ID required}"
-: "${R2_SECRET_ACCESS_KEY:?R2_SECRET_ACCESS_KEY required}"
+: "${AWS_ACCESS_KEY_ID:?AWS_ACCESS_KEY_ID required}"
+: "${AWS_SECRET_ACCESS_KEY:?AWS_SECRET_ACCESS_KEY required}"
 
 TMPDIR=$(mktemp -d)
 echo "Working in $TMPDIR"
