@@ -217,6 +217,33 @@ jobs:
             export PATH="$HOME/bin:$PATH"
           fi
           
+          # Fix OCI config: add user OCID from UPST token for bwire profile
+          UPST_FILE="$HOME/.oci/upst_bwire.token"
+          if [[ -f "$UPST_FILE" ]]; then
+            # Decode UPST JWT to get user OCID from 'sub' claim
+            USER_OCID=$(python3 -c "
+import sys, json, base64
+with open('$UPST_FILE') as f:
+    token = f.read().strip()
+parts = token.split('.')
+if len(parts) >= 2:
+    payload = parts[1]
+    payload += '=' * ((4 - len(payload) % 4) % 4)
+    decoded = base64.urlsafe_b64decode(payload)
+    claims = json.loads(decoded)
+    print(claims.get('sub', ''))
+")
+            if [[ -n "$USER_OCID" && "$USER_OCID" != "null" ]]; then
+              echo "Found user OCID: $USER_OCID"
+              # Add user to bwire profile in config
+              sed -i "/^\[bwire\]/a user = $USER_OCID" "$HOME/.oci/config"
+            else
+              echo "::warning::Could not extract user OCID from UPST token"
+            fi
+          else
+            echo "::warning::UPST file not found at $UPST_FILE"
+          fi
+          
           # Empty buckets using OCI CLI with bwire profile
           for bucket in cluster-image-registry cluster-state-storage cluster-vault-storage omni-backup-storage; do
             echo "Emptying bucket $bucket..."
