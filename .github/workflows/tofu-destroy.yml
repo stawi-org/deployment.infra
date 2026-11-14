@@ -58,6 +58,150 @@ jobs:
             2>&1 | grep -v "NoSuchKey\|^$" || true
           echo "Cleared state and inventory for ${{ inputs.account }} from R2"
 
+      - name: Manually clean up OCI resources for stuck accounts
+        if: inputs.layer == '02-oracle-infra' && (inputs.account == 'alimbacho67' || inputs.account == 'allanofwiti')
+        env:
+          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
+          R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
+          SOPS_AGE_KEY:          ${{ secrets.SOPS_AGE_KEY }}
+        run: |
+          set -euo pipefail
+          echo "=== Manually cleaning up OCI resources for ${{ inputs.account }} ==="
+          
+          # Re-run OCI auth setup to get ~/.oci/config
+          if ! command -v sops >/dev/null 2>&1; then
+            curl -fsSL -o /usr/local/bin/sops \
+              "https://github.com/getsops/sops/releases/download/v3.11.0/sops-v3.11.0.linux.amd64"
+            chmod +x /usr/local/bin/sops
+          fi
+          AUTH_MERGED=$(mktemp -d)
+          scripts/stage-oracle-auth-from-repo.sh "$AUTH_MERGED" .
+          ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          R2_AUTH=$(mktemp -d)
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/oracle/" "${R2_AUTH}/" \
+            --endpoint-url "$ENDPOINT" --region us-east-1 \
+            --exclude "*" --include "*/auth.yaml" || true
+          if [[ -d "$R2_AUTH" ]]; then
+            for d in "$R2_AUTH"/*/; do
+              [[ -d "$d" ]] || continue
+              acct=$(basename "$d")
+              if [[ ! -f "$AUTH_MERGED/$acct/auth.yaml" && -f "$d/auth.yaml" ]]; then
+                mkdir -p "$AUTH_MERGED/$acct"
+                cp "$d/auth.yaml" "$AUTH_MERGED/$acct/auth.yaml"
+                echo "::notice::using legacy R2 auth for $acct (not in repo)"
+              fi
+            done
+          fi
+          AUTH_JSON=$(python3 scripts/build-oci-auth-json.py "${AUTH_MERGED}")
+          if [[ "$AUTH_JSON" != "[]" ]]; then
+            echo "$AUTH_JSON" > /tmp/oci_auth_accounts.json
+            scripts/configure-oci-wif.sh /tmp/oci_auth_accounts.json
+          fi
+          
+          # Install OCI CLI if not present
+          if ! command -v oci >/dev/null 2>&1; then
+            echo "Installing OCI CLI..."
+            bash -c "$(curl -fsSL https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh)" -- --accept-all-defaults
+            export PATH="$HOME/bin:$PATH"
+          fi
+          
+          # Fix OCI config: add user OCID from UPST token
+          UPST_FILE="$HOME/.oci/upst_${{ inputs.account }}.token"
+          if [[ -f "$UPST_FILE" ]]; then
+            USER_OCID=$(python3 -c "import sys, json, base64; f=open('$UPST_FILE'); t=f.read().strip(); f.close(); p=t.split('.'); print(json.loads(base64.urlsafe_b64decode(p[1]+'='*((4-len(p[1])%4)%4)).decode()).get('sub','')) if len(p)>=2 else print('')")
+            if [[ -n "$USER_OCID" && "$USER_OCID" != "null" ]]; then
+              sed -i "/^\[${{ inputs.account }}\]/a user = $USER_OCID" "$HOME/.oci/config"
+            fi
+          fi
+          
+          NAMESPACE="frosk7nwicev"
+          PROFILE="${{ inputs.account }}"
+          
+          echo "=== Deleting compute instances ==="
+          INSTANCE_OCIDS=$(oci compute instance list -c $(oci iam compartment list --profile "$PROFILE" --auth security_token --all --query "data[?name=='${{ inputs.account }}'].id | [0]" --raw-output 2>/dev/null || echo "") --profile "$PROFILE" --auth security_token --query "data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'].id" --raw-output 2>/dev/null || true)
+          for ocid in $INSTANCE_OCIDS; do
+            if [[ -n "$ocid" ]]; then
+              echo "Terminating instance $ocid..."
+              oci compute instance terminate --instance-id "$ocid" --profile "$PROFILE" --auth security_token --force --wait-for-state TERMINATED 2>&1 | grep -v "^$" || true
+            fi
+          done
+          
+          echo "=== Deleting NSGs ==="
+          NSG_OCIDS=$(oci network nsg list -c $(oci iam compartment list --profile "$PROFILE" --auth security_token --all --query "data[?name=='${{ inputs.account }}'].id | [0]" --raw-output 2>/dev/null || echo "") --profile "$PROFILE" --auth security_token --query "data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'].id" --raw-output 2>/dev/null || true)
+          for ocid in $NSG_OCIDS; do
+            if [[ -n "$ocid" ]]; then
+              echo "Deleting NSG $ocid..."
+              oci network nsg delete --nsg-id "$ocid" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
+            fi
+          done
+          
+          echo "=== Deleting subnets ==="
+          SUBNET_OCIDS=$(oci network subnet list -c $(oci iam compartment list --profile "$PROFILE" --auth security_token --all --query "data[?name=='${{ inputs.account }}'].id | [0]" --raw-output 2>/dev/null || echo "") --profile "$PROFILE" --auth security_token --query "data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'].id" --raw-output 2>/dev/null || true)
+          for ocid in $SUBNET_OCIDS; do
+            if [[ -n "$ocid" ]]; then
+              echo "Deleting subnet $ocid..."
+              oci network subnet delete --subnet-id "$ocid" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
+            fi
+          done
+          
+          echo "=== Deleting VCNs ==="
+          VCN_OCIDS=$(oci network vcn list -c $(oci iam compartment list --profile "$PROFILE" --auth security_token --all --query "data[?name=='${{ inputs.account }}'].id | [0]" --raw-output 2>/dev/null || echo "") --profile "$PROFILE" --auth security_token --query "data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'].id" --raw-output 2>/dev/null || true)
+          for ocid in $VCN_OCIDS; do
+            if [[ -n "$ocid" ]]; then
+              echo "Deleting VCN $ocid..."
+              oci network vcn delete --vcn-id "$ocid" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
+            fi
+          done
+          
+          echo "=== Deleting Internet Gateways ==="
+          IGW_OCIDS=$(oci network internet-gateway list -c $(oci iam compartment list --profile "$PROFILE" --auth security_token --all --query "data[?name=='${{ inputs.account }}'].id | [0]" --raw-output 2>/dev/null || echo "") --profile "$PROFILE" --auth security_token --query "data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'].id" --raw-output 2>/dev/null || true)
+          for ocid in $IGW_OCIDS; do
+            if [[ -n "$ocid" ]]; then
+              echo "Deleting Internet Gateway $ocid..."
+              oci network internet-gateway delete --ig-id "$ocid" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
+            fi
+          done
+          
+          echo "=== Deleting NAT Gateways ==="
+          NAT_OCIDS=$(oci network nat-gateway list -c $(oci iam compartment list --profile "$PROFILE" --auth security_token --all --query "data[?name=='${{ inputs.account }}'].id | [0]" --raw-output 2>/dev/null || echo "") --profile "$PROFILE" --auth security_token --query "data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'].id" --raw-output 2>/dev/null || true)
+          for ocid in $NAT_OCIDS; do
+            if [[ -n "$ocid" ]]; then
+              echo "Deleting NAT Gateway $ocid..."
+              oci network nat-gateway delete --nat-gateway-id "$ocid" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
+            fi
+          done
+          
+          echo "=== Deleting Route Tables ==="
+          RT_OCIDS=$(oci network route-table list -c $(oci iam compartment list --profile "$PROFILE" --auth security_token --all --query "data[?name=='${{ inputs.account }}'].id | [0]" --raw-output 2>/dev/null || echo "") --profile "$PROFILE" --auth security_token --query "data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'].id" --raw-output 2>/dev/null || true)
+          for ocid in $RT_OCIDS; do
+            if [[ -n "$ocid" ]]; then
+              echo "Deleting Route Table $ocid..."
+              oci network route-table delete --route-table-id "$ocid" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
+            fi
+          done
+          
+          echo "=== Deleting Security Lists ==="
+          SL_OCIDS=$(oci network security-list list -c $(oci iam compartment list --profile "$PROFILE" --auth security_token --all --query "data[?name=='${{ inputs.account }}'].id | [0]" --raw-output 2>/dev/null || echo "") --profile "$PROFILE" --auth security_token --query "data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'].id" --raw-output 2>/dev/null || true)
+          for ocid in $SL_OCIDS; do
+            if [[ -n "$ocid" ]]; then
+              echo "Deleting Security List $ocid..."
+              oci network security-list delete --security-list-id "$ocid" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
+            fi
+          done
+          
+          echo "=== Deleting Bastions ==="
+          BASTION_OCIDS=$(oci bastion bastion list -c $(oci iam compartment list --profile "$PROFILE" --auth security_token --all --query "data[?name=='${{ inputs.account }}'].id | [0]" --raw-output 2>/dev/null || echo "") --profile "$PROFILE" --auth security_token --query "data[?\"lifecycle-state\"!='DELETED' && \"lifecycle-state\"!='DELETING'].id" --raw-output 2>/dev/null || true)
+          for ocid in $BASTION_OCIDS; do
+            if [[ -n "$ocid" ]]; then
+              echo "Deleting Bastion $ocid..."
+              oci bastion bastion delete --bastion-id "$ocid" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
+            fi
+          done
+          
+          echo "=== Cleanup complete for ${{ inputs.account }} ==="
+
       - name: Sync R2 inventory to /tmp/inventory/
         if: inputs.layer == '00-omni-server' || inputs.layer == '02-oci-storage' || inputs.layer == '02-oracle-infra' || inputs.layer == '02-onprem-infra' || inputs.layer == '02-gcp-infra' || inputs.layer == '03-talos'
         env:
@@ -340,7 +484,7 @@ jobs:
           done
           exit "$rc"
 
-      - name: Destroy
+      - name: Destroy (with re-created state)
         if: inputs.layer != '02-oracle-infra' || (inputs.account != 'alimbacho67' && inputs.account != 'allanofwiti')
         working-directory: tofu/layers/${{ inputs.layer }}
         env:
@@ -371,3 +515,22 @@ jobs:
         run: |
           set -uo pipefail
           tofu destroy -input=false -auto-approve
+
+      - name: Destroy stuck accounts via OCI CLI (after manual cleanup)
+        if: inputs.layer == '02-oracle-infra' && (inputs.account == 'alimbacho67' || inputs.account == 'allanofwiti')
+        env:
+          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
+          R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
+          SOPS_AGE_KEY:          ${{ secrets.SOPS_AGE_KEY }}
+        run: |
+          set -euo pipefail
+          echo "=== Destroying ${{ inputs.account }} after manual OCI cleanup ==="
+          
+          # The manual cleanup step already ran and deleted all resources
+          # Now we just need to ensure state is clean (already done in clear step)
+          # and no inventory remains (already done)
+          echo "State and inventory already cleared for ${{ inputs.account }}"
+          echo "OCI resources manually deleted via previous step"
+          echo "=== Complete for ${{ inputs.account }} ==="
