@@ -170,6 +170,73 @@ jobs:
           service_account: ${{ steps.gcp_auth.outputs.service_account }}
           project_id: ${{ steps.gcp_auth.outputs.project_id }}
 
+      - name: Empty OCI buckets before destroy (02-oci-storage)
+        if: inputs.layer == '02-oci-storage'
+        env:
+          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_EC2_METADATA_DISABLED: "true"
+          R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          # The OCI auth step configures ~/.oci/config and ~/.oci/oci_api_key.pem
+          # for the bwire profile. Use the S3-compatible endpoint with the same credentials.
+          # First, get the namespace and region from the staged auth.
+          ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          R2_AUTH=$(mktemp -d)
+          aws s3 sync "s3://cluster-tofu-state/production/inventory/oracle/" "${R2_AUTH}/" \
+            --endpoint-url "$ENDPOINT" --region us-east-1 \
+            --exclude "*" --include "*/auth.yaml" || true
+          
+          # Find bwire auth to get namespace and region
+          if [[ -f "${R2_AUTH}/bwire/auth.yaml" ]]; then
+            BWIRE_AUTH="${R2_AUTH}/bwire/auth.yaml"
+          elif [[ -f "${R2_AUTH}/madiang100/auth.yaml" ]]; then
+            # Fallback to another account that might have the bucket
+            BWIRE_AUTH="${R2_AUTH}/madiang100/auth.yaml"
+          else
+            echo "::warning::Could not find OCI auth for bucket cleanup"
+            exit 0
+          fi
+          
+          NAMESPACE=$(yq -r '.auth.namespace' "$BWIRE_AUTH")
+          REGION=$(yq -r '.auth.region' "$BWIRE_AUTH")
+          
+          if [[ -z "$NAMESPACE" || "$NAMESPACE" == "null" ]]; then
+            echo "::warning::Could not determine OCI namespace"
+            exit 0
+          fi
+          
+          # Use AWS CLI with OCI S3-compatible endpoint to empty the bucket
+          OCI_ENDPOINT="https://${NAMESPACE}.compat.objectstorage.${REGION}.oraclecloud.com"
+          echo "Emptying bucket cluster-image-registry at $OCI_ENDPOINT"
+          aws s3 rm "s3://cluster-image-registry" \
+            --endpoint-url "$OCI_ENDPOINT" \
+            --region "$REGION" \
+            --recursive \
+            2>&1 | grep -v "^$" || true
+          
+          echo "Emptying bucket cluster-state-storage at $OCI_ENDPOINT"
+          aws s3 rm "s3://cluster-state-storage" \
+            --endpoint-url "$OCI_ENDPOINT" \
+            --region "$REGION" \
+            --recursive \
+            2>&1 | grep -v "^$" || true
+          
+          echo "Emptying bucket cluster-vault-storage at $OCI_ENDPOINT"
+          aws s3 rm "s3://cluster-vault-storage" \
+            --endpoint-url "$OCI_ENDPOINT" \
+            --region "$REGION" \
+            --recursive \
+            2>&1 | grep -v "^$" || true
+          
+          echo "Emptying bucket omni-backup-storage at $OCI_ENDPOINT"
+          aws s3 rm "s3://omni-backup-storage" \
+            --endpoint-url "$OCI_ENDPOINT" \
+            --region "$REGION" \
+            --recursive \
+            2>&1 | grep -v "^$" || true
+
       - name: Clear stale state lock
         env:
           AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
