@@ -7,7 +7,7 @@ jobs:
     env:
       OMNI_ENDPOINT: https://cp.stawi.org
       OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
-      OMNI_VERSION: v1.9.3
+      OMNI_VERSION: v1.13.3
     steps:
       - name: Tools + kubeconfig
         run: |
@@ -20,7 +20,7 @@ jobs:
           exec /usr/local/bin/omnictl.real --insecure-skip-tls-verify "$@"
           WRAP
           chmod +x /usr/local/bin/omnictl
-          curl -fsSLo /usr/local/bin/kubectl https://dl.k8s.io/release/v1.36.0/bin/linux/amd64/kubectl
+          curl -fsSLo /usr/local/bin/kubectl https://dl.k8s.io/release/v1.37.1/bin/linux/amd64/kubectl
           chmod +x /usr/local/bin/kubectl
           omnictl kubeconfig --cluster stawi --service-account --user fix \
             --groups system:masters --force "$HOME/.kube/config"

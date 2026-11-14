@@ -99,7 +99,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  OMNI_VERSION: v1.9.3
+  OMNI_VERSION: v1.13.3
 
 jobs:
   preflight:

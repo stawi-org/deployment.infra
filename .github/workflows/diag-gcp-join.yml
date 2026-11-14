@@ -9,7 +9,7 @@ permissions:
   id-token: write
 
 env:
-  OMNI_VERSION: v1.9.3
+  OMNI_VERSION: v1.13.3
 
 jobs:
   omni:

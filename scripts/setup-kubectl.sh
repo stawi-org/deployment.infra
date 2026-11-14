@@ -24,11 +24,11 @@
 #
 # Usage:
 #   scripts/setup-kubectl.sh
-#   K8S_VERSION=v1.36.0 scripts/setup-kubectl.sh   # override
+#   K8S_VERSION=v1.37.1 scripts/setup-kubectl.sh   # override
 #   INSTALL_DIR=$HOME/.local/bin scripts/setup-kubectl.sh
 #
 # Env knobs:
-#   K8S_VERSION       kubectl version (default v1.36.0)
+#   K8S_VERSION       kubectl version (default v1.37.1)
 #   OMNI_VERSION      omnictl version (default v1.7.1)
 #   KUBELOGIN_VERSION kubelogin version (default v1.32.4)
 #   OMNI_ENDPOINT     Omni URL (default https://cp.stawi.org)
@@ -41,7 +41,7 @@
 
 set -euo pipefail
 
-K8S_VERSION="${K8S_VERSION:-v1.36.0}"
+K8S_VERSION="${K8S_VERSION:-v1.37.1}"
 OMNI_VERSION="${OMNI_VERSION:-v1.7.1}"
 KUBELOGIN_VERSION="${KUBELOGIN_VERSION:-v1.32.4}"
 OMNI_ENDPOINT="${OMNI_ENDPOINT:-https://cp.stawi.org}"
@@ -122,7 +122,7 @@ install_bin() {
 }
 
 # 1. kubectl. `kubectl version --client` writes "Client Version:
-# v1.36.0" to stdout — substring match on "1.36.0" is reliable
+# v1.37.1" to stdout — substring match on "1.36.0" is reliable
 # across 1.28+ (which removed --short).
 install_bin kubectl \
   "https://dl.k8s.io/release/${K8S_VERSION}/bin/${OS}/${ARCH}/kubectl" \

@@ -51,13 +51,13 @@ kubernetes:
   # Pinned to match tofu/shared/versions.auto.tfvars.json's
   # `kubernetes_version`. Bumps to the cluster k8s version go in BOTH
   # files in lock-step so tofu and Omni agree.
-  version: v1.36.0
+  version: v1.37.1
 talos:
   # Pinned to match tofu/shared/versions.auto.tfvars.json's
   # `talos_version`. The image inventory in
   # tofu/shared/inventory/talos-images.yaml is built with this same
   # version; mismatch produces an upgrade-on-bootstrap.
-  version: v1.13.7
+  version: v1.14.6
 features:
   # workload-proxy lets `kubectl --kubeconfig <omni-issued>` route via
   # the Omni dashboard's k8s-proxy without needing direct CP IP
@@ -382,7 +382,7 @@ patches:
       mtu: 1280
       allowDownPeerBypass: true
       # Note: excludeAdvertisedNetworks is documented on Talos ≥1.13 but
-      # Omni's cluster-template decoder (v1.9.3) rejects the key as
+      # Omni's cluster-template decoder (v1.13.3) rejects the key as
       # unknown. Re-add when Omni schema catches up; SideroLink ULA is
       # already excluded from kubelet nodeIP via validSubnets.
   - name: cluster-discovery

@@ -50,7 +50,7 @@ jobs:
       - name: Inspect archive + disk.raw
         run: |
           set -euo pipefail
-          URI='gs://stawi-talos-images-stawi-timber/82e73653fd973b306cb03c670f139f3edda9736c640caabf35811b9fcd4622e7-v1.13.6/42d27ec05008-disk.raw.tar.gz'
+          URI='gs://stawi-talos-images-stawi-timber/82e73653fd973b306cb03c670f139f3edda9736c640caabf35811b9fcd4622e7-v1.14.6/42d27ec05008-disk.raw.tar.gz'
           gcloud storage cp "$URI" /tmp/disk.raw.tar.gz
           echo "=== archive ==="
           ls -la /tmp/disk.raw.tar.gz

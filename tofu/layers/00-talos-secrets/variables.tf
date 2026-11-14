@@ -6,7 +6,7 @@ variable "talos_version" {
 
 variable "kubernetes_version" {
   type        = string
-  description = "Kubernetes version (e.g. v1.36.0). Provided via shared/versions.auto.tfvars.json."
+  description = "Kubernetes version (e.g. v1.37.1). Provided via shared/versions.auto.tfvars.json."
 }
 
 variable "flux_version" {

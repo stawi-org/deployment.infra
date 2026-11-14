@@ -19,7 +19,7 @@ permissions:
   contents: read
 
 env:
-  OMNI_VERSION: v1.9.3
+  OMNI_VERSION: v1.13.3
 
 jobs:
   status:
@@ -188,7 +188,7 @@ jobs:
             talosctl --talosconfig /tmp/talosconfig \
               --nodes 61475972-831c-420c-a80b-7636843e2dfb \
               events --tail 80 2>&1 | tail -100 || true
-            echo "--- talosctl image list (kube-apiserver:v1.35.2 must be cached):"
+            echo "--- talosctl image list (kube-apiserver:v1.37.1 must be cached):"
             talosctl --talosconfig /tmp/talosconfig \
               --nodes 61475972-831c-420c-a80b-7636843e2dfb \
               image list 2>&1 | grep -iE "kube-apiserver|kube-controller|kube-scheduler|^NODE" || \
@@ -241,7 +241,7 @@ jobs:
                --nodes 61475972-831c-420c-a80b-7636843e2dfb \
                kubeconfig --force "$KCFG"; then
             curl -fsSL -o /usr/local/bin/kubectl \
-              "https://dl.k8s.io/release/v1.35.2/bin/linux/amd64/kubectl"
+              "https://dl.k8s.io/release/v1.37.1/bin/linux/amd64/kubectl"
             chmod +x /usr/local/bin/kubectl
             kubectl --kubeconfig "$KCFG" --insecure-skip-tls-verify \
               get nodes -o wide 2>&1 | head -20 || true

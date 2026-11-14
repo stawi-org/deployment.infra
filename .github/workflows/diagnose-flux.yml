@@ -12,7 +12,7 @@ jobs:
     env:
       OMNI_ENDPOINT: https://cp.stawi.org
       OMNI_SERVICE_ACCOUNT_KEY: ${{ secrets.OMNI_SERVICE_ACCOUNT_KEY }}
-      OMNI_VERSION: v1.9.3
+      OMNI_VERSION: v1.13.3
       REAPPLY: ${{ inputs.reapply }}
     steps:
       - uses: actions/checkout@v5
