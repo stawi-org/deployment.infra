@@ -340,23 +340,8 @@ jobs:
           done
           exit "$rc"
 
-      - name: Check if state has resources
-        id: state_check
-        working-directory: tofu/layers/${{ inputs.layer }}
-        env:
-          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          TF_VAR_account_key:    ${{ inputs.account }}
-        run: |
-          # Check if state file exists and has resources
-          if tofu state list 2>/dev/null | grep -q '^'; then
-            echo "has_resources=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_resources=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Destroy
-        if: steps.state_check.outputs.has_resources == 'true'
+        if: inputs.layer != '02-oracle-infra' || (inputs.account != 'alimbacho67' && inputs.account != 'allanofwiti')
         working-directory: tofu/layers/${{ inputs.layer }}
         env:
           AWS_ACCESS_KEY_ID:           ${{ secrets.R2_ACCESS_KEY_ID }}
