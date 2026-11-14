@@ -237,7 +237,7 @@ jobs:
           NAMESPACE="frosk7nwicev"
           for bucket in cluster-image-registry cluster-state-storage cluster-vault-storage omni-backup-storage; do
             echo "Emptying bucket $bucket..."
-            oci os object bulk-delete -bn "$bucket" --namespace "$NAMESPACE" --profile bwire --force 2>&1 | grep -v "^$" || true
+            oci os object bulk-delete -bn "$bucket" --namespace "$NAMESPACE" --profile bwire --auth security_token --force 2>&1 | grep -v "^$" || true
           done
 
       - name: Clear stale state lock
