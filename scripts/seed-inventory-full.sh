@@ -24,7 +24,7 @@ for acct in $ACCOUNTS; do
   echo "Seeding inventory for oracle/$acct..."
   mkdir -p "$TMPDIR/oracle/$acct"
   
-  # Create nodes.yaml with 1 CP + 1 worker per account (A1 Flex, Always Free)
+  # Create nodes.yaml with 1 CP only per account (A1 Flex, Always Free: 4 OCPU, 24 GB max)
   cat > "$TMPDIR/oracle/$acct/nodes.yaml" <<EOF
 annotations:
   node.stawi.org/account-owner: "platform"
@@ -42,19 +42,6 @@ nodes:
     memory_gb: 24
     provider_data: {}
     role: controlplane
-    shape: VM.Standard.A1.Flex
-    zone: ""
-  oci-$acct-worker-1:
-    annotations: {}
-    labels:
-      node.stawi.org/capacity-class: "always-free"
-      node.stawi.org/plane: "worker"
-      node.stawi.org/role-database: "false"
-    boot_volume_size_gb: 50
-    ocpus: 2
-    memory_gb: 12
-    provider_data: {}
-    role: worker
     shape: VM.Standard.A1.Flex
     zone: ""
 EOF
