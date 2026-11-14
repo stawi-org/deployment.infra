@@ -1,0 +1,133 @@
+# .github/workflows/seed-inventory.yml
+name: seed-inventory
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        type: boolean
+        default: false
+        description: "If true, only print what would be uploaded without syncing to R2"
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v5
+      
+      - name: Install yq
+        run: |
+          curl -fsSL -o /usr/local/bin/yq \
+            "https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64"
+          chmod +x /usr/local/bin/yq
+      
+      - name: Seed Oracle inventory
+        run: |
+          set -euo pipefail
+          R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          TMPDIR=$(mktemp -d)
+          
+          # Load accounts
+          ACCOUNTS=$(yq -r '.oracle[]' tofu/shared/accounts.yaml)
+          
+          for acct in $ACCOUNTS; do
+            echo "Seeding inventory for oracle/$acct..."
+            mkdir -p "$TMPDIR/oracle/$acct"
+            
+            # Create nodes.yaml with 1 CP + 1 worker per account (A1 Flex, Always Free)
+            cat > "$TMPDIR/oracle/$acct/nodes.yaml" <<EOF
+annotations:
+  node.stawi.org/account-owner: "platform"
+labels:
+  node.stawi.org/account: "$acct"
+nodes:
+  oci-$acct-cp-1:
+    annotations: {}
+    labels:
+      node.stawi.org/capacity-class: "always-free"
+      node.stawi.org/plane: "controlplane"
+      node.stawi.org/role-database: "false"
+    boot_volume_size_gb: 50
+    ocpus: 4
+    memory_gb: 24
+    provider_data: {}
+    role: controlplane
+    shape: VM.Standard.A1.Flex
+    zone: ""
+  oci-$acct-worker-1:
+    annotations: {}
+    labels:
+      node.stawi.org/capacity-class: "always-free"
+      node.stawi.org/plane: "worker"
+      node.stawi.org/role-database: "false"
+    boot_volume_size_gb: 50
+    ocpus: 2
+    memory_gb: 12
+    provider_data: {}
+    role: worker
+    shape: VM.Standard.A1.Flex
+    zone: ""
+EOF
+            
+            # Create empty state.yaml
+            cat > "$TMPDIR/oracle/$acct/state.yaml" <<EOF
+provider_data: {}
+EOF
+          done
+          
+          # On-prem account
+          echo "Seeding inventory for onprem/tindase..."
+          mkdir -p "$TMPDIR/onprem/tindase"
+          cat > "$TMPDIR/onprem/tindase/nodes.yaml" <<EOF
+annotations:
+  node.stawi.org/account-owner: "platform"
+labels:
+  node.stawi.org/account: "tindase"
+nodes:
+  onprem-tindase-cp-1:
+    annotations: {}
+    labels:
+      node.stawi.org/plane: "controlplane"
+      node.stawi.org/role-database: "false"
+    boot_volume_size_gb: 0
+    ocpus: 8
+    memory_gb: 32
+    provider_data: {}
+    role: controlplane
+    shape: baremetal
+    zone: ""
+  onprem-tindase-worker-1:
+    annotations: {}
+    labels:
+      node.stawi.org/plane: "worker"
+      node.stawi.org/role-database: "false"
+    boot_volume_size_gb: 0
+    ocpus: 8
+    memory_gb: 32
+    provider_data: {}
+    role: worker
+    shape: baremetal
+    zone: ""
+EOF
+          
+          cat > "$TMPDIR/onprem/tindase/state.yaml" <<EOF
+provider_data: {}
+EOF
+          
+          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+            echo "=== DRY RUN - would upload to R2 ==="
+            find "$TMPDIR" -type f -name "*.yaml" | while read f; do
+              echo "--- $f ---"
+              cat "$f"
+            done
+          else
+            echo "Syncing to R2..."
+            aws s3 sync "$TMPDIR" "s3://cluster-tofu-state/production/inventory/" \
+              --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+              --region us-east-1
+            echo "Done!"
+          fi
