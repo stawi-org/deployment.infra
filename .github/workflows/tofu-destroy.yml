@@ -238,6 +238,16 @@ jobs:
           for bucket in cluster-image-registry cluster-state-storage cluster-vault-storage omni-backup-storage; do
             echo "Emptying bucket $bucket..."
             oci os object bulk-delete -bn "$bucket" --namespace "$NAMESPACE" --profile bwire --auth security_token --force 2>&1 | grep -v "^$" || true
+            
+            # Also delete any preauthenticated requests (PARs) on the bucket
+            echo "Deleting PARs for bucket $bucket..."
+            PAR_IDS=$(oci os preauth-request list -bn "$bucket" --namespace "$NAMESPACE" --profile bwire --auth security_token --query "data[*].id" --output json 2>/dev/null | jq -r '.[]' 2>/dev/null || true)
+            for par_id in $PAR_IDS; do
+              if [[ -n "$par_id" ]]; then
+                echo "Deleting PAR $par_id..."
+                oci os preauth-request delete -bn "$bucket" --namespace "$NAMESPACE" --par-id "$par_id" --profile bwire --auth security_token --force 2>&1 | grep -v "^$" || true
+              fi
+            done
           done
 
       - name: Clear stale state lock
