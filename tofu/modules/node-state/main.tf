@@ -54,7 +54,7 @@ locals {
   # plan output (just provider config); unmark so layer for_each over
   # oci_accounts_effective works.
   auth_decoded  = local.has_auth ? nonsensitive(yamldecode(data.sops_file.auth[0].raw)) : null
-  nodes_decoded = try(yamldecode(file(local.nodes_local)), { nodes = {} })
+  nodes_decoded = try(nonsensitive(yamldecode(file(local.nodes_local))), { nodes = {} })
 }
 
 # Diagnostic: which inventory files were found.
