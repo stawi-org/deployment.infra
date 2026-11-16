@@ -1,0 +1,130 @@
+# .github/workflows/cleanup-stale-oci-bucket.yml
+#
+# Removes a per-account Object Storage bucket that blocks its recreation.
+#
+# Symptom this fixes: `oci os bucket create` returns
+# "BucketAlreadyExists — Either the bucket 'talos-images-<acct>' in
+# namespace '<ns>' already exists or you are not authorized to create
+# it", while `oci os bucket get` on the same name returns 404.
+#
+# That combination means the bucket EXISTS in the tenancy namespace but
+# in a compartment the current identity cannot read (e.g. the account's
+# auth.yaml compartment_ocid changed after the bucket was created).
+# OCI masks the cross-compartment bucket as 404 on get, and refuses the
+# create because the name is taken namespace-wide.
+#
+# This walks every compartment in the tenancy, finds the bucket, empties
+# it, and deletes it.
+name: cleanup-stale-oci-bucket
+on:
+  workflow_dispatch:
+    inputs:
+      account:
+        required: true
+        type: string
+        description: "Oracle account key"
+      bucket:
+        required: false
+        type: string
+        default: ""
+        description: "Bucket to remove (default: talos-images-<account>)"
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
+      SOPS_AGE_KEY:          ${{ secrets.SOPS_AGE_KEY }}
+      ACCOUNT:               ${{ inputs.account }}
+      OCI_CLI_AUTH: security_token
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install OCI CLI
+        run: |
+          set -euo pipefail
+          pip install --quiet oci-cli
+          oci --version
+
+      - name: Configure OCI WIF
+        run: |
+          set -euo pipefail
+          if ! command -v sops >/dev/null 2>&1; then
+            curl -fsSL -o /usr/local/bin/sops \
+              "https://github.com/getsops/sops/releases/download/v3.11.0/sops-v3.11.0.linux.amd64"
+            chmod +x /usr/local/bin/sops
+          fi
+          AUTH_MERGED=$(mktemp -d)
+          scripts/stage-oracle-auth-from-repo.sh "$AUTH_MERGED" .
+          AUTH_JSON=$(python3 scripts/build-oci-auth-json.py "${AUTH_MERGED}")
+          echo "$AUTH_JSON" > /tmp/oci_auth_accounts.json
+          scripts/configure-oci-wif.sh /tmp/oci_auth_accounts.json
+          UPST_FILE="$HOME/.oci/upst_${ACCOUNT}.token"
+          if [[ -f "$UPST_FILE" ]]; then
+            USER_OCID=$(python3 -c "import sys, json, base64; f=open('$UPST_FILE'); t=f.read().strip(); f.close(); p=t.split('.'); print(json.loads(base64.urlsafe_b64decode(p[1]+'='*((4-len(p[1])%4)%4)).decode()).get('sub','')) if len(p)>=2 else print('')")
+            [[ -n "$USER_OCID" ]] && sed -i "/^\[${ACCOUNT}\]/a user = $USER_OCID" "$HOME/.oci/config"
+          fi
+
+      - name: Find and delete the stale bucket
+        run: |
+          set -uo pipefail
+          PROFILE="${ACCOUNT}"
+          namespace=$(oci --profile "$PROFILE" os ns get --query 'data' --raw-output)
+          bucket="${{ inputs.bucket }}"
+          [[ -z "$bucket" ]] && bucket="talos-images-${PROFILE}"
+          echo "namespace=${namespace} bucket=${bucket}"
+
+          AUTH_MERGED=$(mktemp -d)
+          scripts/stage-oracle-auth-from-repo.sh "$AUTH_MERGED" .
+          TENANCY=$(yq -r '.auth.tenancy_ocid' "$AUTH_MERGED/${PROFILE}/auth.yaml")
+
+          # Collect every compartment in the tenancy (root + children).
+          mapfile -t COMPARTMENTS < <(
+            {
+              echo "$TENANCY"
+              oci --profile "$PROFILE" iam compartment list --compartment-id "$TENANCY" --all \
+                --query 'data[].id' --raw-output 2>/dev/null || true
+            } | sort -u
+          )
+          echo "compartments: ${#COMPARTMENTS[@]}"
+
+          found=0
+          for comp in "${COMPARTMENTS[@]}"; do
+            [[ -z "$comp" ]] && continue
+            # `os bucket list` is compartment-scoped.
+            names=$(oci --profile "$PROFILE" os bucket list \
+                      --namespace-name "$namespace" --compartment-id "$comp" \
+                      --query 'data[].name' --raw-output 2>/dev/null || true)
+            for n in $names; do
+              if [[ "$n" == "$bucket" ]]; then
+                echo "found ${bucket} in compartment ${comp}"
+                found=1
+                # Empty it first (delete needs an empty bucket).
+                objs=$(oci --profile "$PROFILE" os object list \
+                         --namespace-name "$namespace" --bucket-name "$bucket" \
+                         --fields 'name' 2>/dev/null | grep -o '"name": "[^"]*"' | sed 's/"name": "//;s/"$//' || true)
+                for o in $objs; do
+                  echo "  deleting object ${o}"
+                  oci --profile "$PROFILE" os object delete \
+                    --namespace-name "$namespace" --bucket-name "$bucket" --object-name "$o" \
+                    --force >/dev/null 2>&1 || true
+                done
+                echo "  deleting bucket"
+                oci --profile "$PROFILE" os bucket delete \
+                  --namespace-name "$namespace" --bucket-name "$bucket" \
+                  --compartment-id "$comp" --force 2>&1 | head -5 || true
+              fi
+            done
+          done
+
+          if [[ "$found" == "0" ]]; then
+            echo "::notice::bucket ${bucket} not found in any readable compartment of ${PROFILE}"
+            echo "::warning::the create failure may be an IAM issue, not a name conflict"
+          else
+            echo "=== stale bucket ${bucket} removed from ${PROFILE} ==="
+          fi
