@@ -124,7 +124,25 @@ jobs:
 
           if [[ "$found" == "0" ]]; then
             echo "::notice::bucket ${bucket} not found in any readable compartment of ${PROFILE}"
-            echo "::warning::the create failure may be an IAM issue, not a name conflict"
+            # Probe: can this identity create a bucket at all? A
+            # uniquely-named probe distinguishes "name conflict with an
+            # unreachable bucket" from "not authorized to create".
+            PROBE="probe-$(date +%s)-${RANDOM}"
+            COMPARTMENT=$(yq -r '.auth.compartment_ocid' "$AUTH_MERGED/${PROFILE}/auth.yaml")
+            if oci --profile "$PROFILE" os bucket create \
+                  --compartment-id "$COMPARTMENT" \
+                  --namespace-name "$namespace" \
+                  --name "$PROBE" \
+                  --public-access-type ObjectRead >/dev/null 2>"${PROBE}.err"; then
+              echo "::notice::probe bucket ${PROBE} created — IAM is fine, the failure is a NAME CONFLICT"
+              echo "::notice::deleting probe bucket"
+              oci --profile "$PROFILE" os bucket delete \
+                --namespace-name "$namespace" --bucket-name "$PROBE" \
+                --compartment-id "$COMPARTMENT" --force >/dev/null 2>&1 || true
+            else
+              echo "::error::probe bucket create FAILED — IAM cannot create buckets in this compartment"
+              cat "${PROBE}.err" | head -20
+            fi
           else
             echo "=== stale bucket ${bucket} removed from ${PROFILE} ==="
           fi
