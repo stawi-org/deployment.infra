@@ -1,0 +1,219 @@
+# .github/workflows/reset-oracle-account.yml
+#
+# Resets a single Oracle account's network layer so a fresh apply can
+# rebuild it with the current auth.yaml CIDR.
+#
+# Why this exists: `oci_core_vcn.this` carries
+# `lifecycle { ignore_changes = [cidr_blocks] }` (the VCN CIDR is fixed
+# at create time — OCI rejects shrinking it). When an account's state
+# still holds a VCN created under an older auth.yaml `vcn_cidr`
+# (e.g. 10.0.0.0/16) but the repo now declares a different one
+# (e.g. 10.200.0.0/16), tofu's subnet create computes
+# `cidrsubnet(var.vcn_cidr, 8, 2)` from the NEW value and OCI rejects
+# it with:
+#
+#   400-InvalidParameter, Specified CIDR block 10.200.2.0/24 is not
+#   contained in its respective VCN CIDR blocks 10.0.0.0/16
+#
+# Fix: drop the VCN (and its dependents) from state, delete the live
+# objects, then let the normal apply recreate everything from scratch
+# with the current CIDR.
+name: reset-oracle-account
+on:
+  workflow_dispatch:
+    inputs:
+      account:
+        required: true
+        type: string
+        description: "Oracle account key to reset (e.g. bwire)"
+      environment:
+        required: false
+        type: string
+        default: "production"
+
+jobs:
+  reset:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
+      SOPS_AGE_KEY:          ${{ secrets.SOPS_AGE_KEY }}
+      ACCOUNT:               ${{ inputs.account }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: opentofu/setup-opentofu@v2
+        with:
+          tofu_version: "1.10.0"
+
+      - name: Install tools
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /usr/local/bin/yq \
+            "https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64"
+          chmod +x /usr/local/bin/yq
+          if ! command -v oci >/dev/null 2>&1; then
+            bash -c "$(curl -fsSL https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh)" -- --accept-all-defaults
+            echo "$HOME/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: OCI workload-identity federation
+        run: |
+          set -euo pipefail
+          if ! command -v sops >/dev/null 2>&1; then
+            curl -fsSL -o /usr/local/bin/sops \
+              "https://github.com/getsops/sops/releases/download/v3.11.0/sops-v3.11.0.linux.amd64"
+            chmod +x /usr/local/bin/sops
+          fi
+          AUTH_MERGED=$(mktemp -d)
+          scripts/stage-oracle-auth-from-repo.sh "$AUTH_MERGED" .
+          AUTH_JSON=$(python3 scripts/build-oci-auth-json.py "${AUTH_MERGED}")
+          if [[ "$AUTH_JSON" == "[]" ]]; then
+            echo "::error::no OCI auth profiles found"
+            exit 1
+          fi
+          echo "$AUTH_JSON" > /tmp/oci_auth_accounts.json
+          scripts/configure-oci-wif.sh /tmp/oci_auth_accounts.json
+          
+          # Add user OCID to the profile so the OCI CLI can authenticate.
+          UPST_FILE="$HOME/.oci/upst_${ACCOUNT}.token"
+          if [[ -f "$UPST_FILE" ]]; then
+            USER_OCID=$(python3 -c "import sys, json, base64; f=open('$UPST_FILE'); t=f.read().strip(); f.close(); p=t.split('.'); print(json.loads(base64.urlsafe_b64decode(p[1]+'='*((4-len(p[1])%4)%4)).decode()).get('sub','')) if len(p)>=2 else print('')")
+            if [[ -n "$USER_OCID" && "$USER_OCID" != "null" ]]; then
+              sed -i "/^\[${ACCOUNT}\]/a user = $USER_OCID" "$HOME/.oci/config"
+            fi
+          fi
+          
+          # Persist the compartment OCID for the next step.
+          AUTH_FILE="$AUTH_MERGED/${ACCOUNT}/auth.yaml"
+          COMPARTMENT_OCID=$(yq -r '.auth.compartment_ocid' "$AUTH_FILE")
+          echo "compartment=$COMPARTMENT_OCID" >> "$GITHUB_ENV"
+
+      - name: Init
+        working-directory: tofu/layers/02-oracle-infra
+        env:
+          TF_VAR_account_key: ${{ inputs.account }}
+        run: |
+          set +e
+          for attempt in 1 2 3; do
+            tofu init -input=false \
+              -backend-config="key=production/02-oracle-infra-${ACCOUNT}.tfstate" \
+              -backend-config="endpoints={s3=\"https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com\"}" \
+              -reconfigure
+            rc=$?
+            [[ $rc -eq 0 ]] && break
+            echo "::warning::tofu init failed (rc=$rc) — retry ${attempt}/3"
+            sleep 20
+            rm -rf .terraform
+          done
+          exit "$rc"
+
+      - name: Show current state
+        working-directory: tofu/layers/02-oracle-infra
+        env:
+          TF_VAR_account_key: ${{ inputs.account }}
+        run: |
+          set +e
+          echo "=== state list ==="
+          tofu state list || true
+
+      - name: Remove network resources from state
+        working-directory: tofu/layers/02-oracle-infra
+        env:
+          TF_VAR_account_key: ${{ inputs.account }}
+        run: |
+          set +e
+          # Drop the VCN and everything hanging off it so the next apply
+          # rebuilds the whole network with the current auth.yaml CIDR.
+          PREFIX="module.oracle_account[\"${ACCOUNT}\"]"
+          for addr in \
+            "$PREFIX.module.node" \
+            "$PREFIX.oci_bastion_session.node" \
+            "$PREFIX.oci_bastion_bastion.this" \
+            "$PREFIX.oci_core_subnet.public" \
+            "$PREFIX.oci_core_route_table.public" \
+            "$PREFIX.oci_core_security_list.public" \
+            "$PREFIX.oci_core_internet_gateway.this" \
+            "$PREFIX.oci_core_vcn.this" \
+            "$PREFIX.oci_core_shape_management.talos_compat" ; do
+            echo "state rm $addr"
+            tofu state rm "$addr" 2>&1 | grep -v "^$" || true
+          done
+          
+          # Also drop any leftover node instances under the module.
+          tofu state list 2>/dev/null | grep -E "^${PREFIX}\.module\.node\[" | while read -r a; do
+            echo "state rm $a"
+            tofu state rm "$a" 2>&1 | grep -v "^$" || true
+          done
+
+      - name: Delete live OCI network objects
+        run: |
+          set -uo pipefail
+          echo "=== deleting live network objects for ${ACCOUNT} ==="
+          COMPARTMENT_OCID="${COMPARTMENT}"
+          if [[ -z "$COMPARTMENT_OCID" || "$COMPARTMENT_OCID" == "null" ]]; then
+            echo "::error::no compartment OCID"
+            exit 1
+          fi
+          PROFILE="${ACCOUNT}"
+          
+          # Terminate any instances first (they hold VNICs on the subnet).
+          for ocid in $(oci compute instance list -c "$COMPARTMENT_OCID" --profile "$PROFILE" --auth security_token --query "data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'].id" --raw-output 2>/dev/null); do
+            echo "Terminating instance $ocid"
+            oci compute instance terminate --instance-id "$ocid" --profile "$PROFILE" --auth security_token --force --wait-for-state TERMINATED 2>&1 | grep -v "^$" || true
+          done
+          
+          # Bastion
+          for ocid in $(oci bastion bastion list -c "$COMPARTMENT_OCID" --profile "$PROFILE" --auth security_token --query "data[?\"lifecycle-state\"!='DELETED' && \"lifecycle-state\"!='DELETING'].id" --raw-output 2>/dev/null); do
+            echo "Deleting bastion $ocid"
+            oci bastion bastion delete --bastion-id "$ocid" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
+          done
+          
+          # Internet gateways
+          for ocid in $(oci network internet-gateway list -c "$COMPARTMENT_OCID" --profile "$PROFILE" --auth security_token --query "data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'].id" --raw-output 2>/dev/null); do
+            echo "Deleting internet gateway $ocid"
+            oci network internet-gateway delete --ig-id "$ocid" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
+          done
+          
+          # NAT gateways
+          for ocid in $(oci network nat-gateway list -c "$COMPARTMENT_OCID" --profile "$PROFILE" --auth security_token --query "data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'].id" --raw-output 2>/dev/null); do
+            echo "Deleting NAT gateway $ocid"
+            oci network nat-gateway delete --nat-gateway-id "$ocid" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
+          done
+          
+          # Route tables
+          for ocid in $(oci network route-table list -c "$COMPARTMENT_OCID" --profile "$PROFILE" --auth security_token --query "data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'].id" --raw-output 2>/dev/null); do
+            echo "Deleting route table $ocid"
+            oci network route-table delete --route-table-id "$ocid" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
+          done
+          
+          # Security lists
+          for ocid in $(oci network security-list list -c "$COMPARTMENT_OCID" --profile "$PROFILE" --auth security_token --query "data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'].id" --raw-output 2>/dev/null); do
+            echo "Deleting security list $ocid"
+            oci network security-list delete --security-list-id "$ocid" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
+          done
+          
+          # NSGs
+          for ocid in $(oci network nsg list -c "$COMPARTMENT_OCID" --profile "$PROFILE" --auth security_token --query "data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'].id" --raw-output 2>/dev/null); do
+            echo "Deleting NSG $ocid"
+            oci network nsg delete --nsg-id "$ocid" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
+          done
+          
+          # Subnets (after instances/VCNICs are gone)
+          for ocid in $(oci network subnet list -c "$COMPARTMENT_OCID" --profile "$PROFILE" --auth security_token --query "data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'].id" --raw-output 2>/dev/null); do
+            echo "Deleting subnet $ocid"
+            oci network subnet delete --subnet-id "$ocid" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
+          done
+          
+          # VCNs last
+          for ocid in $(oci network vcn list -c "$COMPARTMENT_OCID" --profile "$PROFILE" --auth security_token --query "data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'].id" --raw-output 2>/dev/null); do
+            echo "Deleting VCN $ocid"
+            oci network vcn delete --vcn-id "$ocid" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
+          done
+          
+          echo "=== live network objects cleared for ${ACCOUNT} ==="
