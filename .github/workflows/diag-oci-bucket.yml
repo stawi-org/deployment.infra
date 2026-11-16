@@ -63,8 +63,6 @@ jobs:
           fi
 
       - name: Probe buckets
-        env:
-          COMPARTMENT: ${{ inputs.account }}
         run: |
           set -uo pipefail
           PROFILE="${ACCOUNT}"
@@ -74,12 +72,18 @@ jobs:
           [[ -z "$bucket" ]] && bucket="talos-images-${PROFILE}"
           echo "bucket=${bucket}"
 
-          echo "=== whoami ==="
-          oci --profile "$PROFILE" iam user get --query 'data.{id:id,name:name}' 2>&1 | head -5 || true
+          # Compartment OCID from the repo auth.yaml.
+          AUTH_MERGED=$(mktemp -d)
+          scripts/stage-oracle-auth-from-repo.sh "$AUTH_MERGED" .
+          COMPARTMENT=$(yq -r '.auth.compartment_ocid' "$AUTH_MERGED/${PROFILE}/auth.yaml")
+          TENANCY=$(yq -r '.auth.tenancy_ocid' "$AUTH_MERGED/${PROFILE}/auth.yaml")
+          echo "compartment=${COMPARTMENT}"
+          echo "tenancy=${TENANCY}"
 
-          echo "=== buckets in namespace ==="
+          echo "=== buckets in namespace (compartment-scoped) ==="
           oci --profile "$PROFILE" os bucket list --namespace-name "$namespace" \
-            --query 'data[].{name:name,publicAccessType:"public-access-type",compartmentId:compartment-id,timeCreated:time-created}' \
+            --compartment-id "$COMPARTMENT" \
+            --query 'data[].{name:name,publicAccessType:"public-access-type",compartmentId:compartment-id}' \
             --output table 2>&1 | head -20 || true
 
           echo "=== get ${bucket} ==="
@@ -88,7 +92,20 @@ jobs:
 
           echo "=== list objects in ${bucket} ==="
           oci --profile "$PROFILE" os object list --namespace-name "$namespace" --bucket-name "$bucket" \
-            --query 'data[].name' --output text 2>&1 | head -20 || true
+            --fields 'data.name' 2>&1 | head -20 || true
 
-          echo "=== compartments in tenancy ==="
-          oci --profile "$PROFILE" iam compartment list --all --query 'data[].{id:id,name:name}' --output table 2>&1 | head -10 || true
+          echo "=== custom images in compartment ==="
+          oci --profile "$PROFILE" compute image list --compartment-id "$COMPARTMENT" \
+            --query 'data[].{id:id,name:"display-name",state:"lifecycle-state"}' --output table 2>&1 | head -20 || true
+
+          echo "=== vcn list (broad IAM probe) ==="
+          oci --profile "$PROFILE" network vcn list --compartment-id "$COMPARTMENT" \
+            --query 'data[].{id:id,name:"display-name"}' --output table 2>&1 | head -10 || true
+
+          echo "=== groups the identity belongs to ==="
+          oci --profile "$PROFILE" iam group list --compartment-id "$TENANCY" \
+            --query 'data[].{id:id,name:name}' --output table 2>&1 | head -15 || true
+
+          echo "=== policies in tenancy ==="
+          oci --profile "$PROFILE" iam policy list --compartment-id "$TENANCY" \
+            --query 'data[].{id:id,name:name,statements:"statements"}' 2>&1 | head -40 || true
