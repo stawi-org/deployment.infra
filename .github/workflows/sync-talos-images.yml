@@ -583,13 +583,30 @@ jobs:
                 if [[ "$f" == "/tmp/images/${onprem_file}" ]]; then
                   oci_prefix="${oci_onprem_dest_prefix}"
                 fi
-                AWS_ACCESS_KEY_ID="$oci_access_key_id" \
-                AWS_SECRET_ACCESS_KEY="$oci_secret_access_key" \
-                AWS_EC2_METADATA_DISABLED=true \
-                  aws s3 cp "$f" "${oci_prefix}/${name}" \
-                    --content-type "$(content_type_for "$name")" \
-                    --endpoint-url "$oci_endpoint" \
-                    --region "$oci_region"
+                # OCI Object Storage's S3-compat layer intermittently
+                # fails multi-part uploads with InvalidPart on the
+                # large blobs (1.5 GB ISO / GCP raw tarball). Retry a
+                # few times before giving up.
+                uploaded=0
+                for attempt in 1 2 3; do
+                  if AWS_ACCESS_KEY_ID="$oci_access_key_id" \
+                     AWS_SECRET_ACCESS_KEY="$oci_secret_access_key" \
+                     AWS_EC2_METADATA_DISABLED=true \
+                       aws s3 cp "$f" "${oci_prefix}/${name}" \
+                         --content-type "$(content_type_for "$name")" \
+                         --endpoint-url "$oci_endpoint" \
+                         --region "$oci_region" \
+                         --no-progress; then
+                    uploaded=1
+                    break
+                  fi
+                  echo "::warning::OCI mirror upload of ${name} failed (attempt ${attempt}/3) — retrying"
+                  sleep $(( attempt * 10 ))
+                done
+                if [[ "$uploaded" != "1" ]]; then
+                  echo "::error::OCI mirror upload of ${name} failed after 3 attempts"
+                  exit 1
+                fi
               done
               echo "::notice::Mirrored to s3://cluster-image-registry/${schematic_id}/ in bwire tenancy"
               echo "::notice::Mirrored on-prem (GPU) ISO to s3://cluster-image-registry/${onprem_schematic_id}/"
