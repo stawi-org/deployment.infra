@@ -27,9 +27,11 @@ data "oci_core_instances" "live" {
 
 locals {
   # OCIDs that currently exist in OCI, keyed by account.
+  # `instances` can come back null (not an empty list) when the provider
+  # finds no instances — iterating null is a hard error, so guard it.
   oracle_live_ocids_per_account = {
     for acct, data_inst in data.oci_core_instances.live :
-    acct => toset([for i in data_inst.instances : i.id])
+    acct => toset([for i in try(data_inst.instances, []) : i.id])
   }
 
   # Flatten per-account nodes into a single map keyed by
@@ -65,13 +67,18 @@ data "oci_bastion_bastions" "by_name" {
   bastion_lifecycle_state = "ACTIVE"
 }
 
+# `bastions` can come back null (not an empty list) when the provider
+# finds no ACTIVE bastion — `length(null)` is a hard error that
+# cascades into this for_each and fails the whole plan. Use try() on
+# both the length check and the id lookup so a missing bastion simply
+# drops out of the import set.
 import {
   for_each = {
-    for k in local.oracle_account_keys : k => one(data.oci_bastion_bastions.by_name[k].bastions)
-    if length(data.oci_bastion_bastions.by_name[k].bastions) > 0
+    for k in local.oracle_account_keys : k => try(data.oci_bastion_bastions.by_name[k].bastions[0].id, null)
+    if try(length(data.oci_bastion_bastions.by_name[k].bastions), 0) > 0
   }
   to = module.oracle_account[each.key].oci_bastion_bastion.this
-  id = each.value.id
+  id = each.value
 }
 
 # Object Storage bucket and image imports were removed in Task 5 of
