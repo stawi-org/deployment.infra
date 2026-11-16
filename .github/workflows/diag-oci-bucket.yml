@@ -1,0 +1,90 @@
+# .github/workflows/diag-oci-bucket.yml
+#
+# Diagnostic: list Object Storage buckets + their ACL in one OCI
+# tenancy, and report whether the current (WIF) identity can access
+# them. Used to explain "BucketNotFound ... or you are not authorized"
+# errors on the per-account talos-images bucket.
+name: diag-oci-bucket
+on:
+  workflow_dispatch:
+    inputs:
+      account:
+        required: true
+        type: string
+        description: "Oracle account key"
+      bucket:
+        required: false
+        type: string
+        default: ""
+        description: "Bucket to probe (default: talos-images-<account>)"
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_EC2_METADATA_DISABLED: "true"
+      R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
+      SOPS_AGE_KEY:          ${{ secrets.SOPS_AGE_KEY }}
+      ACCOUNT:               ${{ inputs.account }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install OCI CLI
+        run: |
+          set -euo pipefail
+          pip install --quiet oci-cli
+          oci --version
+
+      - name: Configure OCI WIF
+        run: |
+          set -euo pipefail
+          if ! command -v sops >/dev/null 2>&1; then
+            curl -fsSL -o /usr/local/bin/sops \
+              "https://github.com/getsops/sops/releases/download/v3.11.0/sops-v3.11.0.linux.amd64"
+            chmod +x /usr/local/bin/sops
+          fi
+          AUTH_MERGED=$(mktemp -d)
+          scripts/stage-oracle-auth-from-repo.sh "$AUTH_MERGED" .
+          AUTH_JSON=$(python3 scripts/build-oci-auth-json.py "${AUTH_MERGED}")
+          echo "$AUTH_JSON" > /tmp/oci_auth_accounts.json
+          scripts/configure-oci-wif.sh /tmp/oci_auth_accounts.json
+          UPST_FILE="$HOME/.oci/upst_${ACCOUNT}.token"
+          if [[ -f "$UPST_FILE" ]]; then
+            USER_OCID=$(python3 -c "import sys, json, base64; f=open('$UPST_FILE'); t=f.read().strip(); f.close(); p=t.split('.'); print(json.loads(base64.urlsafe_b64decode(p[1]+'='*((4-len(p[1])%4)%4)).decode()).get('sub','')) if len(p)>=2 else print('')")
+            [[ -n "$USER_OCID" ]] && sed -i "/^\[${ACCOUNT}\]/a user = $USER_OCID" "$HOME/.oci/config"
+          fi
+
+      - name: Probe buckets
+        env:
+          COMPARTMENT: ${{ inputs.account }}
+        run: |
+          set -uo pipefail
+          PROFILE="${ACCOUNT}"
+          namespace=$(oci --profile "$PROFILE" os ns get --query 'data' --raw-output)
+          echo "namespace=${namespace}"
+          bucket="${{ inputs.bucket }}"
+          [[ -z "$bucket" ]] && bucket="talos-images-${PROFILE}"
+          echo "bucket=${bucket}"
+
+          echo "=== whoami ==="
+          oci --profile "$PROFILE" iam user get --query 'data.{id:id,name:name}' 2>&1 | head -5 || true
+
+          echo "=== buckets in namespace ==="
+          oci --profile "$PROFILE" os bucket list --namespace-name "$namespace" \
+            --query 'data[].{name:name,publicAccessType:"public-access-type",compartmentId:compartment-id,timeCreated:time-created}' \
+            --output table 2>&1 | head -20 || true
+
+          echo "=== get ${bucket} ==="
+          oci --profile "$PROFILE" os bucket get --namespace-name "$namespace" --bucket-name "$bucket" \
+            --query 'data.{name:name,publicAccessType:"public-access-type",compartmentId:compartment-id,storageTier:"storage-tier"}' 2>&1 | head -10 || true
+
+          echo "=== list objects in ${bucket} ==="
+          oci --profile "$PROFILE" os object list --namespace-name "$namespace" --bucket-name "$bucket" \
+            --query 'data[].name' --output text 2>&1 | head -20 || true
+
+          echo "=== compartments in tenancy ==="
+          oci --profile "$PROFILE" iam compartment list --all --query 'data[].{id:id,name:name}' --output table 2>&1 | head -10 || true
