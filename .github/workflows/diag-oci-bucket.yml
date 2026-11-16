@@ -31,6 +31,10 @@ jobs:
       R2_ACCOUNT_ID:         ${{ secrets.R2_ACCOUNT_ID }}
       SOPS_AGE_KEY:          ${{ secrets.SOPS_AGE_KEY }}
       ACCOUNT:               ${{ inputs.account }}
+      # OCI CLI's config validator rejects the profile with
+      # "Key `user` missing". OCI_CLI_AUTH overrides the default
+      # api_key auth for every `oci ...` invocation in this job.
+      OCI_CLI_AUTH: security_token
     steps:
       - uses: actions/checkout@v5
       - name: Install OCI CLI
