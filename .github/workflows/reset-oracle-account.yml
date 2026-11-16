@@ -92,7 +92,7 @@ jobs:
           # Persist the compartment OCID for the next step.
           AUTH_FILE="$AUTH_MERGED/${ACCOUNT}/auth.yaml"
           COMPARTMENT_OCID=$(yq -r '.auth.compartment_ocid' "$AUTH_FILE")
-          echo "compartment=$COMPARTMENT_OCID" >> "$GITHUB_ENV"
+          echo "COMPARTMENT=${COMPARTMENT_OCID}" >> "$GITHUB_ENV"
 
       - name: Init
         working-directory: tofu/layers/02-oracle-infra
