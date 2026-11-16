@@ -83,8 +83,12 @@ jobs:
           echo "=== buckets in namespace (compartment-scoped) ==="
           oci --profile "$PROFILE" os bucket list --namespace-name "$namespace" \
             --compartment-id "$COMPARTMENT" \
-            --query 'data[].{name:name,publicAccessType:"public-access-type",compartmentId:compartment-id}' \
-            --output table 2>&1 | head -20 || true
+            --query 'data[].name' --raw-output 2>&1 | head -20 || true
+
+          echo "=== buckets in root compartment ==="
+          oci --profile "$PROFILE" os bucket list --namespace-name "$namespace" \
+            --compartment-id "$TENANCY" \
+            --query 'data[].name' --raw-output 2>&1 | head -20 || true
 
           echo "=== get ${bucket} ==="
           oci --profile "$PROFILE" os bucket get --namespace-name "$namespace" --bucket-name "$bucket" \
