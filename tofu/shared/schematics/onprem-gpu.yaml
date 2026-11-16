@@ -1,0 +1,35 @@
+# On-prem bare-metal (GPU) extension list — applied ONLY to the metal ISO.
+#
+# Why a separate file instead of adding to schematics/cluster.yaml:
+# the NVIDIA extensions are amd64-only (the OCI fleet runs A1.Flex
+# arm64, and the factory would reject the extension for that arch).
+# Keeping them here lets sync-talos-images.yml build the metal ISO with
+# GPU support while the arm64 OCI image and the amd64 GCP image stay
+# on the shared schematic.
+#
+# Node: onprem/tindase (GeForce RTX).
+#
+# Talos v1.14.6 ships two NVIDIA driver branches:
+#   production  595.112.07  -> nvidia-*-production
+#   lts         580.196.07  -> nvidia-*-lts
+# The "new-feature" branch (615.x) is v1.15.0-beta only and is NOT
+# available for v1.14.6.
+#
+# We use the OPEN kernel modules (nvidia-open-gpu-kernel-modules-*),
+# which are the supported path for GeForce RTX (Turing/Ada/Blackwell).
+# The proprietary build (nonfree-kmod-nvidia-production) is only
+# published for the `production` branch and is not needed here.
+#
+#   nvidia-open-gpu-kernel-modules-*  kernel modules + driver
+#   nvidia-container-toolkit-*        userspace driver (nvidia-smi),
+#                                    nvidia-container-runtime hook
+#
+# Swap `production` -> `lts` below if you need the 580.x branch
+# (e.g. an older RTX card that the 595 branch dropped).
+#
+# After installing the ISO, verify with:
+#   talosctl -n <node> dmesg | grep -i nvidia
+#   talosctl -n <node> ls /sys/module/nvidia
+extensions:
+  - siderolabs/nvidia-open-gpu-kernel-modules-production
+  - siderolabs/nvidia-container-toolkit-production
