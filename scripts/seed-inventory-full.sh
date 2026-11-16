@@ -116,6 +116,25 @@ else
   aws s3 sync "$TMPDIR" "s3://cluster-tofu-state/production/inventory/" \
     --endpoint-url "$R2_ENDPOINT_URL" \
     --region us-east-1
+
+  # Remove per-account inventory dirs for accounts no longer in the
+  # roster. The R2 *bucket* stays (it also holds the tofu state files
+  # and the shared account definitions); only the stale per-account
+  # subtree is dropped so the image-import pipeline stops touching
+  # de-onboarded tenancies.
+  echo "Pruning inventory dirs for accounts no longer in the roster..."
+  for provider in oracle onprem gcp; do
+    ROSTER=$(yq -r ".${provider}[]" tofu/shared/accounts.yaml)
+    for acct_dir in $(aws s3 ls "s3://cluster-tofu-state/production/inventory/${provider}/" \
+                        --endpoint-url "$R2_ENDPOINT_URL" --region us-east-1 2>/dev/null | awk '{print $NF}'); do
+      if ! printf '%s\n' "$ROSTER" | grep -qx "${acct_dir%/}"; then
+        echo "  removing s3://cluster-tofu-state/production/inventory/${provider}/${acct_dir}"
+        aws s3 rm "s3://cluster-tofu-state/production/inventory/${provider}/${acct_dir}" \
+          --recursive \
+          --endpoint-url "$R2_ENDPOINT_URL" --region us-east-1 >/dev/null 2>&1 || true
+      fi
+    done
+  done
   echo "Done!"
 fi
 

@@ -778,9 +778,22 @@ jobs:
           base = "/tmp/oracle-inv"
           out = []
           skipped = []
+          # Only accounts in the live roster get images imported. An
+          # account removed from tofu/shared/accounts.yaml keeps its
+          # repo auth.yaml (so it can be re-onboarded) but must not
+          # have its tenancy touched by the import pipeline.
+          roster = []
+          try:
+              with open("tofu/shared/accounts.yaml") as f:
+                  roster = set((yaml.safe_load(f) or {}).get("oracle") or [])
+          except Exception as e:  # noqa: BLE001
+              print(f"::warning::could not read accounts.yaml roster: {e}", file=sys.stderr)
           if os.path.isdir(base):
               for entry in sorted(os.listdir(base)):
                   auth_p = os.path.join(base, entry, "auth.yaml")
+                  if roster and entry not in roster:
+                      skipped.append(f"{entry}: not in tofu/shared/accounts.yaml roster")
+                      continue
                   if not os.path.exists(auth_p):
                       skipped.append(f"{entry}: auth.yaml missing")
                       continue
@@ -901,7 +914,8 @@ jobs:
           aws s3 cp \
             "s3://${R2_IMAGE_BUCKET}/${SCHEMATIC_ID}/${ARCHIVE_OBJECT}" \
             "${archive_local}" \
-            --endpoint-url "${R2_ENDPOINT}"
+            --endpoint-url "${R2_ENDPOINT}" \
+            --region us-east-1
           echo "::notice::downloaded $(stat -c%s "${archive_local}") byte archive"
 
           # Resolve the OCI Object Storage namespace for this tenancy.
@@ -913,16 +927,26 @@ jobs:
           # tofu module's prior shape — though import-from-object uses
           # the authenticated session, not anonymous fetch, leaving it
           # public-read is harmless (image bytes aren't sensitive).
-          if ! oci --profile "${PROFILE}" os bucket get \
+          #
+          # `os bucket get` can fail for reasons other than absence
+          # (different access type, transient API error), so we do not
+          # rely on it alone: attempt the create and tolerate
+          # BucketAlreadyExists.
+          bucket_err=$(mktemp)
+          if ! oci --profile "${PROFILE}" os bucket create \
+                --compartment-id "${COMPARTMENT}" \
                 --namespace-name "${namespace}" \
-                --bucket-name "${bucket}" >/dev/null 2>&1; then
-            echo "::notice::creating bucket ${bucket}"
-            oci --profile "${PROFILE}" os bucket create \
-              --compartment-id "${COMPARTMENT}" \
-              --namespace-name "${namespace}" \
-              --name "${bucket}" \
-              --public-access-type ObjectRead >/dev/null
+                --name "${bucket}" \
+                --public-access-type ObjectRead >/dev/null 2>"${bucket_err}"; then
+            if grep -q "BucketAlreadyExists" "${bucket_err}"; then
+              echo "::notice::bucket ${bucket} already exists — reusing"
+            else
+              cat "${bucket_err}" >&2
+              echo "::error::failed to create bucket ${bucket} in ${namespace}"
+              exit 1
+            fi
           fi
+          rm -f "${bucket_err}"
 
           # Upload — `os object put --force` overwrites if the object
           # already exists (e.g. a prior partial run). The object name
