@@ -953,16 +953,27 @@ jobs:
           fi
           rm -f "${bucket_err}"
 
-          # Upload — `os object put --force` overwrites if the object
-          # already exists (e.g. a prior partial run). The object name
-          # carries the schematic_id so a content change implies a
-          # different object.
-          oci --profile "${PROFILE}" os object put \
-            --namespace-name "${namespace}" \
-            --bucket-name "${bucket}" \
-            --name "${ARCHIVE_OBJECT}" \
-            --file "${archive_local}" \
-            --force >/dev/null
+          # OCI Object Storage is eventually consistent: a freshly created
+          # bucket can take seconds to become visible for object put.
+          # Retry the put a few times with backoff.
+          uploaded=0
+          for attempt in 1 2 3 4 5; do
+            if oci --profile "${PROFILE}" os object put \
+                  --namespace-name "${namespace}" \
+                  --bucket-name "${bucket}" \
+                  --name "${ARCHIVE_OBJECT}" \
+                  --file "${archive_local}" \
+                  --force >/dev/null 2>&1; then
+              uploaded=1
+              break
+            fi
+            echo "::warning::object put attempt ${attempt}/5 failed, retrying in ${attempt}0s"
+            sleep $(( attempt * 10 ))
+          done
+          if [[ "$uploaded" != "1" ]]; then
+            echo "::error::failed to upload ${ARCHIVE_OBJECT} to bucket ${bucket} after 5 attempts"
+            exit 1
+          fi
           echo "::notice::uploaded ${ARCHIVE_OBJECT} → oci://${namespace}/${bucket}/"
 
           {
