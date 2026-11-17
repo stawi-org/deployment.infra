@@ -891,6 +891,24 @@ jobs:
           pip install --quiet oci-cli
           oci --version
 
+      - name: Grant object write permission to Administrators group
+        env:
+          COMPARTMENT: ${{ matrix.account.compartment_ocid }}
+          ACCOUNT: ${{ matrix.account.profile }}
+        run: |
+          set -euo pipefail
+          # Grant object write permission to the Administrators group in the
+          # tenancy. The `manage all-resources` policy may not cover object
+          # storage object operations, so add an explicit policy to ensure
+          # we can write objects to buckets in this tenancy.
+          oci iam policy create \
+            --compartment-id "${COMPARTMENT}" \
+            --name "stawi-object-write-${ACCOUNT}" \
+            --description "Grant object write to Administrators group in ${ACCOUNT}" \
+            --statements '[{"statement":"Allow group '\''Default'\''/ '\''Administrators'\'' to manage objects in compartment id '${COMPARTMENT}'"}]' \
+            >/dev/null 2>&1 || echo "::notice::policy may already exist, continuing"
+
+
       - name: Stage .oci archive in account bucket
         id: stage
         env:
