@@ -921,7 +921,12 @@ jobs:
           # Resolve the OCI Object Storage namespace for this tenancy.
           # `os ns get` returns {"data":"namespacestring"}.
           namespace=$(oci --profile "${PROFILE}" os ns get --query 'data' --raw-output)
-          bucket="talos-images-${PROFILE}"
+          # Bucket name must be unique namespace-wide in OCI Object Storage.
+          # Some accounts (e.g. brianelvis33) have a stale bucket with the
+          # plain name in a compartment this identity can't read, causing
+          # BucketAlreadyExists on create and BucketNotFound on get. Use a
+          # unique per-account name instead.
+          bucket="stawi-talos-images-${PROFILE}"
 
           # Idempotent bucket create. ObjectRead access matches the
           # tofu module's prior shape — though import-from-object uses
