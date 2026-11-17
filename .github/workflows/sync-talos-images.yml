@@ -958,12 +958,12 @@ jobs:
           # Retry the put a few times with backoff.
           uploaded=0
           for attempt in 1 2 3 4 5; do
-            if oci --profile "${PROFILE}" os object put \
-                  --namespace-name "${namespace}" \
-                  --bucket-name "${bucket}" \
-                  --name "${ARCHIVE_OBJECT}" \
-                  --file "${archive_local}" \
-                  --force >/dev/null 2>&1; then
+            if aws s3 cp "${archive_local}" \
+                  "s3://${bucket}/${ARCHIVE_OBJECT}" \
+                  --endpoint-url "https://${namespace}.compat.objectstorage.${REGION}.oraclecloud.com" \
+                  --region "${REGION}" \
+                  --content-type "application/octet-stream" \
+                  --only-show-errors >/dev/null 2>&1; then
               uploaded=1
               break
             fi
