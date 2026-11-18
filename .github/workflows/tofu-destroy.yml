@@ -149,7 +149,7 @@ jobs:
           echo "Using compartment OCID: $COMPARTMENT_OCID"
           
           echo "=== Deleting compute instances ==="
-          INSTANCE_OCIDS=$(oci compute instance list -c "$COMPARTMENT_OCID" --profile "$PROFILE" --auth security_token --query 'data[?lifecycle-state!=`TERMINATED` && lifecycle-state!=`TERMINATING`].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
+          INSTANCE_OCIDS=$(oci compute instance list --all --profile "$PROFILE" --auth security_token --query 'data[?lifecycle-state!=`TERMINATED` && lifecycle-state!=`TERMINATING`].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
           for ocid in $INSTANCE_OCIDS; do
             if [[ -n "$ocid" ]]; then
               echo "Terminating instance $ocid..."
@@ -158,7 +158,7 @@ jobs:
           done
           
           echo "=== Deleting NSGs ==="
-          NSG_OCIDS=$(oci network nsg list -c "$COMPARTMENT_OCID" --profile "$PROFILE" --auth security_token --query 'data[?lifecycle-state!=`TERMINATED` && lifecycle-state!=`TERMINATING`].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
+          NSG_OCIDS=$(oci network nsg list --all --profile "$PROFILE" --auth security_token --query 'data[?lifecycle-state!=`TERMINATED` && lifecycle-state!=`TERMINATING`].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
           for ocid in $NSG_OCIDS; do
             if [[ -n "$ocid" ]]; then
               echo "Deleting NSG $ocid..."
@@ -167,7 +167,7 @@ jobs:
           done
           
           echo "=== Deleting subnets ==="
-          SUBNET_OCIDS=$(oci network subnet list -c "$COMPARTMENT_OCID" --profile "$PROFILE" --auth security_token --query 'data[?lifecycle-state!=`TERMINATED` && lifecycle-state!=`TERMINATING`].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
+          SUBNET_OCIDS=$(oci network subnet list --all --profile "$PROFILE" --auth security_token --query 'data[?lifecycle-state!=`TERMINATED` && lifecycle-state!=`TERMINATING`].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
           for ocid in $SUBNET_OCIDS; do
             if [[ -n "$ocid" ]]; then
               echo "Deleting subnet $ocid..."
@@ -176,7 +176,7 @@ jobs:
           done
           
           echo "=== Deleting Internet Gateways ==="
-          IGW_OCIDS=$(oci network internet-gateway list -c "$COMPARTMENT_OCID" --profile "$PROFILE" --auth security_token --query 'data[?lifecycle-state!=`TERMINATED` && lifecycle-state!=`TERMINATING`].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
+          IGW_OCIDS=$(oci network internet-gateway list --all --profile "$PROFILE" --auth security_token --query 'data[?lifecycle-state!=`TERMINATED` && lifecycle-state!=`TERMINATING`].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
           for ocid in $IGW_OCIDS; do
             if [[ -n "$ocid" ]]; then
               echo "Deleting Internet Gateway $ocid..."
@@ -185,7 +185,7 @@ jobs:
           done
           
           echo "=== Deleting NAT Gateways ==="
-          NAT_OCIDS=$(oci network nat-gateway list -c "$COMPARTMENT_OCID" --profile "$PROFILE" --auth security_token --query 'data[?lifecycle-state!=`TERMINATED` && lifecycle-state!=`TERMINATING`].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
+          NAT_OCIDS=$(oci network nat-gateway list --all --profile "$PROFILE" --auth security_token --query 'data[?lifecycle-state!=`TERMINATED` && lifecycle-state!=`TERMINATING`].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
           for ocid in $NAT_OCIDS; do
             if [[ -n "$ocid" ]]; then
               echo "Deleting NAT Gateway $ocid..."
@@ -194,7 +194,7 @@ jobs:
           done
           
           echo "=== Deleting Route Tables ==="
-          RT_OCIDS=$(oci network route-table list -c "$COMPARTMENT_OCID" --profile "$PROFILE" --auth security_token --query 'data[?lifecycle-state!=`TERMINATED` && lifecycle-state!=`TERMINATING`].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
+          RT_OCIDS=$(oci network route-table list --all --profile "$PROFILE" --auth security_token --query 'data[?lifecycle-state!=`TERMINATED` && lifecycle-state!=`TERMINATING`].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
           for ocid in $RT_OCIDS; do
             if [[ -n "$ocid" ]]; then
               echo "Deleting Route Table $ocid..."
@@ -203,7 +203,7 @@ jobs:
           done
           
           echo "=== Deleting Security Lists ==="
-          SL_OCIDS=$(oci network security-list list -c "$COMPARTMENT_OCID" --profile "$PROFILE" --auth security_token --query 'data[?lifecycle-state!=`TERMINATED` && lifecycle-state!=`TERMINATING`].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
+          SL_OCIDS=$(oci network security-list list --all --profile "$PROFILE" --auth security_token --query 'data[?lifecycle-state!=`TERMINATED` && lifecycle-state!=`TERMINATING`].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
           for ocid in $SL_OCIDS; do
             if [[ -n "$ocid" ]]; then
               echo "Deleting Security List $ocid..."
@@ -212,7 +212,7 @@ jobs:
           done
           
           echo "=== Deleting Bastions ==="
-          BASTION_OCIDS=$(oci bastion bastion list -c "$COMPARTMENT_OCID" --profile "$PROFILE" --auth security_token --query 'data[?lifecycle-state!=`DELETED` && lifecycle-state!=`DELETING`].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
+          BASTION_OCIDS=$(oci bastion bastion list --all --profile "$PROFILE" --auth security_token --query 'data[?lifecycle-state!=`DELETED` && lifecycle-state!=`DELETING`].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
           for ocid in $BASTION_OCIDS; do
             if [[ -n "$ocid" ]]; then
               echo "Deleting Bastion $ocid..."
@@ -221,7 +221,7 @@ jobs:
           done
           
           echo "=== Deleting VCNs (last, after all dependents are gone) ==="
-          VCN_OCIDS=$(oci network vcn list -c "$COMPARTMENT_OCID" --profile "$PROFILE" --auth security_token --query 'data[?lifecycle-state!=`TERMINATED` && lifecycle-state!=`TERMINATING`].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
+          VCN_OCIDS=$(oci network vcn list --all --profile "$PROFILE" --auth security_token --query 'data[?lifecycle-state!=`TERMINATED` && lifecycle-state!=`TERMINATING`].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
           for ocid in $VCN_OCIDS; do
             if [[ -n "$ocid" ]]; then
               echo "Deleting VCN $ocid..."
