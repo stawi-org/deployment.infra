@@ -76,6 +76,11 @@ jobs:
               "https://github.com/getsops/sops/releases/download/v3.11.0/sops-v3.11.0.linux.amd64"
             chmod +x /usr/local/bin/sops
           fi
+          if ! command -v yq >/dev/null 2>&1; then
+            curl -fsSL -o /usr/local/bin/yq \
+              "https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64"
+            chmod +x /usr/local/bin/yq
+          fi
           AUTH_MERGED=$(mktemp -d)
           scripts/stage-oracle-auth-from-repo.sh "$AUTH_MERGED" .
           ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
