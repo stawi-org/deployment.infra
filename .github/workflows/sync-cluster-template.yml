@@ -400,8 +400,8 @@ jobs:
             --no-progress \
             "s3://cluster-tofu-state/production/inventory/" "$inv/" >/dev/null
 
-          # Count nodes per role where provider_data.status == "running".
-          # yq+jq pipeline: emit JSON of .nodes, filter by role + status,
+          # Count nodes per role from inventory.
+          # yq+jq pipeline: emit JSON of .nodes, filter by role,
           # take the length. Empty file / missing .nodes → 0.
           count_role () {
             local role="$1" total=0 n
@@ -409,8 +409,7 @@ jobs:
               n=$(yq -o=json '.nodes // {}' "$f" \
                 | jq --arg role "$role" '
                     [ to_entries[]
-                      | select(.value.role == $role
-                                and (.value.provider_data.status // "") == "running") ]
+                      | select(.value.role == $role) ]
                     | length')
               total=$(( total + n ))
             done < <(find "$inv" -name nodes.yaml)
