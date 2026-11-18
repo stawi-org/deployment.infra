@@ -151,10 +151,22 @@ jobs:
           # clean up resources in every compartment, not just the root.
           # Some accounts (e.g. brianelvis33) have VCNs and subnets in
           # sub-compartments that aren't visible when listing from the
-          # tenancy OCID alone.
+          # tenancy OCID alone. Recursively collect all compartment OCIDs.
           ALL_COMPARTMENT_OCIDS="$COMPARTMENT_OCID"
-          ALL_COMPARTMENT_OCIDS+=$'\n'
-          ALL_COMPARTMENT_OCIDS+=$(oci iam compartment list -c "$COMPARTMENT_OCID" --all --profile "$PROFILE" --auth security_token --query 'data[].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
+          # List direct child compartments; recurse into each to find nested ones.
+          CHILD_COMPARTMENTS=$(oci iam compartment list -c "$COMPARTMENT_OCID" --profile "$PROFILE" --auth security_token --query 'data[].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
+          for child in $CHILD_COMPARTMENTS; do
+            [[ -z "$child" ]] && continue
+            ALL_COMPARTMENT_OCIDS+=$'\n'
+            ALL_COMPARTMENT_OCIDS+="$child"
+            # Recurse: list sub-compartments of each child
+            GRANDCHILD_COMPARTMENTS=$(oci iam compartment list -c "$child" --profile "$PROFILE" --auth security_token --query 'data[].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
+            for gc in $GRANDCHILD_COMPARTMENTS; do
+              [[ -z "$gc" ]] && continue
+              ALL_COMPARTMENT_OCIDS+=$'\n'
+              ALL_COMPARTMENT_OCIDS+="$gc"
+            done
+          done
           
           echo "=== Deleting compute instances (all compartments) ==="
           for comp in $ALL_COMPARTMENT_OCIDS; do
