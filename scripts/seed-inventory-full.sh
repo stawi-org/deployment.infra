@@ -67,9 +67,14 @@ nodes:
   onprem-tindase-worker-1:
     annotations:
       node.stawi.org/operator-note: "physical server with NVIDIA GeForce RTX; Talos ISO carries the NVIDIA extensions (see docs/onprem-gpu-node.md)"
+      node.stawi.org/gpu-enabled: "true"
+      node.stawi.org/gpu-model: "geforce-rtx"
     labels:
       node.stawi.org/plane: "worker"
       node.stawi.org/role-database: "false"
+      node.stawi.org/workload-class: "ai-ml"
+      node.stawi.org/gpu: "true"
+      node.stawi.org/gpu-model: "geforce-rtx"
     boot_volume_size_gb: 0
     ocpus: 8
     memory_gb: 32

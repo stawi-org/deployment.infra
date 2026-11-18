@@ -214,11 +214,13 @@ jobs:
           echo "=== Deleting known subnet directly by OCID ==="
           # Directly delete the subnet that blocks VCN deletion by its
           # known OCID (from prior error logs), bypassing list operations.
+          # This runs AFTER VNIC deletion so the subnet's VNIC should be
+          # released by then.
           BRIANELVIS33_SUBNET="ocid1.subnet.oc1.eu-frankfurt-1.aaaaaaaa4mdmmh5wn2izcpv2fsvngobpsbfybufixu2e6od6vbdd7uylomiq"
           echo "Deleting subnet $BRIANELVIS33_SUBNET directly..."
           oci network subnet delete --subnet-id "$BRIANELVIS33_SUBNET" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
-          echo "Waiting 60s for subnet deletion to propagate..."
-          sleep 60
+          echo "Waiting 120s for subnet deletion to propagate..."
+          sleep 120
 
           echo "=== Deleting VNICs (all compartments, all lifecycle states) ==="
           # List VNICs from each compartment without lifecycle-state filter
