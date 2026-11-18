@@ -258,9 +258,9 @@ jobs:
           done
           
           echo "=== Deleting VCNs (all compartments, last after dependents) ==="
-          # List VCNs from all compartments, including their compartment IDs,
-          # so we can list subnets from each VCN's specific compartment.
-          VCN_LIST=$(oci network vcn list --all --profile "$PROFILE" --auth security_token --query 'data[].{id:id,"compartment-id":"compartment-id"}' --output json 2>/dev/null | jq -r '.[] | "\(.id)|\(."compartment-id")"' 2>/dev/null || true)
+          # List VCNs from the tenancy OCID (which returns VCNs from all
+          # compartments), then list subnets from each VCN's compartment.
+          VCN_LIST=$(oci network vcn list -c "$COMPARTMENT_OCID" --profile "$PROFILE" --auth security_token --query 'data[].{id:id,"compartment-id":"compartment-id"}' --output json 2>/dev/null | jq -r '.[] | "\(.id)|\(."compartment-id")"' 2>/dev/null || true)
           while IFS='|' read -r vcn_ocid vcn_comp; do
             [[ -z "$vcn_ocid" ]] && continue
             # Delete subnets from the VCN's compartment
