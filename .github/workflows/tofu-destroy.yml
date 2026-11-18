@@ -182,22 +182,27 @@ jobs:
               oci compute instance terminate --instance-id "$ocid" --profile "$PROFILE" --auth security_token --force --wait-for-state TERMINATED 2>&1 | grep -v "^$" || true
             done
           done
-          # Wait for VNICs to be released from terminated instances.
-          echo "Waiting 30s for VNICs to be released..."
-          sleep 30
-          
-          echo "=== Deleting VNICs (all compartments) ==="
-          # List VNICs from each compartment (--all isn't supported for
-          # oci network vnic list).
-          for comp in $ALL_COMPARTMENT_OCIDS; do
-            [[ -z "$comp" ]] && continue
-            VNIC_OCIDS=$(oci network vnic list -c "$comp" --profile "$PROFILE" --auth security_token --query 'data[].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
+          # Wait for instances to terminate and release VNICs.
+          echo "Waiting 60s for instances to terminate and release VNICs..."
+          sleep 60
+
+          echo "=== Deleting VNICs attached to subnets (all compartments) ==="
+          # List all subnets, then for each subnet find and delete its VNICs.
+          # Using --subnet-id filter because `oci network vnic list --all` isn't supported.
+          SUBNET_LIST_FOR_VNICS=$(oci network subnet list --all --profile "$PROFILE" --auth security_token --query 'data[].{id:id,"compartment-id":"compartment-id"}' --output json 2>/dev/null | jq -r '.[] | "\(.id)|\(."compartment-id")"' 2>/dev/null || true)
+          while IFS='|' read -r subnet_ocid subnet_comp; do
+            [[ -z "$subnet_ocid" ]] && continue
+            VNIC_OCIDS=$(oci network vnic list --subnet-id "$subnet_ocid" --profile "$PROFILE" --auth security_token --query 'data[].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
             for ocid in $VNIC_OCIDS; do
               [[ -n "$ocid" ]] || continue
-              echo "Deleting VNIC $ocid (compartment $comp)..."
+              echo "Deleting VNIC $ocid attached to subnet $subnet_ocid..."
               oci network vnic delete --vnic-id "$ocid" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
             done
-          done
+          done <<< "$SUBNET_LIST_FOR_VNICS"
+
+          # Wait for VNIC deletions to propagate before deleting subnets.
+          echo "Waiting 60s for VNIC deletions to propagate..."
+          sleep 60
           for comp in $ALL_COMPARTMENT_OCIDS; do
             [[ -z "$comp" ]] && continue
             NSG_OCIDS=$(oci network nsg list -c "$comp" --profile "$PROFILE" --auth security_token --query 'data[?lifecycle-state!=`TERMINATED` && lifecycle-state!=`TERMINATING`].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
