@@ -40,7 +40,8 @@ nodes:
     boot_volume_size_gb: 196
     ocpus: 2
     memory_gb: 12
-    provider_data: {}
+    provider_data:
+      status: running
     role: controlplane
     shape: VM.Standard.A1.Flex
     zone: ""
