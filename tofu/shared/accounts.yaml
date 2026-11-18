@@ -10,7 +10,8 @@
 # as fleet capacity in the same way as OCI/GCP.
 oracle:
   - bwire
-  - brianelvis33
+  # - brianelvis33  # TEMPORARILY SKIPPED: VCN count limit blocked (existing VCN in tenancy)
+  #   Re-add once VCN cluster-vcn-brianelvis33 is manually deleted in OCI Console
   - alimbacho67
   - anto
   - allanofwiti
