@@ -45,6 +45,20 @@ nodes:
     role: controlplane
     shape: VM.Standard.A1.Flex
     zone: ""
+  oci-$acct-worker-1:
+    annotations: {}
+    labels:
+      node.stawi.org/capacity-class: "always-free"
+      node.stawi.org/plane: "worker"
+      node.stawi.org/role-database: "false"
+    boot_volume_size_gb: 98
+    ocpus: 1
+    memory_gb: 6
+    provider_data:
+      status: running
+    role: worker
+    shape: VM.Standard.A1.Flex
+    zone: ""
 EOF
   
   # Create empty state.yaml
