@@ -974,23 +974,24 @@ jobs:
 
           # OCI Object Storage is eventually consistent: a freshly created
           # bucket can take seconds to become visible for object put.
-          # Retry the put a few times with backoff.
+          # Use the native OCI CLI (more reliable than S3-compat for
+          # newly-created buckets) with aggressive retries and backoff.
           uploaded=0
-          for attempt in 1 2 3 4 5; do
-            if aws s3 cp "${archive_local}" \
-                  "s3://${bucket}/${ARCHIVE_OBJECT}" \
-                  --endpoint-url "https://${namespace}.compat.objectstorage.${REGION}.oraclecloud.com" \
-                  --region "${REGION}" \
-                  --content-type "application/octet-stream" \
-                  --only-show-errors >/dev/null 2>&1; then
+          for attempt in 1 2 3 4 5 6 7 8; do
+            if oci --profile "${PROFILE}" os object put \
+                  --namespace-name "${namespace}" \
+                  --bucket-name "${bucket}" \
+                  --name "${ARCHIVE_OBJECT}" \
+                  --file "${archive_local}" \
+                  --force >/dev/null 2>&1; then
               uploaded=1
               break
             fi
-            echo "::warning::object put attempt ${attempt}/5 failed, retrying in ${attempt}0s"
-            sleep $(( attempt * 10 ))
+            echo "::warning::object put attempt ${attempt}/8 failed, retrying in ${attempt}5s"
+            sleep $(( attempt * 5 ))
           done
           if [[ "$uploaded" != "1" ]]; then
-            echo "::error::failed to upload ${ARCHIVE_OBJECT} to bucket ${bucket} after 5 attempts"
+            echo "::error::failed to upload ${ARCHIVE_OBJECT} to bucket ${bucket} after 8 attempts"
             exit 1
           fi
           echo "::notice::uploaded ${ARCHIVE_OBJECT} → oci://${namespace}/${bucket}/"
