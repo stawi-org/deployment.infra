@@ -175,15 +175,6 @@ jobs:
             fi
           done
           
-          echo "=== Deleting VCNs ==="
-          VCN_OCIDS=$(oci network vcn list -c "$COMPARTMENT_OCID" --profile "$PROFILE" --auth security_token --query "data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'].id" --raw-output 2>/dev/null || true)
-          for ocid in $VCN_OCIDS; do
-            if [[ -n "$ocid" ]]; then
-              echo "Deleting VCN $ocid..."
-              oci network vcn delete --vcn-id "$ocid" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
-            fi
-          done
-          
           echo "=== Deleting Internet Gateways ==="
           IGW_OCIDS=$(oci network internet-gateway list -c "$COMPARTMENT_OCID" --profile "$PROFILE" --auth security_token --query "data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'].id" --raw-output 2>/dev/null || true)
           for ocid in $IGW_OCIDS; do
@@ -226,6 +217,15 @@ jobs:
             if [[ -n "$ocid" ]]; then
               echo "Deleting Bastion $ocid..."
               oci bastion bastion delete --bastion-id "$ocid" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
+            fi
+          done
+          
+          echo "=== Deleting VCNs (last, after all dependents are gone) ==="
+          VCN_OCIDS=$(oci network vcn list -c "$COMPARTMENT_OCID" --profile "$PROFILE" --auth security_token --query "data[?\"lifecycle-state\"!='TERMINATED' && \"lifecycle-state\"!='TERMINATING'].id" --raw-output 2>/dev/null || true)
+          for ocid in $VCN_OCIDS; do
+            if [[ -n "$ocid" ]]; then
+              echo "Deleting VCN $ocid..."
+              oci network vcn delete --vcn-id "$ocid" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
             fi
           done
           
