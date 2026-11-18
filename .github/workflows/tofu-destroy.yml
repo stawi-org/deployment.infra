@@ -261,16 +261,22 @@ jobs:
           # List VCNs from the tenancy OCID (which returns VCNs from all
           # compartments), then list subnets from each VCN's compartment.
           VCN_LIST=$(oci network vcn list -c "$COMPARTMENT_OCID" --profile "$PROFILE" --auth security_token --query 'data[].{id:id,"compartment-id":"compartment-id"}' --output json 2>/dev/null | jq -r '.[] | "\(.id)|\(."compartment-id")"' 2>/dev/null || true)
+          # First pass: delete all subnets from each VCN's compartment.
           while IFS='|' read -r vcn_ocid vcn_comp; do
             [[ -z "$vcn_ocid" ]] && continue
-            # Delete subnets from the VCN's compartment
             SUBNET_OCIDS=$(oci network subnet list -c "$vcn_comp" --profile "$PROFILE" --auth security_token --query 'data[].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
             for subnet_ocid in $SUBNET_OCIDS; do
               [[ -n "$subnet_ocid" ]] || continue
               echo "Deleting subnet $subnet_ocid (compartment $vcn_comp, for VCN $vcn_ocid)..."
               oci network subnet delete --subnet-id "$subnet_ocid" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
             done
-            # Delete the VCN
+          done <<< "$VCN_LIST"
+          # Wait for subnet deletions to propagate before deleting VCNs.
+          echo "Waiting 30s for subnet deletions to propagate..."
+          sleep 30
+          # Second pass: delete the VCNs.
+          while IFS='|' read -r vcn_ocid vcn_comp; do
+            [[ -z "$vcn_ocid" ]] && continue
             echo "Deleting VCN $vcn_ocid (compartment $vcn_comp)..."
             oci network vcn delete --vcn-id "$vcn_ocid" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
           done <<< "$VCN_LIST"
