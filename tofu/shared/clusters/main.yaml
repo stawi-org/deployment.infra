@@ -51,7 +51,11 @@ kubernetes:
   # Pinned to match tofu/shared/versions.auto.tfvars.json's
   # `kubernetes_version`. Bumps to the cluster k8s version go in BOTH
   # files in lock-step so tofu and Omni agree.
-  version: v1.37.1
+  #
+  # STAGED: Omni does not allow changing Talos + Kubernetes versions
+  # at the same time. We first bump Talos to v1.14.6 (keeping k8s at
+  # v1.36.0), then bump k8s to v1.37.1 in a second sync pass.
+  version: v1.36.0
 talos:
   # Pinned to match tofu/shared/versions.auto.tfvars.json's
   # `talos_version`. The image inventory in
