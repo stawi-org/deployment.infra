@@ -119,12 +119,19 @@ jobs:
           NAMESPACE="frosk7nwicev"
           PROFILE="${{ inputs.account }}"
           
-          # Get compartment OCID from auth.yaml (staged from repo)
+          # Get compartment OCID from auth.yaml. Check repo-staged auth first,
+          # then fall back to R2-synced legacy auth (some accounts like
+          # brianelvis33 only have auth in R2, not in repo SOPS).
+          COMPARTMENT_OCID=""
           AUTH_FILE="$AUTH_MERGED/${{ inputs.account }}/auth.yaml"
           if [[ -f "$AUTH_FILE" ]]; then
-            COMPARTMENT_OCID=$(yq -r '.auth.compartment_ocid' "$AUTH_FILE" 2>/dev/null || echo "")
-          else
-            COMPARTMENT_OCID=""
+            COMPARTMENT_OCID=$(yq -r '.auth.compartment_ocid // .compartment_ocid // empty' "$AUTH_FILE" 2>/dev/null || echo "")
+          fi
+          if [[ -z "$COMPARTMENT_OCID" && -d "$R2_AUTH" ]]; then
+            R2_AUTH_FILE="$R2_AUTH/${{ inputs.account }}/auth.yaml"
+            if [[ -f "$R2_AUTH_FILE" ]]; then
+              COMPARTMENT_OCID=$(yq -r '.auth.compartment_ocid // .compartment_ocid // empty' "$R2_AUTH_FILE" 2>/dev/null || echo "")
+            fi
           fi
           
           if [[ -z "$COMPARTMENT_OCID" || "$COMPARTMENT_OCID" == "null" ]]; then
