@@ -202,6 +202,15 @@ jobs:
           echo "Waiting 60s for bastion deletions to propagate..."
           sleep 60
 
+          echo "=== Deleting known VNIC directly by OCID ==="
+          # Directly delete the VNIC that blocks subnet/VCN deletion by its
+          # known OCID (from prior error logs), bypassing list operations
+          # that may not return it due to lifecycle state or compartment
+          # visibility issues.
+          BRIANELVIS33_VNIC="ocid1.vnic.oc1.eu-frankfurt-1.abtheljso4cixfl7vrmxrld6o7xywta2b466zwv37vwimeh73hdr67kth2lq"
+          echo "Deleting VNIC $BRIANELVIS33_VNIC directly..."
+          oci network vnic delete --vnic-id "$BRIANELVIS33_VNIC" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
+
           echo "=== Deleting VNICs (all compartments, all lifecycle states) ==="
           # List VNICs from each compartment without lifecycle-state filter
           # to catch VNICs in TERMINATING/DETACHING state that block subnet
