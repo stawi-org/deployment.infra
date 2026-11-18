@@ -127,15 +127,17 @@ jobs:
           # Get compartment OCID from auth.yaml. Check repo-staged auth first,
           # then fall back to R2-synced legacy auth (some accounts like
           # brianelvis33 only have auth in R2, not in repo SOPS).
+          # Use Python (PyYAML is available) instead of yq because yq's
+          # `// empty` operator can return empty for valid string values.
           COMPARTMENT_OCID=""
           AUTH_FILE="$AUTH_MERGED/${{ inputs.account }}/auth.yaml"
           if [[ -f "$AUTH_FILE" ]]; then
-            COMPARTMENT_OCID=$(yq -r '.auth.compartment_ocid // .compartment_ocid // empty' "$AUTH_FILE" 2>/dev/null || echo "")
+            COMPARTMENT_OCID=$(python3 -c "import yaml, sys; data = yaml.safe_load(open(sys.argv[1])) or {}; auth = data.get('auth', data); print(auth.get('compartment_ocid', '') or '')" "$AUTH_FILE" 2>/dev/null || echo "")
           fi
           if [[ -z "$COMPARTMENT_OCID" && -d "$R2_AUTH" ]]; then
             R2_AUTH_FILE="$R2_AUTH/${{ inputs.account }}/auth.yaml"
             if [[ -f "$R2_AUTH_FILE" ]]; then
-              COMPARTMENT_OCID=$(yq -r '.auth.compartment_ocid // .compartment_ocid // empty' "$R2_AUTH_FILE" 2>/dev/null || echo "")
+              COMPARTMENT_OCID=$(python3 -c "import yaml, sys; data = yaml.safe_load(open(sys.argv[1])) or {}; auth = data.get('auth', data); print(auth.get('compartment_ocid', '') or '')" "$R2_AUTH_FILE" 2>/dev/null || echo "")
             fi
           fi
           
