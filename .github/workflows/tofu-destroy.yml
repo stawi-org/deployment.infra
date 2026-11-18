@@ -187,14 +187,11 @@ jobs:
           sleep 30
           
           echo "=== Deleting VNICs (all compartments) ==="
-          for comp in $ALL_COMPARTMENT_OCIDS; do
-            [[ -z "$comp" ]] && continue
-            VNIC_OCIDS=$(oci network vnic list -c "$comp" --profile "$PROFILE" --auth security_token --query 'data[].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
-            for ocid in $VNIC_OCIDS; do
-              [[ -n "$ocid" ]] || continue
-              echo "Deleting VNIC $ocid (compartment $comp)..."
-              oci network vnic delete --vnic-id "$ocid" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
-            done
+          VNIC_OCIDS=$(oci network vnic list --all --profile "$PROFILE" --auth security_token --query 'data[].id' --output json 2>/dev/null | jq -r '.[] // empty' 2>/dev/null || true)
+          for ocid in $VNIC_OCIDS; do
+            [[ -n "$ocid" ]] || continue
+            echo "Deleting VNIC $ocid..."
+            oci network vnic delete --vnic-id "$ocid" --profile "$PROFILE" --auth security_token --force 2>&1 | grep -v "^$" || true
           done
           for comp in $ALL_COMPARTMENT_OCIDS; do
             [[ -z "$comp" ]] && continue
